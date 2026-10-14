@@ -1,3 +1,4 @@
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { checkPort, checkSSL, checkHeaders } = require('./checks');
@@ -6,7 +7,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, '../public')));
 
 // Cooldown: не больше 1 скана в 10 сек с одного IP (защита от DDoS)
 const lastScan = new Map();
