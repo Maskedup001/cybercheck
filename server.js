@@ -35,6 +35,9 @@ app.post('/api/scan', async (req, res) => {
 
   const { url, consent } = req.body;
 
+  // Логирование запроса
+  console.log(`[${new Date().toISOString()}] Запрос на сканирование: ${url || 'пусто'} | IP: ${ip}`);
+
   if (!consent) {
     return res.status(400).json({
       error: 'Подтверди, что у тебя есть право на проверку'
@@ -69,6 +72,16 @@ app.post('/api/scan', async (req, res) => {
     const webPort = [443, 80, 8080, 3000].find((p) =>
       openPorts.some((op) => op.port === p)
     );
+
+    // Если веб-порт не найден — возвращаем заглушку без проверок SSL и заголовков
+    if (!webPort) {
+      return res.json({
+        host,
+        ports: openPorts,
+        ssl: { hasSSL: false },
+        headers: { error: true }
+      });
+    }
 
     const ssl = await checkSSL(host, webPort);
     const headers = await checkHeaders(host, webPort);
