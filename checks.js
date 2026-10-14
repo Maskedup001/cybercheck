@@ -3,7 +3,7 @@ const tls = require('tls');
 const https = require('https');
 const http = require('http');
 
-// Проверка одного порта
+// Проверка одного порта. Таймаут 3 сек — медленные сайты считаем закрытыми
 function checkPort(host, port, timeout = 3000) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -24,10 +24,9 @@ function checkPort(host, port, timeout = 3000) {
   });
 }
 
-// Проверка SSL-сертификата на конкретном порту
+// Проверка SSL. rejectUnauthorized: false — не падаем на просроченных сертификатах
 function checkSSL(host, port) {
   return new Promise((resolve) => {
-    // Если веб-порт не найден — SSL нет
     if (!port) {
       return resolve({ hasSSL: false });
     }
@@ -37,7 +36,6 @@ function checkSSL(host, port) {
       () => {
         const cert = socket.getPeerCertificate();
 
-        // Если сертификат не пришёл — значит это не TLS
         if (!cert || !cert.valid_to) {
           socket.end();
           return resolve({ hasSSL: false });
@@ -67,7 +65,7 @@ function checkSSL(host, port) {
   });
 }
 
-// Проверка заголовков на конкретном порту (HTTPS с фолбэком на HTTP)
+// Проверка заголовков. Сначала HTTPS, при ошибке — HTTP (для сайтов без SSL)
 function checkHeaders(host, port) {
   return new Promise((resolve) => {
     if (!port) {
@@ -112,7 +110,7 @@ function checkHeaders(host, port) {
   });
 }
 
-// Разбор заголовков в общий формат
+// Приводим заголовки к общему формату для фронтенда
 function parseHeaders(h, protocol) {
   return {
     protocol: protocol,

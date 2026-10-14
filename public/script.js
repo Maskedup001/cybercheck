@@ -19,7 +19,7 @@ async function scan() {
   btn.disabled = true;
   resultEl.textContent = 'Сканирую... (максимум 30 секунд)';
 
-  // Таймаут: прерываем запрос через 30 секунд
+  // Таймаут 30 сек — прерываем запрос, если сервер не ответил
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
@@ -30,7 +30,8 @@ async function scan() {
       body: JSON.stringify({
         url,
         consent,
-        consentTimestamp: Date.now()  // добавлено
+        // Timestamp нужен бэку для проверки свежести согласия
+        consentTimestamp: Date.now()
       }),
       signal: controller.signal
     });
@@ -54,6 +55,7 @@ async function scan() {
   }
 }
 
+// Формирует текстовый отчёт из ответа бэкенда
 function render(d) {
   let out = `Хост: ${d.host}\n`;
 
