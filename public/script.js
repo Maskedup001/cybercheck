@@ -17,13 +17,18 @@ async function scan() {
   }
 
   btn.disabled = true;
-  resultEl.textContent = 'Сканирую...';
+  resultEl.textContent = 'Сканирую... (максимум 30 секунд)';
+
+  // Таймаут: прерываем запрос через 30 секунд
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30_000);
 
   try {
     const res = await fetch(`${API_URL}/scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, consent })
+      body: JSON.stringify({ url, consent }),
+      signal: controller.signal
     });
 
     const data = await res.json();
@@ -34,8 +39,13 @@ async function scan() {
       render(data);
     }
   } catch (e) {
-    resultEl.textContent = 'Ошибка: не удалось подключиться к серверу';
+    if (e.name === 'AbortError') {
+      resultEl.textContent = 'Превышено время ожидания (30 сек). Попробуй другой адрес.';
+    } else {
+      resultEl.textContent = 'Ошибка: не удалось подключиться к серверу';
+    }
   } finally {
+    clearTimeout(timeoutId);
     btn.disabled = false;
   }
 }
