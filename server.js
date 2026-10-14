@@ -52,8 +52,8 @@ app.post('/api/scan', async (req, res) => {
     .trim()
     .toLowerCase();
 
-  // Простая валидация домена
-  const hostRegex = /^[a-z0-9.-]+\.[a-z]{2,}$/;
+  // Разрешаем: обычные домены (example.com) + localhost + IP-адреса
+  const hostRegex = /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
   if (!hostRegex.test(host)) {
     return res.status(400).json({ error: 'Некорректный адрес' });
   }
@@ -62,12 +62,20 @@ app.post('/api/scan', async (req, res) => {
     const ports = await Promise.all(
       [80, 443, 22, 3306, 8080].map((p) => checkPort(host, p))
     );
-    const ssl = await checkSSL(host);
-    const headers = await checkHeaders(host);
+
+    const openPorts = ports.filter((p) => p.status === 'open');
+
+    // Ищем веб-порт: 443 → 80 → 8080 → 3000
+    const webPort = [443, 80, 8080, 3000].find((p) =>
+      openPorts.some((op) => op.port === p)
+    );
+
+    const ssl = await checkSSL(host, webPort);
+    const headers = await checkHeaders(host, webPort);
 
     res.json({
       host,
-      ports: ports.filter((p) => p.status === 'open'),
+      ports: openPorts,
       ssl,
       headers
     });

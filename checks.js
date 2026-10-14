@@ -1,6 +1,7 @@
 const net = require('net');
 const tls = require('tls');
 const https = require('https');
+const http = require('http');
 
 // Проверка одного порта
 function checkPort(host, port, timeout = 3000) {
@@ -23,13 +24,25 @@ function checkPort(host, port, timeout = 3000) {
   });
 }
 
-// Проверка SSL-сертификата
-function checkSSL(host) {
+// Проверка SSL-сертификата на конкретном порту
+function checkSSL(host, port) {
   return new Promise((resolve) => {
+    // Если веб-порт не найден — SSL нет
+    if (!port) {
+      return resolve({ hasSSL: false });
+    }
+
     const socket = tls.connect(
-      { host, port: 443, servername: host, rejectUnauthorized: false },
+      { host, port, servername: host, rejectUnauthorized: false },
       () => {
         const cert = socket.getPeerCertificate();
+
+        // Если сертификат не пришёл — значит это не TLS
+        if (!cert || !cert.valid_to) {
+          socket.end();
+          return resolve({ hasSSL: false });
+        }
+
         const valid = socket.authorized;
         const daysLeft = Math.floor(
           (new Date(cert.valid_to) - Date.now()) / 86400000
@@ -47,38 +60,68 @@ function checkSSL(host) {
     );
 
     socket.on('error', () => resolve({ hasSSL: false }));
-    socket.setTimeout(3000, () => socket.destroy());
+    socket.setTimeout(3000, () => {
+      socket.destroy();
+      resolve({ hasSSL: false });
+    });
   });
 }
 
-// Проверка заголовков безопасности
-function checkHeaders(host) {
+// Проверка заголовков на конкретном порту (HTTPS с фолбэком на HTTP)
+function checkHeaders(host, port) {
   return new Promise((resolve) => {
-    const req = https.get(
-      `https://${host}`,
-      {
-        timeout: 5000,
-        rejectUnauthorized: false   // ← важно: не падать на невалидном сертификате
-      },
-      (res) => {
-        const h = res.headers;
-        resolve({
-          server: h['server'] || 'не указан',
-          csp: !!h['content-security-policy'],
-          xframe: !!h['x-frame-options'],
-          hsts: !!h['strict-transport-security'],
-          xcontent: !!h['x-content-type-options']
-        });
-        res.destroy();
-      }
-    );
+    if (!port) {
+      return resolve({ error: true });
+    }
 
-    req.on('error', () => resolve({ error: true }));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ error: true });
-    });
+    const tryHttp = () => {
+      const req = http.get(
+        `http://${host}:${port}`,
+        { timeout: 5000 },
+        (res) => {
+          resolve(parseHeaders(res.headers, 'HTTP'));
+          res.destroy();
+        }
+      );
+
+      req.on('error', () => resolve({ error: true }));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ error: true });
+      });
+    };
+
+    const tryHttps = () => {
+      const req = https.get(
+        `https://${host}:${port}`,
+        { timeout: 5000, rejectUnauthorized: false },
+        (res) => {
+          resolve(parseHeaders(res.headers, 'HTTPS'));
+          res.destroy();
+        }
+      );
+
+      req.on('error', tryHttp);
+      req.on('timeout', () => {
+        req.destroy();
+        tryHttp();
+      });
+    };
+
+    tryHttps();
   });
+}
+
+// Разбор заголовков в общий формат
+function parseHeaders(h, protocol) {
+  return {
+    protocol: protocol,
+    server: h['server'] || 'не указан',
+    csp: !!h['content-security-policy'],
+    xframe: !!h['x-frame-options'],
+    hsts: !!h['strict-transport-security'],
+    xcontent: !!h['x-content-type-options']
+  };
 }
 
 module.exports = { checkPort, checkSSL, checkHeaders };
