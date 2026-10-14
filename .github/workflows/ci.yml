@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Check checks.js loads
+        run: node -e "const c = require('./checks'); if (!c.checkPort || !c.checkSSL || !c.checkHeaders) { process.exit(1); } console.log('checks.js OK');"
+
+      - name: Check server.js syntax
+        run: node --check server.js
+
+      - name: Start server and healthcheck
+        run: |
+          node server.js &
+          SERVER_PID=$!
+          sleep 3
+          curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/ | grep 200
+          kill $SERVER_PID
