@@ -27,7 +27,11 @@ async function scan() {
     const res = await fetch(`${API_URL}/scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, consent }),
+      body: JSON.stringify({
+        url,
+        consent,
+        consentTimestamp: Date.now()  // добавлено
+      }),
       signal: controller.signal
     });
 
@@ -71,17 +75,17 @@ function render(d) {
   }
 
   out += '\n=== ЗАГОЛОВКИ БЕЗОПАСНОСТИ ===\n';
-	const h = d.headers;
-	if (h.error) {
-  	out += '  Не удалось получить\n';
-	} else {
-  	out += `  Протокол: ${h.protocol}\n`;
-  	out += `  Server: ${h.server}\n`;
-  	out += `  Content-Security-Policy: ${h.csp ? 'есть' : 'НЕТ'}\n`;
-  	out += `  X-Frame-Options: ${h.xframe ? 'есть' : 'НЕТ'}\n`;
-  	out += `  Strict-Transport-Security: ${h.hsts ? 'есть' : 'НЕТ'}\n`;
-  	out += `  X-Content-Type-Options: ${h.xcontent ? 'есть' : 'НЕТ'}\n`;
-	}
+  const h = d.headers;
+  if (h.error) {
+    out += '  Не удалось получить\n';
+  } else {
+    out += `  Протокол: ${h.protocol}\n`;
+    out += `  Server: ${h.server}\n`;
+    out += `  Content-Security-Policy: ${h.csp ? 'есть' : 'НЕТ'}\n`;
+    out += `  X-Frame-Options: ${h.xframe ? 'есть' : 'НЕТ'}\n`;
+    out += `  Strict-Transport-Security: ${h.hsts ? 'есть' : 'НЕТ'}\n`;
+    out += `  X-Content-Type-Options: ${h.xcontent ? 'есть' : 'НЕТ'}\n`;
+  }
 
   document.getElementById('result').textContent = out;
 }
