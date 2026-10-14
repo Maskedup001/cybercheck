@@ -80,27 +80,23 @@ DEMO_MODE=true npm start
 
 ```
 cybercheck/
-│
 ├── .github/
 │   └── workflows/
-│       └── ci.yml            # CI: проверка кода при пуше
-│
-├── public/                   # Фронтенд
-│   ├── index.html            # Разметка страницы
-│   ├── style.css             # Стили
-│   └── script.js             # Логика (запросы к API)
-│
-├── checks.js                 # Проверки: порты, SSL, заголовки
-├── server.js                 # Express-сервер, точка входа
-│
-├── package.json              # Зависимости и скрипты
-├── package-lock.json         # Точные версии (авто)
-├── .gitignore                # Что не заливать в Git
-├── .env.example              # Шаблон переменных окружения
-│
-├── README.md                 # Этот файл
-├── DISCLAIMER.md             # Юридический дисклеймер
-└── LICENSE                   # MIT
+│       └── ci.yml              # GitHub Actions: проверка при пуше
+├── src/                        # Серверная часть
+│   ├── server.js               # Точка входа, Express-сервер
+│   └── checks.js               # Функции проверок (порты, SSL, заголовки)
+├── public/                     # Клиентская часть
+│   ├── index.html              # Страница
+│   ├── style.css               # Стили
+│   └── script.js               # Логика фронта
+├── .env.example                # Шаблон переменных окружения
+├── .gitignore
+├── package.json
+├── package-lock.json
+├── README.md
+├── DISCLAIMER.md               # Юридические предупреждения
+└── LICENSE                     # MIT
 ```
 
 > `node_modules/` создаётся автоматически после `npm install` и не хранится в репозитории.
