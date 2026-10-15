@@ -24,6 +24,14 @@ app.use(express.static(path.join(__dirname, '../public')));
 const lastScan = new Map();
 const COOLDOWN_MS = 10_000;
 
+// Очистка старых записей раз в 5 минут, чтобы карта не росла бесконечно
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, time] of lastScan.entries()) {
+    if (now - time > 60_000) lastScan.delete(ip);
+  }
+}, 5 * 60_000).unref();
+
 // Возвращает число секунд ожидания, если cooldown ещё активен, иначе 0.
 function checkCooldown(ip) {
   const now = Date.now();
