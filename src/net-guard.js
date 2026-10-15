@@ -68,7 +68,14 @@ async function resolvePublicIps(hostname) {
   if (ips.length === 0) return [];
   if (!ips.every(isPublicIp)) return [];
 
-  return ips;
+  // IPv4 вперёд — меньше проблем с VPN и старыми сетями
+  const sorted = ips.sort((a, b) => {
+    const aIsV4 = net.isIPv4(a) ? 1 : 0;
+    const bIsV4 = net.isIPv4(b) ? 1 : 0;
+    return bIsV4 - aIsV4;
+  });
+
+  return sorted;
 }
 
 module.exports = { isPublicIp, resolvePublicIps };
