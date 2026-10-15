@@ -2,6 +2,16 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { checkPort, checkSSL, checkHeaders } = require('./checks');
+const { resolvePublicIps } = require('./net-guard');
+
+// DEMO_MODE — разрешает сканирование localhost (только для демо)
+const DEMO_MODE = process.env.DEMO_MODE === 'true';
+
+// Запрет DEMO_MODE в production
+if (DEMO_MODE && process.env.NODE_ENV === 'production') {
+  console.error('ОШИБКА: DEMO_MODE запрещён в production');
+  process.exit(1);
+}
 
 const app = express();
 
@@ -9,7 +19,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Cooldown: не больше 1 скана в 10 сек с одного IP (защита от DDoS)
+// Cooldown: не больше 1 скана в 10 сек с одного IP
 const lastScan = new Map();
 const COOLDOWN_MS = 10_000;
 
@@ -21,30 +31,6 @@ function checkCooldown(ip) {
   }
   lastScan.set(ip, now);
   return 0;
-}
-
-// Блокировка внутренних IP (SSRF protection).
-// В DEMO_MODE=true localhost разрешён — для демонстрации
-function isPrivateHost(host) {
-  if (!host) return true;
-
-  const DEMO_MODE = process.env.DEMO_MODE === 'true';
-
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
-    return !DEMO_MODE;
-  }
-
-  const privateRanges = [
-    /^10\./,
-    /^172\.(1[6-9]|2[0-9]|3[01])\./,
-    /^192\.168\./,
-    /^169\.254\./,
-    /^127\./,
-    /^0\./,
-    /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./
-  ];
-
-  return privateRanges.some((regex) => regex.test(host));
 }
 
 // Основной эндпоинт сканирования
@@ -60,7 +46,6 @@ app.post('/api/scan', async (req, res) => {
 
   const { url, consent, consentTimestamp } = req.body;
 
-  // Логируем запросы — для отладки и аудита
   console.log(`[${new Date().toISOString()}] Сканирование: ${url || 'пусто'} | IP: ${ip}`);
 
   if (!consent) {
@@ -69,7 +54,7 @@ app.post('/api/scan', async (req, res) => {
     });
   }
 
-  // Согласие действует 5 минут — чтобы нельзя было поставить галочку один раз и повторять
+  // Согласие действует 5 минут
   const CONSENT_MAX_AGE = 5 * 60 * 1000;
   if (!consentTimestamp || Date.now() - consentTimestamp > CONSENT_MAX_AGE) {
     return res.status(400).json({
@@ -81,53 +66,69 @@ app.post('/api/scan', async (req, res) => {
     return res.status(400).json({ error: 'URL не указан' });
   }
 
-  // Чистим URL от http:// и путей
-  let host = url
+  // Чистим URL
+  const hostname = url
     .replace(/^https?:\/\//i, '')
     .replace(/\/.*$/, '')
     .trim()
     .toLowerCase();
 
-  // Разрешаем домены, localhost и IP-адреса
   const hostRegex = /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
-  if (!hostRegex.test(host)) {
+  if (!hostRegex.test(hostname)) {
     return res.status(400).json({ error: 'Некорректный адрес' });
   }
 
-  // Блокируем внутренние адреса
-  if (isPrivateHost(host)) {
-    return res.status(400).json({
-      error: 'Сканирование внутренних адресов запрещено'
-    });
+  // ============ SSRF-ЗАЩИТА ============
+  let connectIp;
+
+  if (DEMO_MODE && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1')) {
+    // Демо-режим: разрешаем localhost
+    connectIp = hostname;
+  } else {
+    // Резолвим DNS и проверяем ВСЕ полученные IP на публичность
+    let resolvedIps;
+    try {
+      resolvedIps = await resolvePublicIps(hostname);
+    } catch (e) {
+      return res.status(400).json({ error: 'Не удалось разрешить адрес' });
+    }
+
+    if (resolvedIps.length === 0) {
+      return res.status(400).json({
+        error: 'Сканирование внутренних адресов запрещено'
+      });
+    }
+
+    connectIp = resolvedIps[0];
   }
+  // ====================================
 
   try {
     const ports = await Promise.all(
-      [80, 443, 22, 3306, 8080].map((p) => checkPort(host, p))
+      [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p))
     );
 
     const openPorts = ports.filter((p) => p.status === 'open');
 
-    // Ищем веб-порт по приоритету: 443 → 80 → 8080 → 3000
-    const webPort = [443, 80, 8080, 3000].find((p) =>
+    // Ищем веб-порт: 443 → 80 → 8080
+    const webPort = [443, 80, 8080].find((p) =>
       openPorts.some((op) => op.port === p)
     );
 
-    // Если веб-порт не найден — возвращаем заглушку
     if (!webPort) {
       return res.json({
-        host,
+        host: hostname,
         ports: openPorts,
         ssl: { hasSSL: false },
         headers: { error: true }
       });
     }
 
-    const ssl = await checkSSL(host, webPort);
-    const headers = await checkHeaders(host, webPort);
+    const ssl = await checkSSL(connectIp, webPort, hostname);
+    const headers = await checkHeaders(connectIp, webPort, hostname);
 
     res.json({
-      host,
+      host: hostname,
       ports: openPorts,
       ssl,
       headers
@@ -140,7 +141,7 @@ app.post('/api/scan', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Сканер запущен: http://localhost:${PORT}`);
-  if (process.env.DEMO_MODE === 'true') {
+  if (DEMO_MODE) {
     console.log('[DEMO_MODE] localhost разрешён для сканирования');
   }
 });

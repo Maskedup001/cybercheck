@@ -3,8 +3,8 @@ const tls = require('tls');
 const https = require('https');
 const http = require('http');
 
-// Проверка одного порта. Таймаут 3 сек — медленные сайты считаем закрытыми
-function checkPort(host, port, timeout = 3000) {
+// Проверка одного порта. connectIp — IP-адрес (не hostname).
+function checkPort(connectIp, port, timeout = 3000) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let status = 'closed';
@@ -20,19 +20,22 @@ function checkPort(host, port, timeout = 3000) {
     socket.on('error', () => {});
     socket.on('close', () => resolve({ port, status }));
 
-    socket.connect(port, host);
+    socket.connect(port, connectIp);
   });
 }
 
-// Проверка SSL. rejectUnauthorized: false — не падаем на просроченных сертификатах
-function checkSSL(host, port) {
+// Проверка SSL. connectIp — IP, hostname — для SNI.
+function checkSSL(connectIp, port, hostname) {
   return new Promise((resolve) => {
     if (!port) {
       return resolve({ hasSSL: false });
     }
 
+    // SNI только для доменных имён, не для IP-литералов
+    const servername = net.isIP(hostname) ? undefined : hostname;
+
     const socket = tls.connect(
-      { host, port, servername: host, rejectUnauthorized: false },
+      { host: connectIp, port, servername, rejectUnauthorized: false },
       () => {
         const cert = socket.getPeerCertificate();
 
@@ -65,17 +68,19 @@ function checkSSL(host, port) {
   });
 }
 
-// Проверка заголовков. Сначала HTTPS, при ошибке — HTTP (для сайтов без SSL)
-function checkHeaders(host, port) {
+// Проверка заголовков. connectIp — IP, hostname — для SNI/Host заголовка.
+function checkHeaders(connectIp, port, hostname) {
   return new Promise((resolve) => {
     if (!port) {
       return resolve({ error: true });
     }
 
+    const servername = net.isIP(hostname) ? undefined : hostname;
+    const hostHeader = hostname;
+
     const tryHttp = () => {
       const req = http.get(
-        `http://${host}:${port}`,
-        { timeout: 5000 },
+        { host: connectIp, port, headers: { Host: hostHeader }, timeout: 5000 },
         (res) => {
           resolve(parseHeaders(res.headers, 'HTTP'));
           res.destroy();
@@ -91,8 +96,14 @@ function checkHeaders(host, port) {
 
     const tryHttps = () => {
       const req = https.get(
-        `https://${host}:${port}`,
-        { timeout: 5000, rejectUnauthorized: false },
+        {
+          host: connectIp,
+          port,
+          servername,
+          rejectUnauthorized: false,
+          headers: { Host: hostHeader },
+          timeout: 5000
+        },
         (res) => {
           resolve(parseHeaders(res.headers, 'HTTPS'));
           res.destroy();
