@@ -4,10 +4,10 @@ const cors = require('cors');
 const { checkPort, checkSSL, checkHeaders } = require('./checks');
 const { resolvePublicIps } = require('./net-guard');
 
-// DEMO_MODE — разрешает сканирование localhost (только для демо)
+// DEMO_MODE включает сканирование localhost — только для локальной демонстрации
 const DEMO_MODE = process.env.DEMO_MODE === 'true';
 
-// Запрет DEMO_MODE в production
+// Защита от случайного включения DEMO_MODE в продакшене
 if (DEMO_MODE && process.env.NODE_ENV === 'production') {
   console.error('ОШИБКА: DEMO_MODE запрещён в production');
   process.exit(1);
@@ -19,10 +19,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Cooldown: не больше 1 скана в 10 сек с одного IP
+// Cooldown: не больше 1 скана в 10 секунд с одного IP.
+// Защита от превращения сканера в DDoS-инструмент.
 const lastScan = new Map();
 const COOLDOWN_MS = 10_000;
 
+// Возвращает число секунд ожидания, если cooldown ещё активен, иначе 0.
 function checkCooldown(ip) {
   const now = Date.now();
   const last = lastScan.get(ip) || 0;
@@ -37,6 +39,7 @@ function checkCooldown(ip) {
 app.post('/api/scan', async (req, res) => {
   const ip = req.ip;
 
+  // Проверка cooldown до всех остальных проверок
   const wait = checkCooldown(ip);
   if (wait > 0) {
     return res.status(429).json({
@@ -46,15 +49,17 @@ app.post('/api/scan', async (req, res) => {
 
   const { url, consent, consentTimestamp } = req.body;
 
+  // Логирование запроса (URL + IP клиента)
   console.log(`[${new Date().toISOString()}] Сканирование: ${url || 'пусто'} | IP: ${ip}`);
 
+  // Проверка согласия на сканирование
   if (!consent) {
     return res.status(400).json({
       error: 'Подтверди, что у тебя есть право на проверку'
     });
   }
 
-  // Согласие действует 5 минут
+  // Согласие действует 5 минут — чтобы нельзя было поставить галочку один раз и сканировать часами
   const CONSENT_MAX_AGE = 5 * 60 * 1000;
   if (!consentTimestamp || Date.now() - consentTimestamp > CONSENT_MAX_AGE) {
     return res.status(400).json({
@@ -66,26 +71,29 @@ app.post('/api/scan', async (req, res) => {
     return res.status(400).json({ error: 'URL не указан' });
   }
 
-  // Чистим URL
+  // Чистим URL: убираем схему (http://) и путь (/page)
   const hostname = url
     .replace(/^https?:\/\//i, '')
     .replace(/\/.*$/, '')
     .trim()
     .toLowerCase();
 
+  // Валидация формата: localhost, домен, или IPv4-адрес
   const hostRegex = /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
   if (!hostRegex.test(hostname)) {
     return res.status(400).json({ error: 'Некорректный адрес' });
   }
 
-  // ============ SSRF-ЗАЩИТА ============
+  // ===== SSRF-ЗАЩИТА =====
+  // Резолвим DNS и проверяем, что все полученные IP публичные.
+  // Сканируем по IP (не по hostname) — это защита от DNS rebinding,
+  // когда между проверкой и подключением домен может сменить адрес.
   let connectIp;
 
   if (DEMO_MODE && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1')) {
-    // Демо-режим: разрешаем localhost
+    // Демо-режим: localhost разрешён для показа на тестовом стенде
     connectIp = hostname;
   } else {
-    // Резолвим DNS и проверяем ВСЕ полученные IP на публичность
     let resolvedIps;
     try {
       resolvedIps = await resolvePublicIps(hostname);
@@ -101,20 +109,22 @@ app.post('/api/scan', async (req, res) => {
 
     connectIp = resolvedIps[0];
   }
-  // ====================================
+  // ========================
 
   try {
+    // Проверяем все порты параллельно
     const ports = await Promise.all(
       [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p))
     );
 
     const openPorts = ports.filter((p) => p.status === 'open');
 
-    // Ищем веб-порт: 443 → 80 → 8080
+    // Ищем веб-порт по приоритету: 443 → 80 → 8080
     const webPort = [443, 80, 8080].find((p) =>
       openPorts.some((op) => op.port === p)
     );
 
+    // Если веб-порт не найден — SSL и заголовки проверить негде
     if (!webPort) {
       return res.json({
         host: hostname,
