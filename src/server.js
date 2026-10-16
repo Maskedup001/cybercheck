@@ -15,7 +15,10 @@ if (DEMO_MODE && process.env.NODE_ENV === 'production') {
 
 const app = express();
 
-app.use(cors());
+// CORS: разрешаем запросы только с доверенного origin.
+// PUBLIC_ORIGIN задаётся в .env, если не задан — '*' для локальной разработки.
+const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || '*';
+app.use(cors({ origin: PUBLIC_ORIGIN, methods: ['POST'] }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
