@@ -32,6 +32,8 @@ jobs:
         run: node --check src/server.js
 
       - name: Start server and healthcheck
+        env:
+          PUBLIC_ORIGIN: https://localhost:3000
         run: |
           node src/server.js &
           SERVER_PID=$!
