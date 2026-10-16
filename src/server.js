@@ -88,7 +88,7 @@ app.post("/api/scan", async (req, res) => {
   }
 
   // 2. Проверка согласия
-  if (!consent) {
+  if (consent !== true) {
     return res.status(400).json({
       error: "Подтверди, что у тебя есть право на проверку",
     });
