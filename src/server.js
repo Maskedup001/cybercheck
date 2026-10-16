@@ -42,7 +42,7 @@ app.use(
 // PUBLIC_ORIGIN задаётся в .env, если не задан — '*' для локальной разработки.
 const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || "*";
 app.use(cors({ origin: PUBLIC_ORIGIN, methods: ["POST"] }));
-app.use(express.json());
+app.use(express.json({ limit: "8kb" }));
 app.use(express.static(path.join(__dirname, "../public")));
 
 // Cooldown: не больше 1 скана в 10 секунд с одного IP.
@@ -194,6 +194,17 @@ app.post("/api/scan", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: "Ошибка сканирования" });
   }
+});
+
+// Единый обработчик ошибок: наружу — только обобщённое сообщение, без стека.
+app.use((err, req, res, next) => {
+  const raw = err.status || err.statusCode || 500;
+  const status = raw >= 400 && raw < 600 ? raw : 500;
+  console.error(`[scan] ${status} ${err.name || "Error"}`);
+  if (res.headersSent) return next(err);
+  res.status(status).json({
+    error: status === 413 ? "Слишком большой запрос" : "Некорректный запрос",
+  });
 });
 
 const PORT = process.env.PORT || 3000;
