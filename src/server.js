@@ -38,10 +38,15 @@ app.use(
   }),
 );
 
-// CORS: разрешаем запросы только с доверенного origin.
-// PUBLIC_ORIGIN задаётся в .env, если не задан — '*' для локальной разработки.
-const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || "*";
-app.use(cors({ origin: PUBLIC_ORIGIN, methods: ["POST"] }));
+// CORS: только доверенный origin, без небезопасного fallback.
+const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN;
+if (!PUBLIC_ORIGIN) {
+  console.error(
+    "ОШИБКА: не задан PUBLIC_ORIGIN (например, http://localhost:3000)",
+  );
+  process.exit(1);
+}
+app.use(cors({ origin: [PUBLIC_ORIGIN], methods: ["POST"], maxAge: 600 }));
 app.use(express.json({ limit: "8kb" }));
 app.use(express.static(path.join(__dirname, "../public")));
 
