@@ -1,6 +1,7 @@
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const { checkPort, checkSSL, checkHeaders } = require("./checks");
 const { resolvePublicIps } = require("./net-guard");
 
@@ -14,6 +15,27 @@ if (DEMO_MODE && process.env.NODE_ENV === "production") {
 }
 
 const app = express();
+
+// Отключаем заголовок X-Powered-By — не палим, что это Express
+app.disable("x-powered-by");
+
+// Helmet: защитные HTTP-заголовки (CSP, X-Frame-Options, Referrer-Policy и др.)
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: true,
+      directives: {
+        "default-src": ["'self'"],
+        "script-src": ["'self'"],
+        "style-src": ["'self'", "'unsafe-inline'"], // нужно для inline-стилей в index.html
+        "object-src": ["'none'"],
+        "frame-ancestors": ["'none'"],
+        "base-uri": ["'self'"],
+      },
+    },
+    referrerPolicy: { policy: "no-referrer" },
+  }),
+);
 
 // CORS: разрешаем запросы только с доверенного origin.
 // PUBLIC_ORIGIN задаётся в .env, если не задан — '*' для локальной разработки.
