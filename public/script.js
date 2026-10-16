@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:3000/api";
+const API_URL = "/api";
 
 async function scan() {
   const url = document.getElementById("url").value.trim();
@@ -94,4 +94,4 @@ function render(d) {
 }
 
 // Обработчик кнопки — вынесен из HTML для строгого CSP
-document.getElementById('scanBtn').addEventListener('click', scan);
+document.getElementById("scanBtn").addEventListener("click", scan);
