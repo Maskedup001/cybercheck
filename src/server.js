@@ -8,9 +8,10 @@ const { resolvePublicIps } = require("./net-guard");
 // DEMO_MODE включает сканирование localhost — только для локальной демонстрации
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 
-// Защита от случайного включения DEMO_MODE в продакшене
-if (DEMO_MODE && process.env.NODE_ENV === "production") {
-  console.error("ОШИБКА: DEMO_MODE запрещён в production");
+// Fail-closed: демо-режим разрешён ТОЛЬКО при явно заданном NODE_ENV=development.
+// Если NODE_ENV не задан — демо-режим запрещён.
+if (DEMO_MODE && process.env.NODE_ENV !== "development") {
+  console.error("ОШИБКА: DEMO_MODE разрешён только при NODE_ENV=development");
   process.exit(1);
 }
 
