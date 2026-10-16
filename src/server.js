@@ -1,4 +1,5 @@
 const path = require("path");
+const net = require("node:net");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -50,36 +51,73 @@ app.use(cors({ origin: [PUBLIC_ORIGIN], methods: ["POST"], maxAge: 600 }));
 app.use(express.json({ limit: "8kb" }));
 app.use(express.static(path.join(__dirname, "../public")));
 
-// Cooldown: не больше 1 скана в 10 секунд с одного IP.
-// Защита от превращения сканера в DDoS-инструмент.
+// Trust proxy: за прокси/балансировщиком задай TRUST_PROXY=1 (число хопов).
+// Без этого req.ip — адрес прокси, и все клиенты делят одно окно cooldown.
+const TRUST_PROXY = Number(process.env.TRUST_PROXY ?? 0);
+if (Number.isInteger(TRUST_PROXY) && TRUST_PROXY > 0) {
+  app.set("trust proxy", TRUST_PROXY);
+}
+
+// Cooldown: не больше 1 скана в 10 секунд с одного клиента.
+// Ключ нормализует IPv6 до /64 — смена младших бит не даёт новое окно.
 const lastScan = new Map();
 const COOLDOWN_MS = 10_000;
+const MAX_KEYS = 10_000;
 
-// Очистка старых записей раз в 5 минут, чтобы карта не росла бесконечно
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, time] of lastScan.entries()) {
-    if (now - time > 60_000) lastScan.delete(ip);
+// Приводит IPv6 к префиксу /64, IPv4-mapped разворачивает в IPv4.
+function rateKey(ip) {
+  if (!ip) return "unknown";
+
+  // IPv4-mapped IPv6 (::ffff:x.x.x.x) → IPv4
+  const v4 = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (v4) return v4[1];
+
+  // Чистый IPv4 — как есть
+  if (net.isIPv4(ip)) return ip;
+
+  // IPv6 → /64
+  if (net.isIPv6(ip)) {
+    const [head] = ip.split("::");
+    const parts = head.split(":").slice(0, 4);
+    return parts.join(":") + "::/64";
   }
-}, 5 * 60_000).unref();
+
+  return ip;
+}
+
+// Запоминает ключ, вытесняя самую старую запись при переполнении.
+function remember(key, now) {
+  if (lastScan.size >= MAX_KEYS) {
+    lastScan.delete(lastScan.keys().next().value);
+  }
+  lastScan.set(key, now);
+}
 
 // Возвращает число секунд ожидания, если cooldown ещё активен, иначе 0.
-function checkCooldown(ip) {
+function checkCooldown(key) {
   const now = Date.now();
-  const last = lastScan.get(ip) || 0;
+  const last = lastScan.get(key) || 0;
   if (now - last < COOLDOWN_MS) {
     return Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
   }
-  lastScan.set(ip, now);
+  remember(key, now);
   return 0;
 }
+
+// Периодическая чистка: TTL = COOLDOWN_MS (а не 60 сек), интервал 30 сек.
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, time] of lastScan.entries()) {
+    if (now - time > COOLDOWN_MS) lastScan.delete(key);
+  }
+}, 30_000).unref();
 
 // Основной эндпоинт сканирования
 app.post("/api/scan", async (req, res) => {
   const ip = req.ip;
 
-  // Проверка cooldown до всех остальных проверок
-  const wait = checkCooldown(ip);
+  // Сначала — лимит частоты (ключ нормализует IPv6 до /64)
+  const wait = checkCooldown(rateKey(ip));
   if (wait > 0) {
     return res.status(429).json({
       error: `Подожди ${wait} сек. перед следующим сканом`,
