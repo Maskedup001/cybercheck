@@ -116,17 +116,17 @@ app.post("/api/scan", async (req, res) => {
 
   const hostname = parsed.hostname.toLowerCase();
 
-  // 5. Логирование — после валидации (защита от log injection)
-  console.log(
-    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${ip}`,
-  );
-
-  // 6. Валидация формата: localhost, домен, или IPv4-адрес
+  // 5. Валидация формата: localhost, домен, или IPv4-адрес
   const hostRegex =
     /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
   if (!hostRegex.test(hostname)) {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
+
+  // 6. Логирование — после валидации (защита от log injection)
+  console.log(
+    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${ip}`,
+  );
 
   // ===== SSRF-ЗАЩИТА =====
   // Резолвим DNS и проверяем, что все полученные IP публичные.
