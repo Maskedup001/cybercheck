@@ -50,7 +50,7 @@ cp .env.example .env
 Для локальной демонстрации на `localhost` (тестовый стенд) используется переменная окружения:
 
 ```bash
-DEMO_MODE=true npm start
+DEMO_MODE=true NODE_ENV=development npm start
 ```
 
 В этом режиме разрешено сканирование `localhost` — для показа работы сканера на тестовом стенде.
