@@ -1,15 +1,15 @@
-const path = require('path');
-const express = require('express');
-const cors = require('cors');
-const { checkPort, checkSSL, checkHeaders } = require('./checks');
-const { resolvePublicIps } = require('./net-guard');
+const path = require("path");
+const express = require("express");
+const cors = require("cors");
+const { checkPort, checkSSL, checkHeaders } = require("./checks");
+const { resolvePublicIps } = require("./net-guard");
 
 // DEMO_MODE включает сканирование localhost — только для локальной демонстрации
-const DEMO_MODE = process.env.DEMO_MODE === 'true';
+const DEMO_MODE = process.env.DEMO_MODE === "true";
 
 // Защита от случайного включения DEMO_MODE в продакшене
-if (DEMO_MODE && process.env.NODE_ENV === 'production') {
-  console.error('ОШИБКА: DEMO_MODE запрещён в production');
+if (DEMO_MODE && process.env.NODE_ENV === "production") {
+  console.error("ОШИБКА: DEMO_MODE запрещён в production");
   process.exit(1);
 }
 
@@ -17,10 +17,10 @@ const app = express();
 
 // CORS: разрешаем запросы только с доверенного origin.
 // PUBLIC_ORIGIN задаётся в .env, если не задан — '*' для локальной разработки.
-const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || '*';
-app.use(cors({ origin: PUBLIC_ORIGIN, methods: ['POST'] }));
+const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || "*";
+app.use(cors({ origin: PUBLIC_ORIGIN, methods: ["POST"] }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, "../public")));
 
 // Cooldown: не больше 1 скана в 10 секунд с одного IP.
 // Защита от превращения сканера в DDoS-инструмент.
@@ -47,52 +47,63 @@ function checkCooldown(ip) {
 }
 
 // Основной эндпоинт сканирования
-app.post('/api/scan', async (req, res) => {
+app.post("/api/scan", async (req, res) => {
   const ip = req.ip;
 
   // Проверка cooldown до всех остальных проверок
   const wait = checkCooldown(ip);
   if (wait > 0) {
     return res.status(429).json({
-      error: `Подожди ${wait} сек. перед следующим сканом`
+      error: `Подожди ${wait} сек. перед следующим сканом`,
     });
   }
 
   const { url, consent, consentTimestamp } = req.body;
 
-  // Логирование запроса (URL + IP клиента)
-  console.log(`[${new Date().toISOString()}] Сканирование: ${url || 'пусто'} | IP: ${ip}`);
+  // 1. Проверка типа url — защита от 500 со стеком
+  if (typeof url !== "string" || url.length === 0 || url.length > 253) {
+    return res.status(400).json({ error: "Некорректный адрес" });
+  }
 
-  // Проверка согласия на сканирование
+  // 2. Проверка согласия
   if (!consent) {
     return res.status(400).json({
-      error: 'Подтверди, что у тебя есть право на проверку'
+      error: "Подтверди, что у тебя есть право на проверку",
     });
   }
 
-  // Согласие действует 5 минут — чтобы нельзя было поставить галочку один раз и сканировать часами
-  const CONSENT_MAX_AGE = 5 * 60 * 1000;
-  if (!consentTimestamp || Date.now() - consentTimestamp > CONSENT_MAX_AGE) {
+  // 3. Проверка timestamp — защита от NaN и подделки из будущего
+  const ts = Number(consentTimestamp);
+  if (
+    !Number.isFinite(ts) ||
+    Date.now() - ts > 300_000 ||
+    ts - Date.now() > 60_000
+  ) {
     return res.status(400).json({
-      error: 'Подтверждение устарело, обнови страницу'
+      error: "Подтверждение устарело, обнови страницу",
     });
   }
 
-  if (!url) {
-    return res.status(400).json({ error: 'URL не указан' });
+  // 4. Парсинг URL через стандартный new URL()
+  let parsed;
+  try {
+    parsed = new URL(url.includes("://") ? url : `http://${url}`);
+  } catch {
+    return res.status(400).json({ error: "Некорректный адрес" });
   }
 
-  // Чистим URL: убираем схему (http://) и путь (/page)
-  const hostname = url
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/.*$/, '')
-    .trim()
-    .toLowerCase();
+  const hostname = parsed.hostname.toLowerCase();
 
-  // Валидация формата: localhost, домен, или IPv4-адрес
-  const hostRegex = /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
+  // 5. Логирование — после валидации (защита от log injection)
+  console.log(
+    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${ip}`,
+  );
+
+  // 6. Валидация формата: localhost, домен, или IPv4-адрес
+  const hostRegex =
+    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
   if (!hostRegex.test(hostname)) {
-    return res.status(400).json({ error: 'Некорректный адрес' });
+    return res.status(400).json({ error: "Некорректный адрес" });
   }
 
   // ===== SSRF-ЗАЩИТА =====
@@ -101,7 +112,10 @@ app.post('/api/scan', async (req, res) => {
   // когда между проверкой и подключением домен может сменить адрес.
   let connectIp;
 
-  if (DEMO_MODE && (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1')) {
+  if (
+    DEMO_MODE &&
+    (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")
+  ) {
     // Демо-режим: localhost разрешён для показа на тестовом стенде
     connectIp = hostname;
   } else {
@@ -109,12 +123,12 @@ app.post('/api/scan', async (req, res) => {
     try {
       resolvedIps = await resolvePublicIps(hostname);
     } catch (e) {
-      return res.status(400).json({ error: 'Не удалось разрешить адрес' });
+      return res.status(400).json({ error: "Не удалось разрешить адрес" });
     }
 
     if (resolvedIps.length === 0) {
       return res.status(400).json({
-        error: 'Сканирование внутренних адресов запрещено'
+        error: "Сканирование внутренних адресов запрещено",
       });
     }
 
@@ -125,14 +139,14 @@ app.post('/api/scan', async (req, res) => {
   try {
     // Проверяем все порты параллельно
     const ports = await Promise.all(
-      [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p))
+      [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p)),
     );
 
-    const openPorts = ports.filter((p) => p.status === 'open');
+    const openPorts = ports.filter((p) => p.status === "open");
 
     // Ищем веб-порт по приоритету: 443 → 80 → 8080
     const webPort = [443, 80, 8080].find((p) =>
-      openPorts.some((op) => op.port === p)
+      openPorts.some((op) => op.port === p),
     );
 
     // Если веб-порт не найден — SSL и заголовки проверить негде
@@ -141,7 +155,7 @@ app.post('/api/scan', async (req, res) => {
         host: hostname,
         ports: openPorts,
         ssl: { hasSSL: false },
-        headers: { error: true }
+        headers: { error: true },
       });
     }
 
@@ -152,10 +166,10 @@ app.post('/api/scan', async (req, res) => {
       host: hostname,
       ports: openPorts,
       ssl,
-      headers
+      headers,
     });
   } catch (e) {
-    res.status(500).json({ error: 'Ошибка сканирования' });
+    res.status(500).json({ error: "Ошибка сканирования" });
   }
 });
 
@@ -163,6 +177,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Сканер запущен: http://localhost:${PORT}`);
   if (DEMO_MODE) {
-    console.log('[DEMO_MODE] localhost разрешён для сканирования');
+    console.log("[DEMO_MODE] localhost разрешён для сканирования");
   }
 });
