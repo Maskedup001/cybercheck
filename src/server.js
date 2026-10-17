@@ -186,9 +186,21 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: message });
 });
 
+// Healthcheck для хостингов (Render, Railway и т.д.)
+app.get("/healthz", (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Сканер запущен: http://localhost:${PORT}`);
   console.log(`[CORS] разрешён origin: ${PUBLIC_ORIGIN}`);
   if (DEMO_MODE) console.log("[DEMO_MODE] localhost разрешён");
 });
+
+// Graceful shutdown (корректное завершение при SIGTERM/SIGINT)
+for (const sig of ["SIGTERM", "SIGINT"]) {
+  process.on(sig, () => {
+    console.log(`${sig}: останавливаюсь...`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 10_000).unref();
+  });
+}

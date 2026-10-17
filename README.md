@@ -58,6 +58,7 @@ Copy-Item .env.example .env
 | `PUBLIC_ORIGIN` | — | **Обязательно.** Origin фронтенда для CORS (например, `http://localhost:3000`) |
 | `DEMO_MODE` | `false` | Разрешает сканирование `localhost` (только при `NODE_ENV=development`) |
 | `NODE_ENV` | — | `development` или `production`. Влияет на `DEMO_MODE` и обработку ошибок |
+| `TRUST_PROXY` | `0` | Количество доверенных прокси перед сервером (1 — для Render) |
 
 **Важно:** настоящий `.env` не попадает в Git — он добавлен в `.gitignore`.
 
@@ -113,6 +114,8 @@ cybercheck/
 │   ├── server.js               # Точка входа, Express-сервер
 │   ├── checks.js               # Проверки портов, SSL, заголовков
 │   └── net-guard.js            # SSRF-защита: isPublicIp, resolvePublicIps
+├── test/
+│   └── net-guard.test.js       # Unit-тесты для SSRF-защиты
 ├── public/                     # Клиентская часть
 │   ├── index.html              # Страница
 │   ├── style.css               # Стили
