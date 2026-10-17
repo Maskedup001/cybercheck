@@ -29,7 +29,7 @@ app.use(
       directives: {
         "default-src": ["'self'"],
         "script-src": ["'self'"],
-        "style-src": ["'self'", "'unsafe-inline'"], // нужно для inline-стилей в index.html
+        "style-src": ["'self'"],
         "object-src": ["'none'"],
         "frame-ancestors": ["'none'"],
         "base-uri": ["'self'"],
