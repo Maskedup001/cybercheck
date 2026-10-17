@@ -70,6 +70,9 @@ function render(d) {
   out += "\n=== SSL ===\n";
   if (d.ssl.hasSSL) {
     out += `  Сертификат: ${d.ssl.valid ? "валиден" : "невалиден"}\n`;
+    if (!d.ssl.valid && d.ssl.verifyError) {
+      out += `  Причина: ${d.ssl.verifyError}\n`; // <-- выводим причину
+    }
     out += `  Истекает: ${d.ssl.validTo || "н/д"}\n`;
     out += `  Осталось дней: ${d.ssl.daysLeft ?? "н/д"}\n`;
     out += `  Издатель: ${d.ssl.issuer || "неизвестен"}\n`;

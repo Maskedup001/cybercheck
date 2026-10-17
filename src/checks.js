@@ -49,7 +49,8 @@ function checkSSL(connectIp, port, hostname) {
           return resolve({ hasSSL: false });
         }
 
-        const valid = socket.authorized;
+        const verifyError = socket.authorizationError || null;
+        const valid = verifyError === null;
         const daysLeft = Math.floor(
           (new Date(cert.valid_to) - Date.now()) / 86400000
         );
@@ -58,9 +59,10 @@ function checkSSL(connectIp, port, hostname) {
         resolve({
           hasSSL: true,
           valid,
+          verifyError, // <-- добавляем причину ошибки в ответ
           daysLeft,
           validTo: cert.valid_to,
-          issuer: cert.issuer?.O || 'неизвестен'
+          issuer: cert.issuer?.O || "неизвестен",
         });
       }
     );
