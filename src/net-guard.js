@@ -21,13 +21,31 @@ function isPublicIp(ip) {
   // 2. Проверяем NAT64 (64:ff9b::/96)
   if (addr.kind() === "ipv6" && addr.match(ipaddr.parse("64:ff9b::"), 96)) {
     const ipv4 = new ipaddr.IPv4([
-      addr.parts[6] >> 8, addr.parts[6] & 0xff,
-      addr.parts[7] >> 8, addr.parts[7] & 0xff
+      addr.parts[6] >> 8,
+      addr.parts[6] & 0xff,
+      addr.parts[7] >> 8,
+      addr.parts[7] & 0xff,
     ]);
     return isPublicIp(ipv4.toString());
   }
 
-  // 3. Проверяем диапазон. range() вернёт 'unicast' только для реальных публичных адресов.
+  // 3. Проверяем NAT64 (64:ff9b::/96)
+  if (addr.kind() === "ipv6" && addr.match(ipaddr.parse("64:ff9b::"), 96)) {
+    const ipv4 = new ipaddr.IPv4([
+      addr.parts[6] >> 8,
+      addr.parts[6] & 0xff,
+      addr.parts[7] >> 8,
+      addr.parts[7] & 0xff,
+    ]);
+    return isPublicIp(ipv4.toString());
+  }
+
+  // 4. Блокируем IPv4-compatible (::/96) - устаревший класс
+  if (addr.kind() === "ipv6" && addr.match(ipaddr.parse("::"), 96)) {
+    return false;
+  }
+
+  // 5. Проверяем диапазон. range() вернёт 'unicast' только для реальных публичных адресов.
   // Всё остальное (private, loopback, linkLocal, uniqueLocal, carrierGradeNat) отсекается.
   return addr.range() === "unicast";
 }
