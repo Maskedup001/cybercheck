@@ -40,7 +40,7 @@ jobs:
 
       - name: Start server and healthcheck
         env:
-          PUBLIC_ORIGIN: https://localhost:3000
+          PUBLIC_ORIGIN: http://localhost:3000
         run: |
           node src/server.js &
           SERVER_PID=$!
