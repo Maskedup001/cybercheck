@@ -31,6 +31,9 @@ jobs:
       - name: Check server.js syntax
         run: node --check src/server.js
 
+      - name: Run tests
+        run: npm test
+
       - name: Start server and healthcheck
         env:
           PUBLIC_ORIGIN: https://localhost:3000
