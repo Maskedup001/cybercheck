@@ -11,7 +11,16 @@ let PUBLIC_ORIGIN;
 try {
   PUBLIC_ORIGIN = new URL(process.env.PUBLIC_ORIGIN ?? "").origin;
 } catch {
-  console.error("ОШИБКА: PUBLIC_ORIGIN должен быть валидным origin, например http://localhost:3000");
+  console.error(
+    "ОШИБКА: PUBLIC_ORIGIN должен быть валидным origin, например http://localhost:3000",
+  );
+  process.exit(1);
+}
+
+if (PUBLIC_ORIGIN === "null") {
+  console.error(
+    "ОШИБКА: PUBLIC_ORIGIN должен быть http(s)-origin, например http://localhost:3000",
+  );
   process.exit(1);
 }
 
@@ -105,17 +114,19 @@ app.post("/api/scan", async (req, res) => {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
   if (consent !== true) {
-    return res.status(400).json({ error: "Подтверди, что у тебя есть право на проверку" });
+    return res
+      .status(400)
+      .json({ error: "Подтверди, что у тебя есть право на проверку" });
   }
   const ts = Number(consentTimestamp);
-  if (!Number.isFinite(ts) || Date.now() - ts > 300_000 || ts - Date.now() > 60_000) {
-    return res.status(400).json({ error: "Подтверждение устарело, обнови страницу" });
-  }
-
-  // 4. Теперь лимит
-  const wait = checkCooldown(rateKey(ip));
-  if (wait > 0) {
-    return res.status(429).json({ error: `Подожди ${wait} сек. перед следующим сканом` });
+  if (
+    !Number.isFinite(ts) ||
+    Date.now() - ts > 300_000 ||
+    ts - Date.now() > 60_000
+  ) {
+    return res
+      .status(400)
+      .json({ error: "Подтверждение устарело, обнови страницу" });
   }
 
   let parsed;
@@ -126,15 +137,30 @@ app.post("/api/scan", async (req, res) => {
   }
   const hostname = parsed.hostname.toLowerCase();
 
-  console.log(`[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${ip}`);
-
-  const hostRegex = /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
+  const hostRegex =
+    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
   if (!hostRegex.test(hostname)) {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
 
+  // 4. Лимит частоты срабатывает ТОЛЬКО для валидных запросов
+  const wait = checkCooldown(rateKey(ip));
+  if (wait > 0) {
+    return res
+      .status(429)
+      .json({ error: `Подожди ${wait} сек. перед следующим сканом` });
+  }
+
+  // 5. Логируем ПОСЛЕ валидации (защита от log injection)
+  console.log(
+    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${ip}`,
+  );
+
   let connectIp;
-  if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) {
+  if (
+    DEMO_MODE &&
+    (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")
+  ) {
     connectIp = hostname;
   } else {
     let resolvedIps;
@@ -145,18 +171,29 @@ app.post("/api/scan", async (req, res) => {
     }
 
     if (resolvedIps.length === 0) {
-      return res.status(400).json({ error: "Сканирование внутренних адресов запрещено" });
+      return res
+        .status(400)
+        .json({ error: "Сканирование внутренних адресов запрещено" });
     }
     connectIp = resolvedIps[0];
   }
 
   try {
-    const ports = await Promise.all([80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p)));
+    const ports = await Promise.all(
+      [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p)),
+    );
     const openPorts = ports.filter((p) => p.status === "open");
-    const webPort = [443, 80, 8080].find((p) => openPorts.some((op) => op.port === p));
+    const webPort = [443, 80, 8080].find((p) =>
+      openPorts.some((op) => op.port === p),
+    );
 
     if (!webPort) {
-      return res.json({ host: hostname, ports: openPorts, ssl: { hasSSL: false }, headers: { error: true } });
+      return res.json({
+        host: hostname,
+        ports: openPorts,
+        ssl: { hasSSL: false },
+        headers: { error: true },
+      });
     }
 
     const ssl = await checkSSL(connectIp, webPort, hostname);
@@ -176,18 +213,23 @@ app.use((err, req, res, next) => {
   console.error(`[scan] ${status} ${req.method} ${req.originalUrl}`);
   console.error(err.stack || err);
   if (res.headersSent) return next(err);
-  
-  const message = 
-    status === 413 ? "Слишком большой запрос" 
-    : status === 400 ? "Некорректный запрос" 
-    : status === 429 ? "Слишком много запросов" 
-    : "Внутренняя ошибка сервера";
-    
+
+  const message =
+    status === 413
+      ? "Слишком большой запрос"
+      : status === 400
+        ? "Некорректный запрос"
+        : status === 429
+          ? "Слишком много запросов"
+          : "Внутренняя ошибка сервера";
+
   res.status(status).json({ error: message });
 });
 
 // Healthcheck для хостингов (Render, Railway и т.д.)
-app.get("/healthz", (req, res) => res.json({ ok: true, uptime: process.uptime() }));
+app.get("/healthz", (req, res) =>
+  res.json({ ok: true, uptime: process.uptime() }),
+);
 
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
