@@ -207,7 +207,7 @@ app.post("/api/scan", async (req, res) => {
   }
 });
 
-// 5. Улучшенный Error Handler (NEW-06)
+// 6. Улучшенный Error Handler (NEW-06)
 app.use((err, req, res, next) => {
   const raw = err.status || err.statusCode || 500;
   const status = raw >= 400 && raw < 600 ? raw : 500;
