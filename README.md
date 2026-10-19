@@ -6,6 +6,8 @@
 
 Учебный проект — сканер безопасности веб-сайтов (МЭИ, Проектная деятельность).
 
+Документация: [архитектура и модель угроз](docs/architecture.md) · [политика безопасности](.github/SECURITY.md) · [DISCLAIMER](DISCLAIMER.md).
+
 ## Что проверяет
 
 - Открытые порты (80, 443, 22, 3306, 8080)
@@ -55,10 +57,10 @@ Copy-Item .env.example .env
 | Переменная | Значение по умолчанию | Описание |
 |---|---|---|
 | `PORT` | `3000` | Порт, на котором запускается сервер |
-| `PUBLIC_ORIGIN` | — | **Обязательно.** Origin фронтенда для CORS (например, `http://localhost:3000`) |
+| `PUBLIC_ORIGIN` | — | **Обязательно.** Origin фронтенда для CORS (например, `http://localhost:3000`). Указывать без завершающего слэша, иначе он не совпадёт с заголовком `Origin` от браузера |
 | `DEMO_MODE` | `false` | Разрешает сканирование `localhost` (только при `NODE_ENV=development`) |
-| `NODE_ENV` | — | `development` или `production`. Влияет на `DEMO_MODE` и обработку ошибок |
-| `TRUST_PROXY` | `0` | Количество доверенных прокси перед сервером (1 — для Render) |
+| `NODE_ENV` | — | `development` или `production`. Включает `DEMO_MODE`. На утечку стека в ответах **не влияет**: свой error handler отдаёт JSON без деталей всегда |
+| `TRUST_PROXY` | `0` | Количество доверенных прокси перед сервером (1 — для Render). Включать **только** если приложение недоступно напрямую: при `>0` адрес клиента берётся из `X-Forwarded-For` |
 
 **Важно:** настоящий `.env` не попадает в Git — он добавлен в `.gitignore`.
 
@@ -75,6 +77,39 @@ PUBLIC_ORIGIN=http://localhost:3000 DEMO_MODE=true NODE_ENV=development npm star
 Требуется явное `NODE_ENV=development`. Если `NODE_ENV` не задан или не `development` — сервер откажется запускаться с `DEMO_MODE=true`. Это защита от случайного включения демо-режима в продакшене.
 
 **В продакшене `DEMO_MODE` не включается** — внутренние адреса остаются заблокированными.
+
+## Тестирование
+
+```bash
+npm test          # node --test test/net-guard.test.js
+```
+
+Покрыто: классификация IP-адресов в SSRF-защите (`isPublicIp`) — 24 адреса в обе стороны (приватные и служебные блокируются, публичные разрешаются) плюс fail-closed на мусорный ввод. Это та часть, на которой держится вся защита от SSRF, и она проверяется без сети.
+
+Не покрыто: `resolvePublicIps` (внутри вшит `dns.lookup`), `rateKey`, HTTP-слой (`server.js` выполняет `exit`/`listen` при импорте). Как это закрыть — в [архитектуре](docs/architecture.md), раздел «Тестирование».
+
+## Деплой
+
+Четыре шага, которых достаточно для публичного запуска:
+
+```bash
+NODE_ENV=production \
+PUBLIC_ORIGIN=https://ваш-домен \
+TRUST_PROXY=1 \
+npm start
+```
+
+```powershell
+# Windows PowerShell
+$env:NODE_ENV="production"; $env:PUBLIC_ORIGIN="https://ваш-домен"; $env:TRUST_PROXY="1"; npm start
+```
+
+- **`NODE_ENV=production`** — боевой режим Express. На утечку стека не влияет (за это отвечает свой error handler), но убирает отладочные тексты 404 и лишний вывод.
+- **`PUBLIC_ORIGIN`** — ровно тот origin, с которого открывается фронтенд. Схема и порт должны совпадать.
+- **`TRUST_PROXY`** — только если перед приложением стоит прокси (nginx, Render, Cloudflare) и приложение **недоступно напрямую**. Иначе значение `1` позволит клиенту подделать свой адрес.
+- **Внешний rate-limit** — обязателен. Встроенный ограничитель живёт в памяти процесса и обходится распределённым источником; см. «Известные ограничения». На PaaS (Render, Railway) переменные задаются в панели, а не в командной строке.
+
+`DEMO_MODE` в продакшене не включается: сервер откажется запускаться, если `NODE_ENV` не `development`.
 
 ## Безопасность и ограничения
 
@@ -108,8 +143,9 @@ PUBLIC_ORIGIN=http://localhost:3000 DEMO_MODE=true NODE_ENV=development npm star
 ```
 cybercheck/
 ├── .github/
-│   └── workflows/
-│       └── ci.yml              # GitHub Actions: проверка при пуше
+│   ├── workflows/
+│   │   └── ci.yml              # GitHub Actions: проверка при пуше
+│   └── SECURITY.md             # Политика безопасности (вкладка Security)
 ├── src/                        # Серверная часть
 │   ├── server.js               # Точка входа, Express-сервер
 │   ├── checks.js               # Проверки портов, SSL, заголовков
@@ -120,6 +156,8 @@ cybercheck/
 │   ├── index.html              # Страница
 │   ├── style.css               # Стили
 │   └── script.js               # Логика фронта
+├── docs/
+│   └── architecture.md         # Архитектура, модель доверия и угроз
 ├── .env.example                # Шаблон переменных окружения
 ├── .gitignore
 ├── package.json
@@ -130,6 +168,8 @@ cybercheck/
 ```
 
 > `node_modules/` создаётся автоматически после `npm install` и не хранится в репозитории.
+>
+> `SECURITY.md` лежит в `.github/` — именно оттуда GitHub показывает его на вкладке **Security**. При переносе в любую другую папку вкладка исчезнет.
 
 ## Disclaimer
 
