@@ -7,9 +7,9 @@ const { checkPort, checkSSL, checkHeaders } = require("./checks");
 const { resolvePublicIps } = require("./net-guard");
 
 // 1. Строгая проверка PUBLIC_ORIGIN (NEW-02)
-let PUBLIC_ORIGIN;
+let parsedOrigin;
 try {
-  PUBLIC_ORIGIN = new URL(process.env.PUBLIC_ORIGIN ?? "").origin;
+  parsedOrigin = new URL(process.env.PUBLIC_ORIGIN ?? "");
 } catch {
   console.error(
     "ОШИБКА: PUBLIC_ORIGIN должен быть валидным origin, например http://localhost:3000",
@@ -17,12 +17,12 @@ try {
   process.exit(1);
 }
 
-if (PUBLIC_ORIGIN === "null") {
-  console.error(
-    "ОШИБКА: PUBLIC_ORIGIN должен быть http(s)-origin, например http://localhost:3000",
-  );
+if (!["http:", "https:"].includes(parsedOrigin.protocol)) {
+  console.error("ОШИБКА: PUBLIC_ORIGIN должен использовать http или https");
   process.exit(1);
 }
+
+const PUBLIC_ORIGIN = parsedOrigin.origin;
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 if (DEMO_MODE && process.env.NODE_ENV !== "development") {
