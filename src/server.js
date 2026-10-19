@@ -52,6 +52,7 @@ app.use(
         "base-uri": ["'self'"],
       },
     },
+		xFrameOptions: { action: "deny" },
     referrerPolicy: { policy: "no-referrer" },
   }),
 );
