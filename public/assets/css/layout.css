@@ -1,0 +1,4 @@
+.container { width: 100%; max-width: var(--container-max); margin-inline: auto; }
+.site-header { margin-bottom: var(--space-10); text-align: center; }
+.site-header__title { margin-bottom: var(--space-2); color: var(--color-accent); font-size: var(--font-size-display); line-height: var(--leading-tight); }
+.site-header__subtitle { color: var(--color-text-muted); font-size: var(--font-size-base); }

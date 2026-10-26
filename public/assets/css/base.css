@@ -1,0 +1,9 @@
+body {
+  min-height: 100vh;
+  padding: var(--space-10) var(--container-pad);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  line-height: var(--leading-relaxed);
+}

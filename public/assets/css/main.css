@@ -1,0 +1,10 @@
+@import url("tokens.css");
+@import url("reset.css");
+@import url("base.css");
+@import url("layout.css");
+@import url("utilities.css");
+@import url("components/button.css");
+@import url("components/scan-form.css");
+@import url("components/consent.css");
+@import url("components/result.css");
+@import url("print.css");

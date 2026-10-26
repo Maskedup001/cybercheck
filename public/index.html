@@ -2,9 +2,13 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="description" content="CyberCheck — экспресс-проверка безопасности сайта: порты, SSL, security-заголовки.">
   <title>CyberCheck — Проверка безопасности сайта</title>
-  <link rel="stylesheet" href="/assets/css/style.css">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <!-- Подключаем главный CSS, который импортирует все остальные -->
+  <link rel="stylesheet" href="/assets/css/main.css">
 </head>
 <body>
   <main class="container">
@@ -33,6 +37,7 @@
 
     <section class="result" data-js="result" aria-label="Результаты проверки" hidden>
       <header class="result__header">
+        <p class="result__brand">CyberCheck</p>
         <h2 class="result__title">Отчёт о проверке</h2>
         <dl class="result__meta">
           <div class="result__meta-item">
@@ -54,7 +59,9 @@
 
       <footer class="report-footer">
         <p class="report-footer__text">Отчёт сформирован автоматически и не заменяет полноценный аудит. Проверка выполнена с согласия владельца.</p>
-        <p class="report-footer__meta">CyberCheck · <span data-js="report-date-footer"></span></p>
+        <p class="report-footer__meta">
+          <a href="/legal.html" style="color: inherit;">Пользовательское соглашение</a> · CyberCheck · <span data-js="report-date-footer"></span>
+        </p>
       </footer>
     </section>
   </main>

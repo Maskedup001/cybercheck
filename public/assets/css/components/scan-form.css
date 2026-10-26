@@ -1,0 +1,16 @@
+.scan-form { margin-bottom: 16px; }
+.scan-form__row { display: flex; flex-direction: column; gap: var(--space-3); }
+.scan-form__field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.scan-form__input {
+  width: 100%; min-width: 0; min-height: var(--control-height);
+  padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text);
+  font-family: var(--font-sans); font-size: var(--font-size-base);
+}
+.scan-form__input:focus-visible { border-color: var(--color-accent); outline: 2px solid var(--color-focus); outline-offset: 2px; }
+.scan-form__error { color: var(--color-danger); font-size: var(--font-size-sm); margin-top: 8px; }
+.scan-form__submit { width: 100%; }
+@media (min-width: 40em) {
+  .scan-form__row { flex-direction: row; align-items: flex-start; }
+  .scan-form__submit { width: auto; flex: 0 0 auto; }
+}
