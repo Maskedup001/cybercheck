@@ -1,7 +1,7 @@
-const net = require('net');
-const tls = require('tls');
-const https = require('https');
-const http = require('http');
+const net = require("net");
+const tls = require("tls");
+const https = require("https");
+const http = require("http");
 
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
@@ -9,18 +9,18 @@ const http = require('http');
 function checkPort(connectIp, port, timeout = 3000) {
   return new Promise((resolve) => {
     const socket = new net.Socket();
-    let status = 'closed';
+    let status = "closed";
 
     socket.setTimeout(timeout);
 
-    socket.on('connect', () => {
-      status = 'open';
+    socket.on("connect", () => {
+      status = "open";
       socket.destroy();
     });
 
-    socket.on('timeout', () => socket.destroy());
-    socket.on('error', () => {});
-    socket.on('close', () => resolve({ port, status }));
+    socket.on("timeout", () => socket.destroy());
+    socket.on("error", () => {});
+    socket.on("close", () => resolve({ port, status }));
 
     socket.connect(port, connectIp);
   });
@@ -52,7 +52,7 @@ function checkSSL(connectIp, port, hostname) {
         const verifyError = socket.authorizationError || null;
         const valid = verifyError === null;
         const daysLeft = Math.floor(
-          (new Date(cert.valid_to) - Date.now()) / 86400000
+          (new Date(cert.valid_to) - Date.now()) / 86400000,
         );
 
         socket.end();
@@ -61,13 +61,13 @@ function checkSSL(connectIp, port, hostname) {
           valid,
           verifyError, // <-- добавляем причину ошибки в ответ
           daysLeft,
-          validTo: cert.valid_to,
+          validToISO: new Date(cert.valid_to).toISOString(),
           issuer: cert.issuer?.O || "неизвестен",
         });
-      }
+      },
     );
 
-    socket.on('error', () => resolve({ hasSSL: false }));
+    socket.on("error", () => resolve({ hasSSL: false }));
     socket.setTimeout(3000, () => {
       socket.destroy();
       resolve({ hasSSL: false });
@@ -89,13 +89,13 @@ function checkHeaders(connectIp, port, hostname) {
       const req = http.get(
         { host: connectIp, port, headers: { Host: hostname }, timeout: 5000 },
         (res) => {
-          resolve(parseHeaders(res.headers, 'HTTP'));
+          resolve(parseHeaders(res.headers, "HTTP"));
           res.destroy();
-        }
+        },
       );
 
-      req.on('error', () => resolve({ error: true }));
-      req.on('timeout', () => {
+      req.on("error", () => resolve({ error: true }));
+      req.on("timeout", () => {
         req.destroy();
         resolve({ error: true });
       });
@@ -110,16 +110,16 @@ function checkHeaders(connectIp, port, hostname) {
           servername,
           rejectUnauthorized: false,
           headers: { Host: hostname },
-          timeout: 5000
+          timeout: 5000,
         },
         (res) => {
-          resolve(parseHeaders(res.headers, 'HTTPS'));
+          resolve(parseHeaders(res.headers, "HTTPS"));
           res.destroy();
-        }
+        },
       );
 
-      req.on('error', tryHttp);
-      req.on('timeout', () => {
+      req.on("error", tryHttp);
+      req.on("timeout", () => {
         req.destroy();
         tryHttp();
       });
@@ -134,11 +134,11 @@ function checkHeaders(connectIp, port, hostname) {
 function parseHeaders(h, protocol) {
   return {
     protocol,
-    server: h['server'] || 'не указан',
-    csp: !!h['content-security-policy'],
-    xframe: !!h['x-frame-options'],
-    hsts: !!h['strict-transport-security'],
-    xcontent: !!h['x-content-type-options']
+    server: h["server"] || "не указан",
+    csp: !!h["content-security-policy"],
+    xframe: !!h["x-frame-options"],
+    hsts: !!h["strict-transport-security"],
+    xcontent: !!h["x-content-type-options"],
   };
 }
 

@@ -52,7 +52,7 @@ app.use(
         "base-uri": ["'self'"],
       },
     },
-		xFrameOptions: { action: "deny" },
+    xFrameOptions: { action: "deny" },
     referrerPolicy: { policy: "no-referrer" },
   }),
 );
@@ -106,6 +106,7 @@ setInterval(() => {
 }, 30_000).unref();
 
 app.post("/api/scan", async (req, res) => {
+  res.set("Cache-Control", "no-store");
   const ip = req.ip;
 
   // 3. Сначала валидация (NEW-03), чтобы мусорные запросы не жгли лимит
@@ -139,7 +140,7 @@ app.post("/api/scan", async (req, res) => {
   const hostname = parsed.hostname.toLowerCase();
 
   const hostRegex =
-    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
+    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3}|\[[a-f0-9:]+\])$/;
   if (!hostRegex.test(hostname)) {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
@@ -244,6 +245,6 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {
     console.log(`${sig}: останавливаюсь...`);
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 10_000).unref();
+    setTimeout(() => process.exit(1), 20_000).unref();
   });
 }

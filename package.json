@@ -2,6 +2,8 @@
   "name": "cybercheck",
   "version": "1.0.0",
   "main": "src/server.js",
+  "private": true,
+  "engines": { "node": ">=22 <25" },
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test test/net-guard.test.js"
