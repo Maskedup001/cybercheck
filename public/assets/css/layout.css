@@ -22,3 +22,13 @@
 .page-footer__divider {
   margin: 0 var(--space-2);
 }
+
+/* --- Legal Page --- */
+.legal { padding-top: var(--space-10); max-width: 800px; }
+.legal__header { text-align: left; margin-bottom: var(--space-6); }
+.legal__title { font-size: var(--font-size-xl); color: var(--color-text); margin-bottom: var(--space-2); }
+.legal__subtitle { color: var(--color-text-muted); font-size: var(--font-size-base); }
+.legal__section { margin-bottom: var(--space-6); }
+.legal__section-title { font-size: var(--font-size-lg); color: var(--color-accent); margin-bottom: var(--space-3); border-bottom: 1px solid var(--color-border); padding-bottom: 4px; }
+.legal__text { color: var(--color-text-muted); line-height: 1.6; margin-bottom: var(--space-4); }
+.legal__back { text-decoration: none; display: inline-block; }
