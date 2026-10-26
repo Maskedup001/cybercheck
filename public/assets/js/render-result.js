@@ -1,4 +1,6 @@
 export function renderResult(container, body, report) {
+  document.title = `CyberCheck_${report.host}_${new Date().toISOString().slice(0, 10)}`;
+
   // 1. Заполняем шапку через безопасный textContent
   const dateStr = new Date().toLocaleString("ru-RU");
 
