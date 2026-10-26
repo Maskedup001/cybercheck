@@ -61,7 +61,8 @@ function checkSSL(connectIp, port, hostname) {
           valid,
           verifyError, // <-- добавляем причину ошибки в ответ
           daysLeft,
-          validToISO: new Date(cert.valid_to).toISOString(),
+          validTo: cert.valid_to,
+          validToISO: cert.valid_to ? new Date(cert.valid_to).toISOString() : null,
           issuer: cert.issuer?.O || "неизвестен",
         });
       },
