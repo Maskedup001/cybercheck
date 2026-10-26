@@ -13,5 +13,4 @@
   .result__value { display: inline; }
   .result__status { border: 0.5pt solid currentColor; background: transparent !important; }
   .result__status--good { color: green !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .result__status--bad { color: red !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-}
+.result__status--bad { color: #991b1b !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
