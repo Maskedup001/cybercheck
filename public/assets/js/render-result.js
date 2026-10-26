@@ -93,8 +93,13 @@ export function renderResult(container, body, report) {
       const errStatus = createStatus(false, report.ssl.verifyError);
       ssl.rowsContainer.appendChild(createRow("Причина", errStatus));
     }
-        const daysLeft = report.ssl.daysLeft;
-    const validToText = report.ssl.validTo || "н/д";
+    const daysLeft = report.ssl.daysLeft;
+    const validToText = report.ssl.validTo
+      ? new Date(report.ssl.validTo).toLocaleString("ru-RU", {
+          dateStyle: "medium",
+          timeStyle: "short",
+        })
+      : "н/д";
     let daysText = "";
 
     if (daysLeft !== undefined && daysLeft !== null) {
@@ -107,7 +112,9 @@ export function renderResult(container, body, report) {
       }
     }
 
-    ssl.rowsContainer.appendChild(createRow("Истекает", validToText + daysText));
+    ssl.rowsContainer.appendChild(
+      createRow("Истекает", validToText + daysText),
+    );
     ssl.rowsContainer.appendChild(
       createRow("Издатель", report.ssl.issuer || "неизвестен"),
     );
