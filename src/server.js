@@ -122,7 +122,7 @@ app.post("/api/scan", async (req, res) => {
   const ts = Number(consentTimestamp);
   if (
     !Number.isFinite(ts) ||
-    Date.now() - ts > 300_000 ||
+    Date.now() - ts > 900_000 || // 15 минут на случай дрейфа часов
     ts - Date.now() > 60_000
   ) {
     return res
