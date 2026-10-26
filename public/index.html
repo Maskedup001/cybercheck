@@ -1,34 +1,64 @@
 <!DOCTYPE html>
 <html lang="ru">
-
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>CyberCheck — Проверка безопасности сайта</title>
-	<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CyberCheck — Проверка безопасности сайта</title>
+  <link rel="stylesheet" href="/assets/css/style.css">
 </head>
-
 <body>
-	<main class="container">
-		<header>
-			<h1>CyberCheck</h1>
-			<p class="subtitle">Экспресс-проверка безопасности сайта</p>
-		</header>
+  <main class="container">
+    <header class="site-header">
+      <h1 class="site-header__title">CyberCheck</h1>
+      <p class="site-header__subtitle">Экспресс-проверка безопасности сайта</p>
+    </header>
 
-		<section class="scan-form">
-			<input id="url" type="text" placeholder="example.com" autocomplete="off">
-			<button id="scanBtn">Проверить</button>
-		</section>
+    <form class="scan-form" data-js="scan-form" novalidate>
+      <div class="scan-form__row">
+        <div class="scan-form__field">
+          <label class="u-visually-hidden" for="url">Адрес сайта</label>
+          <input class="scan-form__input" id="url" name="url" data-js="url" type="text" placeholder="example.com" autocomplete="url">
+        </div>
+        <button class="button button--primary scan-form__submit" type="submit" data-js="scan-submit">Проверить</button>
+      </div>
+      <p class="scan-form__error" data-js="form-error" role="alert" hidden></p>
+    </form>
 
-		<label class="consent">
-			<input type="checkbox" id="consent">
-			<span>Я подтверждаю, что являюсь владельцем сайта или имею разрешение на проверку</span>
-		</label>
+    <label class="consent">
+      <input class="consent__control" type="checkbox" id="consent" data-js="consent">
+      <span class="consent__text">Я подтверждаю, что являюсь владельцем сайта или имею разрешение на проверку</span>
+    </label>
 
-		<section id="result" class="result"></section>
-	</main>
+    <p class="u-visually-hidden" role="status" data-js="status"></p>
 
-	<script src="script.js"></script>
+    <section class="result" data-js="result" aria-label="Результаты проверки" hidden>
+      <header class="result__header">
+        <h2 class="result__title">Отчёт о проверке</h2>
+        <dl class="result__meta">
+          <div class="result__meta-item">
+            <dt class="result__meta-label">Сайт:</dt>
+            <dd class="result__meta-value" data-js="report-host"></dd>
+          </div>
+          <div class="result__meta-item">
+            <dt class="result__meta-label">Дата:</dt>
+            <dd class="result__meta-value" data-js="report-date"></dd>
+          </div>
+        </dl>
+      </header>
+
+      <div class="result__body" data-js="result-body"></div>
+
+      <div class="result__actions">
+        <button class="button button--secondary" type="button" data-js="print">Скачать PDF</button>
+      </div>
+
+      <footer class="report-footer">
+        <p class="report-footer__text">Отчёт сформирован автоматически и не заменяет полноценный аудит. Проверка выполнена с согласия владельца.</p>
+        <p class="report-footer__meta">CyberCheck · <span data-js="report-date-footer"></span></p>
+      </footer>
+    </section>
+  </main>
+
+  <script type="module" src="/assets/js/app.js"></script>
 </body>
-
 </html>
