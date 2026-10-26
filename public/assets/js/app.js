@@ -43,6 +43,13 @@ async function handleSubmit(e) {
     const data = await scanTarget({ url, consent: isConsent });
     renderResult(resultSection, resultBody, data);
     statusRegion.textContent = `Отчёт для ${data.host} готов`;
+
+    // Переводим фокус на заголовок отчета для скринридеров и клавиатуры
+    const resultTitle = resultSection.querySelector(".result__title");
+    if (resultTitle) {
+      resultTitle.setAttribute("tabindex", "-1");
+      resultTitle.focus();
+    }
   } catch (error) {
     formError.textContent = `Ошибка: ${error.message}`;
     formError.hidden = false;
