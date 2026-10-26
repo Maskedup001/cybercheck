@@ -190,12 +190,24 @@ app.post("/api/scan", async (req, res) => {
       openPorts.some((op) => op.port === p),
     );
 
+    // Если веб-порта нет, все равно считаем скоринг (чтобы не было undefined)
     if (!webPort) {
+      const ssl = { hasSSL: false };
+      const headers = { error: true };
+      const { score, grade, findings } = calculateScore({
+        host: hostname,
+        ports: openPorts,
+        ssl,
+        headers,
+      });
       return res.json({
         host: hostname,
         ports: openPorts,
-        ssl: { hasSSL: false },
-        headers: { error: true },
+        ssl,
+        headers,
+        score,
+        grade,
+        findings,
       });
     }
 
@@ -208,6 +220,7 @@ app.post("/api/scan", async (req, res) => {
       ssl,
       headers,
     });
+
     res.json({
       host: hostname,
       ports: openPorts,

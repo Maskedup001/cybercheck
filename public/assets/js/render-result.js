@@ -16,13 +16,32 @@ export function renderResult(container, body, report) {
   // Очищаем контейнер от предыдущих отчетов
   body.replaceChildren();
 
-  // Оценка
-  const scoreHtml = `<div style="text-align:center; margin-bottom: 24px;">
-    <div style="font-size: 48px; color: ${report.score >= 75 ? "var(--color-success)" : report.score >= 50 ? "var(--color-warning)" : "var(--color-danger)"}; font-weight: bold;">${report.grade}</div>
-    <div style="color: var(--color-text-muted);">Риск-скор: ${report.score}/100</div>
-  </div>`;
-  body.insertAdjacentHTML("afterbegin", scoreHtml);
+  // Оценка (безопасный рендеринг без инлайн-стилей)
+  const scoreValue = report.score !== undefined ? report.score : 0;
+  const gradeValue = report.grade !== undefined ? report.grade : "?";
 
+  const scoreContainer = document.createElement("div");
+  scoreContainer.className = "result__score";
+
+  const gradeEl = document.createElement("div");
+  gradeEl.className = "result__score-grade";
+  gradeEl.textContent = gradeValue;
+
+  // Добавляем цветовой модификатор в зависимости от оценки
+  if (scoreValue >= 75) {
+    gradeEl.classList.add("result__score-grade--good");
+  } else if (scoreValue >= 50) {
+    gradeEl.classList.add("result__score-grade--warn");
+  } else {
+    gradeEl.classList.add("result__score-grade--bad");
+  }
+
+  const scoreText = document.createElement("div");
+  scoreText.className = "result__score-text";
+  scoreText.textContent = `Риск-скор: ${scoreValue}/100`;
+
+  scoreContainer.append(gradeEl, scoreText);
+  body.appendChild(scoreContainer);
   // Хелпер: создание статуса (зеленый/красный бейджик)
   function createStatus(isGood, text) {
     const span = document.createElement("span");
@@ -103,8 +122,10 @@ export function renderResult(container, body, report) {
       ssl.rowsContainer.appendChild(createRow("Причина", errStatus));
     }
     const daysLeft = report.ssl.daysLeft;
-    const validToText = report.ssl.validTo
-      ? new Date(report.ssl.validTo).toLocaleString("ru-RU", {
+    // Используем validToISO для Safari, fallback на validTo
+    const rawDate = report.ssl.validToISO || report.ssl.validTo;
+    const validToText = rawDate
+      ? new Date(rawDate).toLocaleString("ru-RU", {
           dateStyle: "medium",
           timeStyle: "short",
         })
