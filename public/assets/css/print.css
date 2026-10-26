@@ -1,16 +1,78 @@
-@page { size: A4 portrait; margin: 16mm 14mm; }
+@page {
+  size: A4 portrait;
+  margin: 16mm 14mm;
+}
 @media print {
-  .page-footer { display: none !important; }
-  :root { color-scheme: light; --color-bg: #ffffff; --color-surface: #ffffff; --color-border: #d1d5db; --color-text: #111827; --color-text-muted: #4b5563; --color-success: #166534; --color-danger: #991b1b; }
-  html, body { min-height: auto; padding: 0; background: var(--color-bg) !important; color: var(--color-text) !important; font-size: 11pt; }
-  .site-header, .scan-form, .consent, .result__actions, .u-no-print { display: none !important; }
-  .container { max-width: none; margin: 0; }
-  .result { padding: 0; border: 0; background: transparent; }
-  .result__title, .result__section-title { color: black !important; border-color: black; break-after: avoid; }
-  .result__row { display: block; padding: 1.5mm 0; border-bottom: 0.5pt solid #ccc; break-inside: avoid; }
-  .result__label { display: inline; }
-  .result__label::after { content: ": "; }
-  .result__value { display: inline; }
-  .result__status { border: 0.5pt solid currentColor; background: transparent !important; }
-  .result__status--good { color: green !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-.result__status--bad { color: #991b1b !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  .page-footer {
+    display: none !important;
+  }
+  :root {
+    color-scheme: light;
+    --color-bg: #ffffff;
+    --color-surface: #ffffff;
+    --color-border: #d1d5db;
+    --color-text: #111827;
+    --color-text-muted: #4b5563;
+    --color-success: #166534;
+    --color-danger: #991b1b;
+  }
+  html,
+  body {
+    min-height: auto;
+    padding: 0;
+    background: var(--color-bg) !important;
+    color: var(--color-text) !important;
+    font-size: 11pt;
+  }
+  .site-header,
+  .scan-form,
+  .consent,
+  .result__actions,
+  .u-no-print {
+    display: none !important;
+  }
+  .container {
+    max-width: none;
+    margin: 0;
+  }
+  .result {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  .result__title,
+  .result__section-title {
+    color: black !important;
+    border-color: black;
+    break-after: avoid;
+  }
+  .result__row {
+    display: block;
+    padding: 1.5mm 0;
+    border-bottom: 0.5pt solid #ccc;
+    break-inside: avoid;
+  }
+  .result__label {
+    display: inline;
+  }
+  .result__label::after {
+    content: ": ";
+  }
+  .result__value {
+    display: inline;
+  }
+  .result__status {
+    border: 0.5pt solid currentColor;
+    background: transparent !important;
+  }
+  .result__status--good {
+    color: green !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .result__status--bad {
+    color: #991b1b !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

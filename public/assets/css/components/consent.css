@@ -1,2 +1,15 @@
-.consent { display: flex; align-items: flex-start; gap: var(--space-2); font-size: var(--font-size-sm); color: var(--color-text-muted); margin-bottom: var(--space-6); cursor: pointer; }
-.consent__control { margin-top: 2px; width: 24px; height: 24px; cursor: pointer; }
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-6);
+  cursor: pointer;
+}
+.consent__control {
+  margin-top: 2px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+}
