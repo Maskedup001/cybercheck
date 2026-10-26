@@ -69,7 +69,12 @@ export function renderResult(container, body, report) {
     ports.rowsContainer.appendChild(p);
   } else {
     report.ports.forEach((p) => {
-      const status = createStatus(true, "открыт");
+      // 80, 443 - это норма для веба. Остальные - потенциальный риск
+      const isSafePort = [80, 443].includes(p.port);
+      const status = isSafePort
+        ? createStatus(true, "открыт")
+        : createStatus(false, "риск");
+
       ports.rowsContainer.appendChild(createRow(`Порт ${p.port}`, status));
     });
   }
