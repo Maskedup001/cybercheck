@@ -42,6 +42,35 @@ export function renderResult(container, body, report) {
 
   scoreContainer.append(gradeEl, scoreText);
   body.appendChild(scoreContainer);
+
+  // Вывод списка проблем (findings)
+  if (report.findings && report.findings.length > 0) {
+    const findingsList = document.createElement("ul");
+    findingsList.className = "result__findings";
+
+    report.findings.forEach((finding) => {
+      const li = document.createElement("li");
+      li.className = "result__finding";
+
+      const title = document.createElement("strong");
+      title.textContent = finding.title;
+
+      const desc = document.createElement("span");
+      desc.textContent = ` — ${finding.desc}`;
+
+      li.append(title, desc);
+
+      // Красим в красный, если это high, и в желтый, если medium
+      if (finding.severity === "high")
+        li.classList.add("result__finding--high");
+      else if (finding.severity === "medium")
+        li.classList.add("result__finding--medium");
+
+      findingsList.appendChild(li);
+    });
+    body.appendChild(findingsList);
+  }
+
   // Хелпер: создание статуса (зеленый/красный бейджик)
   function createStatus(isGood, text) {
     const span = document.createElement("span");

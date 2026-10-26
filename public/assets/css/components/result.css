@@ -150,6 +150,39 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
 }
+
+/* --- Findings (Находки) --- */
+.result__findings {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--space-6) 0;
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.result__finding {
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-2);
+  padding-left: var(--space-4);
+  position: relative;
+  color: var(--color-text);
+}
+
+.result__finding:last-child {
+  margin-bottom: 0;
+}
+
+.result__finding::before {
+  content: "•";
+  position: absolute;
+  left: 0;
+  font-weight: bold;
+}
+
+.result__finding--high::before { color: var(--color-danger); }
+.result__finding--medium::before { color: var(--color-warning); }
+
 @media (min-width: 30em) {
   .result__row {
     grid-template-columns: minmax(8rem, 14rem) minmax(0, 1fr);
