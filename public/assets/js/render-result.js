@@ -14,6 +14,13 @@ export function renderResult(container, body, report) {
   // Очищаем контейнер от предыдущих отчетов
   body.replaceChildren();
 
+  // Оценка
+  const scoreHtml = `<div style="text-align:center; margin-bottom: 24px;">
+    <div style="font-size: 48px; color: ${report.score >= 75 ? "var(--color-success)" : report.score >= 50 ? "var(--color-warning)" : "var(--color-danger)"}; font-weight: bold;">${report.grade}</div>
+    <div style="color: var(--color-text-muted);">Риск-скор: ${report.score}/100</div>
+  </div>`;
+  body.insertAdjacentHTML("afterbegin", scoreHtml);
+
   // Хелпер: создание статуса (зеленый/красный бейджик)
   function createStatus(isGood, text) {
     const span = document.createElement("span");

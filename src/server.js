@@ -1,3 +1,4 @@
+const { calculateScore } = require("./scoring");
 const path = require("path");
 const net = require("node:net");
 const express = require("express");
@@ -201,7 +202,21 @@ app.post("/api/scan", async (req, res) => {
     const ssl = await checkSSL(connectIp, webPort, hostname);
     const headers = await checkHeaders(connectIp, webPort, hostname);
 
-    res.json({ host: hostname, ports: openPorts, ssl, headers });
+    const { score, grade, findings } = calculateScore({
+      host: hostname,
+      ports: openPorts,
+      ssl,
+      headers,
+    });
+    res.json({
+      host: hostname,
+      ports: openPorts,
+      ssl,
+      headers,
+      score,
+      grade,
+      findings,
+    });
   } catch (e) {
     console.error("[scan] проверка не удалась:", e);
     res.status(500).json({ error: "Ошибка сканирования" });
