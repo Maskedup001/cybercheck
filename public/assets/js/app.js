@@ -16,6 +16,7 @@ async function handleSubmit(e) {
   e.preventDefault();
   formError.hidden = true;
   resultSection.hidden = true;
+  input.removeAttribute("aria-invalid");
 
   const url = input.value.trim();
   const isConsent = consent.checked;
@@ -46,6 +47,7 @@ async function handleSubmit(e) {
     formError.textContent = `Ошибка: ${error.message}`;
     formError.hidden = false;
     statusRegion.textContent = "Ошибка сканирования";
+    input.setAttribute("aria-invalid", "true");
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = "Проверить";

@@ -18,7 +18,20 @@ export async function scanTarget({ url, consent }) {
     if (!res.ok) throw new Error(data?.error || `Сервер ответил ${res.status}`);
     if (!data) throw new Error("Сервер вернул некорректный ответ");
 
-    return data;
+    // Защита от неполного или некорректного JSON
+    const normalized = {
+      host: typeof data.host === "string" ? data.host : "—",
+      ports: Array.isArray(data.ports)
+        ? data.ports.filter((p) => Number.isInteger(p?.port))
+        : [],
+      ssl:
+        data.ssl && typeof data.ssl === "object" ? data.ssl : { hasSSL: false },
+      headers:
+        data.headers && typeof data.headers === "object"
+          ? data.headers
+          : { error: true },
+    };
+    return normalized;
   } catch (error) {
     if (error.name === "AbortError") {
       throw new Error(
