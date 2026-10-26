@@ -53,7 +53,7 @@ export function renderResult(container, body, report) {
     title.className = "result__section-title";
     title.textContent = titleText;
 
-    const rowsContainer = document.createElement("div");
+    const rowsContainer = document.createElement("dl");
     rowsContainer.className = "result__rows";
 
     section.append(title, rowsContainer);
