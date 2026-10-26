@@ -2,3 +2,23 @@
 .site-header { margin-bottom: var(--space-10); text-align: center; }
 .site-header__title { margin-bottom: var(--space-2); color: var(--color-accent); font-size: var(--font-size-display); line-height: var(--leading-tight); }
 .site-header__subtitle { color: var(--color-text-muted); font-size: var(--font-size-base); }
+.page-footer {
+  margin-top: var(--space-10);
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.page-footer a {
+  color: var(--color-text-muted);
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.page-footer a:hover {
+  color: var(--color-accent);
+}
+
+.page-footer__divider {
+  margin: 0 var(--space-2);
+}

@@ -1,9 +1,15 @@
 export function renderResult(container, body, report) {
   // 1. Заполняем шапку через безопасный textContent
-  document.querySelector('[data-js="report-host"]').textContent = report.host;
   const dateStr = new Date().toLocaleString("ru-RU");
-  document.querySelector('[data-js="report-date"]').textContent = dateStr;
-  document.querySelector('[data-js="report-date-footer"]').textContent = dateStr;
+
+  const hostEl = document.querySelector('[data-js="report-host"]');
+  if (hostEl) hostEl.textContent = report.host;
+
+  const dateEl = document.querySelector('[data-js="report-date"]');
+  if (dateEl) dateEl.textContent = dateStr;
+
+  const footerDateEl = document.querySelector('[data-js="report-date-footer"]');
+  if (footerDateEl) footerDateEl.textContent = dateStr;
 
   // Очищаем контейнер от предыдущих отчетов
   body.replaceChildren();
@@ -27,7 +33,7 @@ export function renderResult(container, body, report) {
 
     const dd = document.createElement("dd");
     dd.className = "result__value";
-    
+
     if (typeof valueNode === "string") {
       dd.textContent = valueNode;
     } else {
@@ -42,14 +48,14 @@ export function renderResult(container, body, report) {
   function createSection(titleText) {
     const section = document.createElement("div");
     section.className = "result__section";
-    
+
     const title = document.createElement("h3");
     title.className = "result__section-title";
     title.textContent = titleText;
-    
+
     const rowsContainer = document.createElement("div");
     rowsContainer.className = "result__rows";
-    
+
     section.append(title, rowsContainer);
     return { section, rowsContainer };
   }
@@ -72,15 +78,22 @@ export function renderResult(container, body, report) {
   // --- СЕКЦИЯ: SSL ---
   const ssl = createSection("SSL");
   if (report.ssl.hasSSL) {
-    const status = createStatus(report.ssl.valid, report.ssl.valid ? "валиден" : "невалиден");
+    const status = createStatus(
+      report.ssl.valid,
+      report.ssl.valid ? "валиден" : "невалиден",
+    );
     ssl.rowsContainer.appendChild(createRow("Сертификат", status));
 
     if (!report.ssl.valid && report.ssl.verifyError) {
       const errStatus = createStatus(false, report.ssl.verifyError);
       ssl.rowsContainer.appendChild(createRow("Причина", errStatus));
     }
-    ssl.rowsContainer.appendChild(createRow("Истекает", report.ssl.validTo || "н/д"));
-    ssl.rowsContainer.appendChild(createRow("Издатель", report.ssl.issuer || "неизвестен"));
+    ssl.rowsContainer.appendChild(
+      createRow("Истекает", report.ssl.validTo || "н/д"),
+    );
+    ssl.rowsContainer.appendChild(
+      createRow("Издатель", report.ssl.issuer || "неизвестен"),
+    );
   } else {
     const status = createStatus(false, "SSL отсутствует");
     ssl.rowsContainer.appendChild(createRow("Статус", status));
@@ -90,14 +103,14 @@ export function renderResult(container, body, report) {
   // --- СЕКЦИЯ: ЗАГОЛОВКИ БЕЗОПАСНОСТИ ---
   const headers = createSection("Заголовки безопасности");
   const h = report.headers;
-  
+
   if (h.error) {
     const status = createStatus(false, "Не удалось получить");
     headers.rowsContainer.appendChild(createRow("Статус", status));
   } else {
     headers.rowsContainer.appendChild(createRow("Server", h.server));
     headers.rowsContainer.appendChild(createRow("Протокол", h.protocol));
-    
+
     const headersList = [
       { name: "Content-Security-Policy", val: h.csp },
       { name: "X-Frame-Options", val: h.xframe },

@@ -7,7 +7,6 @@
   <meta name="description" content="CyberCheck — экспресс-проверка безопасности сайта: порты, SSL, security-заголовки.">
   <title>CyberCheck — Проверка безопасности сайта</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <!-- Подключаем главный CSS, который импортирует все остальные -->
   <link rel="stylesheet" href="/assets/css/main.css">
 </head>
 <body>
@@ -35,6 +34,7 @@
 
     <p class="u-visually-hidden" role="status" data-js="status"></p>
 
+    <!-- БЛОК РЕЗУЛЬТАТА (скрыт по умолчанию) -->
     <section class="result" data-js="result" aria-label="Результаты проверки" hidden>
       <header class="result__header">
         <p class="result__brand">CyberCheck</p>
@@ -57,13 +57,21 @@
         <button class="button button--secondary" type="button" data-js="print">Скачать PDF</button>
       </div>
 
+      <!-- ВОТ ТОТ САМЫЙ ФУТЕР ОТЧЕТА -->
       <footer class="report-footer">
         <p class="report-footer__text">Отчёт сформирован автоматически и не заменяет полноценный аудит. Проверка выполнена с согласия владельца.</p>
         <p class="report-footer__meta">
-          <a href="/legal.html" style="color: inherit;">Пользовательское соглашение</a> · CyberCheck · <span data-js="report-date-footer"></span>
+          CyberCheck · <span data-js="report-date-footer"></span>
         </p>
       </footer>
     </section>
+
+    <!-- ГЛОБАЛЬНЫЙ ФУТЕР СТРАНИЦЫ -->
+    <footer class="page-footer">
+      <a href="/legal.html" target="_blank" rel="noopener">Пользовательское соглашение</a>
+      <span class="page-footer__divider">·</span>
+      <span>CyberCheck © 2026</span>
+    </footer>
   </main>
 
   <script type="module" src="/assets/js/app.js"></script>
