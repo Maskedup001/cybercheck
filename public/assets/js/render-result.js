@@ -93,15 +93,21 @@ export function renderResult(container, body, report) {
       const errStatus = createStatus(false, report.ssl.verifyError);
       ssl.rowsContainer.appendChild(createRow("Причина", errStatus));
     }
-    const daysLeft = report.ssl.daysLeft;
+        const daysLeft = report.ssl.daysLeft;
     const validToText = report.ssl.validTo || "н/д";
-    const daysText =
-      daysLeft !== undefined && daysLeft !== null
-        ? ` (осталось ${daysLeft} дн.)`
-        : "";
-    ssl.rowsContainer.appendChild(
-      createRow("Истекает", validToText + daysText),
-    );
+    let daysText = "";
+
+    if (daysLeft !== undefined && daysLeft !== null) {
+      if (daysLeft < 0) {
+        // Если сертификат просрочен
+        daysText = ` (истек ${Math.abs(daysLeft)} дн. назад)`;
+      } else {
+        // Если сертификат еще действует
+        daysText = ` (осталось ${daysLeft} дн.)`;
+      }
+    }
+
+    ssl.rowsContainer.appendChild(createRow("Истекает", validToText + daysText));
     ssl.rowsContainer.appendChild(
       createRow("Издатель", report.ssl.issuer || "неизвестен"),
     );
