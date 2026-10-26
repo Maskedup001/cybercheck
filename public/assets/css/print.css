@@ -1,5 +1,6 @@
 @page { size: A4 portrait; margin: 16mm 14mm; }
 @media print {
+  .page-footer { display: none !important; }
   :root { color-scheme: light; --color-bg: #ffffff; --color-surface: #ffffff; --color-border: #d1d5db; --color-text: #111827; --color-text-muted: #4b5563; --color-success: #166534; --color-danger: #991b1b; }
   html, body { min-height: auto; padding: 0; background: var(--color-bg) !important; color: var(--color-text) !important; font-size: 11pt; }
   .site-header, .scan-form, .consent, .result__actions, .u-no-print { display: none !important; }
