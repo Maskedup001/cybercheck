@@ -67,7 +67,7 @@ function checkSSL(connectIp, port, hostname) {
             const d = new Date(cert.valid_to);
             return Number.isNaN(d.getTime()) ? null : d.toISOString();
           })(),
-          issuer: cert.issuer?.O || "неизвестен",
+          issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
         });
       },
     );
