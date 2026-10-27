@@ -1,5 +1,5 @@
 const API_URL = "/api";
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 45_000;
 
 export async function scanTarget({ url, consent }) {
   const controller = new AbortController();
