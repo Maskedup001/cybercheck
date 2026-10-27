@@ -30,7 +30,6 @@ export async function scanTarget({ url, consent }) {
         data.headers && typeof data.headers === "object"
           ? data.headers
           : { error: true },
-      // ВОТ ЭТИ ТРИ СТРОКИ МЫ ДОБАВИЛИ:
       score: typeof data.score === "number" ? data.score : 0,
       grade: typeof data.grade === "string" ? data.grade : "?",
       findings: Array.isArray(data.findings) ? data.findings : [],
