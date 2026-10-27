@@ -1,3 +1,14 @@
+@media print {
+  :root {
+    --color-surface-raised: #ffffff;
+    --color-warning: #92400e;
+  }
+  .result__findings {
+    background: transparent;
+    border: 0.5pt solid #ccc;
+  }
+}
+
 @page {
   size: A4 portrait;
   margin: 16mm 14mm;
