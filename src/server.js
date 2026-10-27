@@ -143,7 +143,7 @@ app.post("/api/scan", async (req, res) => {
   const hostname = parsed.hostname.toLowerCase();
 
   const hostRegex =
-    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3}|\[[a-f0-9:]+\])$/;
+    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
   if (!hostRegex.test(hostname)) {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
