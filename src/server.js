@@ -8,12 +8,14 @@ const { checkPort, checkSSL, checkHeaders } = require("./checks");
 const { resolvePublicIps } = require("./net-guard");
 
 // 1. Строгая проверка PUBLIC_ORIGIN (NEW-02)
+const envOrigin =
+  process.env.PUBLIC_ORIGIN || process.env.RENDER_EXTERNAL_URL || "";
 let parsedOrigin;
 try {
-  parsedOrigin = new URL(process.env.PUBLIC_ORIGIN ?? "");
+  parsedOrigin = new URL(envOrigin);
 } catch {
   console.error(
-    "ОШИБКА: PUBLIC_ORIGIN должен быть валидным origin, например http://localhost:3000",
+    "ОШИБКА: PUBLIC_ORIGIN (или RENDER_EXTERNAL_URL) должен быть валидным origin",
   );
   process.exit(1);
 }
