@@ -28,9 +28,9 @@ export function renderResult(container, body, report) {
   gradeEl.textContent = gradeValue;
 
   // Добавляем цветовой модификатор в зависимости от оценки
-  if (scoreValue >= 75) {
+  if (gradeValue === "A" || gradeValue === "B") {
     gradeEl.classList.add("result__score-grade--good");
-  } else if (scoreValue >= 50) {
+  } else if (gradeValue === "C") {
     gradeEl.classList.add("result__score-grade--warn");
   } else {
     gradeEl.classList.add("result__score-grade--bad");
