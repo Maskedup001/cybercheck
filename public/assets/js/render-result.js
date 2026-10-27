@@ -1,5 +1,14 @@
 export function renderResult(container, body, report) {
-  document.title = `CyberCheck_${report.host}_${new Date().toISOString().slice(0, 10)}`;
+  const localDate = new Intl.DateTimeFormat("sv-SE").format(new Date());
+  const shortHost = (report.host || "").slice(0, 60);
+  document.title = `CyberCheck_${shortHost}_${localDate}`;
+  window.addEventListener(
+    "afterprint",
+    () => {
+      document.title = "CyberCheck";
+    },
+    { once: true },
+  );
 
   // 1. Заполняем шапку через безопасный textContent
   const dateStr = new Date().toLocaleString("ru-RU");
