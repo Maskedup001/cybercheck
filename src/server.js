@@ -164,7 +164,7 @@ app.post("/api/scan", async (req, res) => {
   let connectIp;
   if (
     DEMO_MODE &&
-    (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")
+    (hostname === "localhost" || hostname === "127.0.0.1")
   ) {
     connectIp = hostname;
   } else {
