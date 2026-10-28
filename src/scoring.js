@@ -97,7 +97,8 @@ function calculateScore(report) {
         recommendation: "Добавьте X-Content-Type-Options: nosniff.",
       });
 
-    if (h.server)
+    // ИСПРАВЛЕНИЕ: не считаем раскрытием строку "не указан"
+    if (h.server && h.server !== "не указан")
       push({
         id: "server-exposed",
         title: "Раскрыт Server",

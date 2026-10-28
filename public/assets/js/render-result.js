@@ -67,7 +67,11 @@ export function renderResult(container, body, report) {
       const desc = document.createElement("span");
       desc.textContent = ` — ${finding.desc}`;
 
-      li.append(title, desc);
+      const rec = document.createElement("p");
+      rec.className = "result__finding-rec";
+      rec.textContent = `Как исправить: ${finding.recommendation}`;
+
+      li.append(title, desc, rec);
 
       // Красим в красный, если это high, и в желтый, если medium
       if (finding.severity === "high")

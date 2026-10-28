@@ -38,7 +38,7 @@ export async function scanTarget({ url, consent }) {
   } catch (error) {
     if (error.name === "AbortError") {
       throw new Error(
-        "Превышено время ожидания (30 сек). Попробуйте другой адрес.",
+        "Превышено время ожидания (45 сек). Попробуйте другой адрес.",
       );
     }
     throw error;

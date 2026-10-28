@@ -183,6 +183,12 @@
 .result__finding--high::before { color: var(--color-danger); }
 .result__finding--medium::before { color: var(--color-warning); }
 
+.result__finding-rec {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
 @media (min-width: 30em) {
   .result__row {
     grid-template-columns: minmax(8rem, 14rem) minmax(0, 1fr);

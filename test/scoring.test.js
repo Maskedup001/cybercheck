@@ -81,3 +81,13 @@ test("открыт 3306 → ≤ 70 + high", () => {
     r.findings.some((f) => f.id === "port-3306" && f.severity === "high"),
   );
 });
+
+test("server «не указан» не считается раскрытием", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: okSSL,
+    headers: { ...okHeaders, server: "не указан" },
+  });
+  assert.strictEqual(r.score, 100);
+  assert.ok(!r.findings.some((f) => f.id === "server-exposed"));
+});
