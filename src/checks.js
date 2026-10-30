@@ -125,7 +125,7 @@ async function checkSSL(connectIp, port, hostname) {
 // Проверяет HTTP-заголовки безопасности.
 // Сначала пробует HTTPS, при ошибке — HTTP (для сайтов без SSL).
 // connectIp — IP для подключения, hostname — для SNI и Host-заголовка.
-function checkHeaders(connectIp, port, hostname) {
+function checkHeaders(connectIp, port, hostname, retries = 1) {
   return new Promise((resolve) => {
     if (!port) return resolve({ error: true });
 
@@ -137,51 +137,65 @@ function checkHeaders(connectIp, port, hostname) {
       resolve(data);
     };
 
-    const tryHttp = () => {
-      const req = http.get(
-        {
-          host: connectIp,
-          port,
-          headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
-          timeout: 5000,
-        },
-        (res) => {
-          resolveOnce(parseHeaders(res.headers, "HTTP"));
-          res.destroy();
-        },
-      );
+    const attempt = (attemptsLeft) => {
+      const tryHttp = (callback) => {
+        const req = http.get(
+          {
+            host: connectIp,
+            port,
+            headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
+            timeout: 5000,
+          },
+          (res) => {
+            resolveOnce(parseHeaders(res.headers, "HTTP"));
+            res.destroy();
+          },
+        );
+        req.on("error", callback);
+        req.on("timeout", () => {
+          req.destroy();
+          callback();
+        });
+      };
 
-      req.on("error", () => resolveOnce({ error: true }));
-      req.on("timeout", () => {
-        req.destroy();
-        resolveOnce({ error: true });
-      });
+      const tryHttps = () => {
+        const req = https.get(
+          {
+            host: connectIp,
+            port,
+            servername,
+            rejectUnauthorized: false,
+            headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
+            timeout: 5000,
+          },
+          (res) => {
+            resolveOnce(parseHeaders(res.headers, "HTTPS"));
+            res.destroy();
+          },
+        );
+
+        const onFail = () => {
+          tryHttp(() => {
+            if (attemptsLeft > 0) {
+              // Ждем 1 секунду и пробуем снова
+              setTimeout(() => attempt(attemptsLeft - 1), 1000);
+            } else {
+              resolveOnce({ error: true });
+            }
+          });
+        };
+
+        req.on("error", onFail);
+        req.on("timeout", () => {
+          req.destroy();
+          onFail();
+        });
+      };
+
+      tryHttps();
     };
 
-    const tryHttps = () => {
-      const req = https.get(
-        {
-          host: connectIp,
-          port,
-          servername,
-          rejectUnauthorized: false,
-          headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
-          timeout: 5000,
-        },
-        (res) => {
-          resolveOnce(parseHeaders(res.headers, "HTTPS"));
-          res.destroy();
-        },
-      );
-
-      req.on("error", tryHttp);
-      req.on("timeout", () => {
-        req.destroy();
-        tryHttp();
-      });
-    };
-
-    tryHttps();
+    attempt(retries);
   });
 }
 
