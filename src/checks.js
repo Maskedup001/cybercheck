@@ -50,7 +50,7 @@ function checkOldTls(connectIp, port, hostname) {
       },
     );
     socket.on("error", () => resolve(false));
-    socket.setTimeout(2000, () => {
+    socket.setTimeout(3000, () => {
       socket.destroy();
       resolve(false);
     });
@@ -109,7 +109,7 @@ async function checkSSL(connectIp, port, hostname) {
     );
 
     socket.on("error", () => resolve({ hasSSL: false }));
-    socket.setTimeout(3000, () => {
+    socket.setTimeout(5000, () => {
       socket.destroy();
       resolve({ hasSSL: false });
     });
