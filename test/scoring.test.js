@@ -110,3 +110,13 @@ test("HSTS без SSL не дает баллов", () => {
   });
   assert.strictEqual(r.score, 20); // 20 (за порты) + 0 (за остальное)
 });
+
+test("поддержка устаревшего TLS снижает оценку", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: { hasSSL: true, valid: true, daysLeft: 200, supportsOldTls: true },
+    headers: okHeaders,
+  });
+  assert.strictEqual(r.score, 90); // 100 - 10
+  assert.ok(r.findings.some((f) => f.id === "old-tls"));
+});

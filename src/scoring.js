@@ -32,6 +32,19 @@ function calculateScore(report) {
       recommendation: "Обновите сертификат или проверьте цепочку.",
     });
 
+  if (ssl.hasSSL && ssl.supportsOldTls) {
+    score -= 10;
+    push({
+      id: "old-tls",
+      title: "Устаревший TLS",
+      desc: "Сервер поддерживает TLS 1.0 или 1.1, которые уязвимы к атакам.",
+      severity: "medium",
+      weight: 10,
+      recommendation:
+        "Отключите TLS 1.0 и 1.1 на сервере, оставьте только 1.2 и 1.3.",
+    });
+  }
+
   if (hasSSL && daysLeft !== null && daysLeft > 30) score += 5;
   else if (hasSSL && daysLeft !== null && daysLeft <= 30)
     push({

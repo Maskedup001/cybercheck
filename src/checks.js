@@ -30,12 +30,40 @@ function checkPort(connectIp, port, timeout = 3000) {
 // connectIp — IP для подключения, hostname — для SNI (только если это домен, не IP).
 // rejectUnauthorized: false нужен, чтобы ПРОЧИТАТЬ информацию о невалидных
 // сертификатах (просроченных, самоподписанных) — иначе соединение оборвётся.
-function checkSSL(connectIp, port, hostname) {
-  return new Promise((resolve) => {
-    if (!port) return resolve({ hasSSL: false });
 
-    // SNI (Server Name Indication) по RFC 6066 запрещён для IP-литералов.
-    // Передаём только если hostname — доменное имя.
+// Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1)
+function checkOldTls(connectIp, port, hostname) {
+  return new Promise((resolve) => {
+    const servername = net.isIP(hostname) ? undefined : hostname;
+    const socket = tls.connect(
+      {
+        host: connectIp,
+        port,
+        servername,
+        rejectUnauthorized: false,
+        minVersion: "TLSv1",
+        maxVersion: "TLSv1.1", // Принудительно ограничиваем версию
+      },
+      () => {
+        resolve(true); // Если подключился — значит, поддерживает старые TLS
+        socket.destroy();
+      },
+    );
+    socket.on("error", () => resolve(false));
+    socket.setTimeout(2000, () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function checkSSL(connectIp, port, hostname) {
+  if (!port) return { hasSSL: false };
+
+  // Параллельно проверяем поддержку устаревших TLS
+  const supportsOldTls = await checkOldTls(connectIp, port, hostname);
+
+  return new Promise((resolve) => {
     const servername = net.isIP(hostname) ? undefined : hostname;
 
     const socket = tls.connect(
@@ -65,7 +93,7 @@ function checkSSL(connectIp, port, hostname) {
         resolve({
           hasSSL: true,
           valid,
-          verifyError, // <-- добавляем причину ошибки в ответ
+          verifyError, // <-- Причина ошибки в ответ
           daysLeft,
           validTo: cert.valid_to,
           validToISO: (() => {
@@ -75,6 +103,7 @@ function checkSSL(connectIp, port, hostname) {
           })(),
           issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
           tlsVersion: socket.getProtocol(),
+          supportsOldTls, // <--- Результат в ответ
         });
       },
     );

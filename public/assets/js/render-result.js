@@ -190,6 +190,18 @@ export function renderResult(container, body, report) {
     ssl.rowsContainer.appendChild(
       createRow("Издатель", report.ssl.issuer || "неизвестен"),
     );
+
+    if (report.ssl.tlsVersion) {
+      ssl.rowsContainer.appendChild(
+        createRow("Версия TLS", report.ssl.tlsVersion),
+      );
+    }
+
+    if (report.ssl.supportsOldTls) {
+      ssl.rowsContainer.appendChild(
+        createRow("Устаревший TLS", createStatus(false, "риск")),
+      );
+    }
   } else {
     const status = createStatus(false, "SSL отсутствует");
     ssl.rowsContainer.appendChild(createRow("Статус", status));
