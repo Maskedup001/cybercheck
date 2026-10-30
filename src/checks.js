@@ -6,23 +6,29 @@ const http = require("http");
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
 // Если соединение установилось — порт открыт. Таймаут или ошибка — порт закрыт.
-function checkPort(connectIp, port, timeout = 3000) {
+function checkPort(connectIp, port, timeout = 3000, retries = 1) {
   return new Promise((resolve) => {
-    const socket = new net.Socket();
-    let status = "closed";
-
-    socket.setTimeout(timeout);
-
-    socket.on("connect", () => {
-      status = "open";
-      socket.destroy();
-    });
-
-    socket.on("timeout", () => socket.destroy());
-    socket.on("error", () => {});
-    socket.on("close", () => resolve({ port, status }));
-
-    socket.connect(port, connectIp);
+    const attempt = (attemptsLeft) => {
+      const socket = new net.Socket();
+      let status = "closed";
+      socket.setTimeout(timeout);
+      socket.on("connect", () => {
+        status = "open";
+        socket.destroy();
+      });
+      socket.on("timeout", () => socket.destroy());
+      socket.on("error", () => {});
+      socket.on("close", () => {
+        if (status === "closed" && attemptsLeft > 0) {
+          // Если закрыт и есть попытки — пробуем еще раз через 500мс
+          setTimeout(() => attempt(attemptsLeft - 1), 500);
+        } else {
+          resolve({ port, status });
+        }
+      });
+      socket.connect(port, connectIp);
+    };
+    attempt(retries);
   });
 }
 
