@@ -39,7 +39,13 @@ function checkSSL(connectIp, port, hostname) {
     const servername = net.isIP(hostname) ? undefined : hostname;
 
     const socket = tls.connect(
-      { host: connectIp, port, servername, rejectUnauthorized: false },
+      {
+        host: connectIp,
+        port,
+        servername,
+        rejectUnauthorized: false,
+        minVersion: "TLSv1",
+      },
       () => {
         const cert = socket.getPeerCertificate();
 
@@ -68,6 +74,7 @@ function checkSSL(connectIp, port, hostname) {
             return Number.isNaN(d.getTime()) ? null : d.toISOString();
           })(),
           issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
+          tlsVersion: socket.getProtocol(),
         });
       },
     );
@@ -88,25 +95,34 @@ function checkHeaders(connectIp, port, hostname) {
     if (!port) return resolve({ error: true });
 
     const servername = net.isIP(hostname) ? undefined : hostname;
+    let settled = false;
+    const resolveOnce = (data) => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    };
 
-    // Запасной вариант — HTTP (если HTTPS не ответил)
     const tryHttp = () => {
       const req = http.get(
-        { host: connectIp, port, headers: { Host: hostname }, timeout: 5000 },
+        {
+          host: connectIp,
+          port,
+          headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
+          timeout: 5000,
+        },
         (res) => {
-          resolve(parseHeaders(res.headers, "HTTP"));
+          resolveOnce(parseHeaders(res.headers, "HTTP"));
           res.destroy();
         },
       );
 
-      req.on("error", () => resolve({ error: true }));
+      req.on("error", () => resolveOnce({ error: true }));
       req.on("timeout", () => {
         req.destroy();
-        resolve({ error: true });
+        resolveOnce({ error: true });
       });
     };
 
-    // Основной вариант — HTTPS
     const tryHttps = () => {
       const req = https.get(
         {
@@ -114,11 +130,11 @@ function checkHeaders(connectIp, port, hostname) {
           port,
           servername,
           rejectUnauthorized: false,
-          headers: { Host: hostname },
+          headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
           timeout: 5000,
         },
         (res) => {
-          resolve(parseHeaders(res.headers, "HTTPS"));
+          resolveOnce(parseHeaders(res.headers, "HTTPS"));
           res.destroy();
         },
       );
