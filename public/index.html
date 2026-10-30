@@ -19,7 +19,8 @@
 </head>
 
 <body>
-	<main class="container">
+	<a href="#main-content" class="skip-link">Перейти к содержимому</a>
+	<main class="container" id="main-content">
 		<header class="site-header">
 			<h1 class="site-header__title">CyberCheck</h1>
 			<p class="site-header__subtitle">Экспресс-проверка безопасности сайта</p>
@@ -30,11 +31,11 @@
 				<div class="scan-form__field">
 					<label class="u-visually-hidden" for="url">Адрес сайта</label>
 					<input class="scan-form__input" id="url" name="url" data-js="url" type="text" placeholder="example.com"
-						autocomplete="url" inputmode="url" autocapitalize="none" spellcheck="false">
+						autocomplete="url" inputmode="url" autocapitalize="none" spellcheck="false" aria-describedby="form-error">
 				</div>
 				<button class="button button--primary scan-form__submit" type="submit" data-js="scan-submit">Проверить</button>
 			</div>
-			<p class="scan-form__error" data-js="form-error" role="alert" hidden></p>
+			<p class="scan-form__error" data-js="form-error" id="form-error" role="alert" hidden></p>
 		</form>
 
 		<label class="consent">

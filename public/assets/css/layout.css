@@ -75,3 +75,18 @@
   text-decoration: none;
   display: inline-block;
 }
+
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  background: var(--color-accent);
+  color: var(--color-surface);
+  padding: 10px 20px;
+  z-index: 1000;
+  transition: top 0.3s;
+}
+
+.skip-link:focus {
+  top: 0;
+}
