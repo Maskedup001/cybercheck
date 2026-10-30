@@ -53,7 +53,7 @@ function calculateScore(report) {
       recommendation: "Повторите скан позже.",
     });
   } else {
-    if (h.hsts) score += 15;
+    if (h.hsts && hasSSL) score += 15;
     else if (hasSSL)
       push({
         id: "no-hsts",
