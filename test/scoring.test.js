@@ -18,31 +18,34 @@ test("всё хорошо → A", () => {
   assert.deepStrictEqual(r.findings, []);
 });
 
-test("нет CSP → не A", () => {
+test("нет CSP → ровно 85 (B)", () => {
   const r = calculateScore({
     ports: [],
     ssl: okSSL,
     headers: { ...okHeaders, csp: false },
   });
-  assert.ok(r.score <= 85);
+  assert.strictEqual(r.score, 85);
+  assert.strictEqual(r.grade, "B");
 });
 
-test("нет HSTS → не A", () => {
+test("нет HSTS → ровно 85 (B)", () => {
   const r = calculateScore({
     ports: [],
     ssl: okSSL,
     headers: { ...okHeaders, hsts: false },
   });
-  assert.ok(r.score <= 85);
+  assert.strictEqual(r.score, 85);
+  assert.strictEqual(r.grade, "B");
 });
 
-test("нет XCTO → ≤ 90", () => {
+test("нет XCTO → ровно 90 (A)", () => {
   const r = calculateScore({
     ports: [],
     ssl: okSSL,
     headers: { ...okHeaders, xcontent: false },
   });
-  assert.ok(r.score <= 90);
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "A");
 });
 
 test("просроченный SSL → ≤ 40 (D/F)", () => {
@@ -90,4 +93,20 @@ test("server «не указан» не считается раскрытием"
   });
   assert.strictEqual(r.score, 100);
   assert.ok(!r.findings.some((f) => f.id === "server-exposed"));
+});
+
+test("HSTS без SSL не дает баллов", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: { hasSSL: false },
+    // Выключаем остальные заголовки, чтобы проверить только HSTS
+    headers: {
+      csp: false,
+      xframe: false,
+      xcontent: false,
+      server: "nginx",
+      hsts: true,
+    },
+  });
+  assert.strictEqual(r.score, 20); // 20 (за порты) + 0 (за остальное)
 });
