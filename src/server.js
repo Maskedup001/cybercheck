@@ -115,7 +115,7 @@ app.post("/api/scan", async (req, res) => {
   // 3. Сначала валидация (NEW-03), чтобы мусорные запросы не жгли лимит
   const { url, consent, consentTimestamp } = req.body;
 
-  if (typeof url !== "string" || url.length === 0 || url.length > 253) {
+  if (typeof url !== "string" || url.length === 0 || url.length > 2048) {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
   if (consent !== true) {
@@ -140,11 +140,22 @@ app.post("/api/scan", async (req, res) => {
   } catch {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
-  const hostname = parsed.hostname.toLowerCase();
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return res
+      .status(400)
+      .json({ error: "Поддерживаются только http и https" });
+  }
 
-  const hostRegex =
-    /^(localhost|([a-z0-9-]+\.)+[a-z]{2,}|(\d{1,3}\.){3}\d{1,3})$/;
-  if (!hostRegex.test(hostname)) {
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+
+  if (hostname.length === 0 || hostname.length > 253) {
+    return res.status(400).json({ error: "Некорректный адрес" });
+  }
+
+  const isIp = net.isIP(hostname);
+  const domainRegex = /^([a-z0-9-]+\.)+[a-z0-9-]{2,}$/i;
+
+  if (hostname !== "localhost" && !isIp && !domainRegex.test(hostname)) {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
 
@@ -162,10 +173,7 @@ app.post("/api/scan", async (req, res) => {
   );
 
   let connectIp;
-  if (
-    DEMO_MODE &&
-    (hostname === "localhost" || hostname === "127.0.0.1")
-  ) {
+  if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
     connectIp = hostname;
   } else {
     let resolvedIps;
