@@ -1,6 +1,6 @@
 # DISCLAIMER / ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ
 
-**Версия:** v1.2.0 · **Дата:** 31 октября 2026
+**Версия:** v2.0.0 · **Дата:** 31 октября 2026
 
 ---
 
@@ -50,7 +50,7 @@ The authors assume **no liability** for any damage, legal consequences, or misus
 
 ### Data
 
-Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v1.2.0. Do not scan systems whose hostnames or addresses you are not allowed to process.
+Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.0.0. Do not scan systems whose hostnames or addresses you are not allowed to process.
 
 ### Legal notice
 
@@ -110,7 +110,7 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ### Данные
 
-Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v1.2.0 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
+Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.0.0 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
 
 ### Правовая информация
 
@@ -124,4 +124,4 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ---
 
-**Проект:** CyberCheck · **Версия:** 1.2.0 · **Год:** 2026
+**Проект:** CyberCheck · **Версия:** 2.0.0 · **Год:** 2026
