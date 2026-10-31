@@ -1,7 +1,10 @@
 body {
   display: flex;
   flex-direction: column;
+  /* dvh учитывает скрывающуюся адресную строку мобильных браузеров,
+     vh остаётся фолбэком для старых движков. */
   min-height: 100vh;
+  min-height: 100dvh;
   padding: var(--space-10) var(--container-pad);
   background-color: var(--color-bg);
   color: var(--color-text);

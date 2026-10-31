@@ -2,11 +2,34 @@
   margin-bottom: var(--space-6);
 }
 
+/* Три карточки: одна колонка на телефоне, две в середине (третья на всю
+   ширину), три на десктопе. auto-fit при трёх карточках оставлял
+   пустую клетку справа в нижнем ряду. */
 .details__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
   margin-top: var(--space-4);
+}
+
+@media (min-width: 40em) {
+  .details__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 56em) {
+  .details__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .detail:last-child {
+    grid-column: auto;
+  }
 }
 
 .detail {

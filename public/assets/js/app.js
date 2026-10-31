@@ -39,27 +39,41 @@ function stopScanStatus() {
   if (scanStatus) scanStatus.hidden = true;
 }
 
-async function handleSubmit(event) {
-  event.preventDefault();
+function clearError() {
+  if (formError.hidden) return;
 
   formError.hidden = true;
   formError.textContent = "";
   input.removeAttribute("aria-invalid");
+  consent.removeAttribute("aria-invalid");
+}
+
+function showError(message) {
+  formError.textContent = message;
+  formError.hidden = false;
+}
+
+async function handleSubmit(event) {
+  event.preventDefault();
+
+  clearError();
 
   const url = input.value.trim();
   const isConsent = consent.checked;
 
   if (!url) {
-    formError.textContent = "Введи адрес сайта";
-    formError.hidden = false;
+    // Плашка одна на всю форму, поэтому aria-invalid ставим ровно на то
+    // поле, о котором она говорит: иначе скринридер объявит неверным
+    // соседний контрол.
+    showError("Введи адрес сайта");
     input.setAttribute("aria-invalid", "true");
     input.focus();
     return;
   }
 
   if (!isConsent) {
-    formError.textContent = "Подтверди согласие на проверку";
-    formError.hidden = false;
+    showError("Подтверди согласие на проверку");
+    consent.setAttribute("aria-invalid", "true");
     consent.focus();
     return;
   }
@@ -97,10 +111,10 @@ async function handleSubmit(event) {
 
     const message = error instanceof Error ? error.message : "неизвестная ошибка";
 
-    formError.textContent = `Ошибка: ${message}`;
-    formError.hidden = false;
+    // Сетевой сбой, таймаут и 429 к содержимому поля отношения не имеют:
+    // aria-invalid на адресе только сбивал бы с толку.
+    showError(`Ошибка: ${message}`);
     statusRegion.textContent = "Ошибка сканирования";
-    input.setAttribute("aria-invalid", "true");
   } finally {
     stopScanStatus();
     submitBtn.disabled = false;
@@ -112,12 +126,7 @@ async function handleSubmit(event) {
 form.addEventListener("submit", handleSubmit);
 printBtn.addEventListener("click", () => window.print());
 
-// Ошибка снимается, как только пользователь начал править адрес:
-// держать красную плашку и aria-invalid до следующего сабмита нечестно.
-input.addEventListener("input", () => {
-  if (formError.hidden) return;
-
-  formError.hidden = true;
-  formError.textContent = "";
-  input.removeAttribute("aria-invalid");
-});
+// Ошибка снимается, как только пользователь начал править адрес или
+// отметил согласие: держать красную плашку до следующего сабмита нечестно.
+input.addEventListener("input", clearError);
+consent.addEventListener("change", clearError);
