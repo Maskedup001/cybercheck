@@ -121,3 +121,13 @@ test("поддержка устаревшего TLS снижает оценку"
   assert.strictEqual(r.grade, "B");
   assert.ok(r.findings.some((f) => f.id === "old-tls"));
 });
+
+test("medium-находка ограничивает оценку до B (90)", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: { hasSSL: true, valid: true, daysLeft: 10 }, // ssl-expiring
+    headers: okHeaders,
+  });
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "B");
+});
