@@ -13,16 +13,12 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
       const socket = new net.Socket();
       let status = "closed";
 
-      if (signal) {
-        signal.addEventListener(
-          "abort",
-          () => {
-            socket.destroy();
-            resolve({ port, status: "closed" });
-          },
-          { once: true },
-        );
-      }
+      const onAbort = () => {
+        socket.destroy();
+        resolve({ port, status: "closed" });
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
       socket.setTimeout(timeout);
       socket.on("connect", () => {
         status = "open";
@@ -34,6 +30,7 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
         if (err.code === "ECONNREFUSED") status = "refused";
       });
       socket.on("close", () => {
+        if (signal) signal.removeEventListener("abort", onAbort);
         if (signal?.aborted) return;
         if (status === "closed" && attemptsLeft > 0) {
           // Если закрыт и есть попытки — пробуем еще раз через 500мс
@@ -66,7 +63,7 @@ function checkOldTls(connectIp, port, hostname, signal) {
         rejectUnauthorized: false,
         minVersion: "TLSv1",
         maxVersion: "TLSv1.1",
-        ciphers: "DEFAULT@SECLEVEL=0",
+        ciphers: "ALL:@SECLEVEL=0", // Максимальная совместимость для детекта старых шифров
         signal,
       },
       () => {
@@ -111,43 +108,54 @@ async function checkSSL(connectIp, port, hostname, signal) {
       async () => {
         mainSucceeded = true;
         socket.setTimeout(0); // Отключаем таймаут, мы уже получили сертификат
-        const cert = socket.getPeerCertificate();
-        if (!cert || !cert.valid_to) {
-          socket.end();
-          return finish({ hasSSL: false });
-        }
 
-        const verifyError = socket.authorizationError || null;
-        const valid = verifyError === null;
-        const daysLeft = Math.floor(
-          (new Date(cert.valid_to) - Date.now()) / 86400000,
-        );
-        const tlsVersion = socket.getProtocol();
-
-        socket.end();
-
-        let supportsOldTls = false;
         try {
-          supportsOldTls = await checkOldTls(connectIp, port, hostname, signal);
-        } catch (e) {}
+          const cert = socket.getPeerCertificate();
+          if (!cert || !cert.valid_to) {
+            socket.end();
+            return finish({ hasSSL: false });
+          }
 
-        finish({
-          hasSSL: true,
-          valid,
-          verifyError,
-          daysLeft,
-          validTo: cert.valid_to,
-          validToISO: (() => {
-            if (!cert.valid_to) return null;
-            const d = new Date(cert.valid_to);
-            return Number.isNaN(d.getTime()) ? null : d.toISOString();
-          })(),
-          issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
-          tlsVersion,
-          supportsOldTls,
-        });
+          const verifyError = socket.authorizationError || null;
+          const valid = verifyError === null;
+          const daysLeft = Math.floor(
+            (new Date(cert.valid_to) - Date.now()) / 86400000,
+          );
+          const tlsVersion = socket.getProtocol();
+
+          socket.end();
+
+          let supportsOldTls = false;
+          try {
+            supportsOldTls = await checkOldTls(
+              connectIp,
+              port,
+              hostname,
+              signal,
+            );
+          } catch (e) {}
+
+          finish({
+            hasSSL: true,
+            valid,
+            verifyError,
+            daysLeft,
+            validTo: cert.valid_to,
+            validToISO: (() => {
+              if (!cert.valid_to) return null;
+              const d = new Date(cert.valid_to);
+              return Number.isNaN(d.getTime()) ? null : d.toISOString();
+            })(),
+            issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
+            tlsVersion,
+            supportsOldTls,
+          });
+        } catch (e) {
+          socket.end();
+          finish({ hasSSL: false });
+        }
       },
-    );
+    ); // <--- ВОТ ЭТА СКОБКА БЫЛА ПОТЕРЯНА
 
     socket.on("error", onError);
     socket.setTimeout(5000, () => {
@@ -175,6 +183,7 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
 
     const attempt = (attemptsLeft) => {
       let failing = false;
+
       const tryHttp = (callback) => {
         const req = http.get(
           {
@@ -189,10 +198,16 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
             res.destroy();
           },
         );
-        req.on("error", callback);
+        let failed = false;
+        const done = () => {
+          if (failed) return;
+          failed = true;
+          callback();
+        };
+        req.on("error", done);
         req.on("timeout", () => {
           req.destroy();
-          callback();
+          done();
         });
       };
 
@@ -219,6 +234,7 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
           failing = true;
           tryHttp(() => {
             if (settled) return;
+            if (signal?.aborted) return resolveOnce({ error: true });
             if (attemptsLeft > 0) {
               // Ждем 1 секунду и пробуем снова
               setTimeout(() => attempt(attemptsLeft - 1), 1000);
