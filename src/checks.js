@@ -6,11 +6,23 @@ const http = require("http");
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
 // Если соединение установилось — порт открыт. Таймаут или ошибка — порт закрыт.
-function checkPort(connectIp, port, timeout = 3000, retries = 1) {
+function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
   return new Promise((resolve) => {
     const attempt = (attemptsLeft) => {
+      if (signal?.aborted) return resolve({ port, status: "closed" });
       const socket = new net.Socket();
       let status = "closed";
+
+      if (signal) {
+        signal.addEventListener(
+          "abort",
+          () => {
+            socket.destroy();
+            resolve({ port, status: "closed" });
+          },
+          { once: true },
+        );
+      }
       socket.setTimeout(timeout);
       socket.on("connect", () => {
         status = "open";
@@ -41,8 +53,9 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1) {
 // сертификатах (просроченных, самоподписанных) — иначе соединение оборвётся.
 
 // Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1)
-function checkOldTls(connectIp, port, hostname) {
+function checkOldTls(connectIp, port, hostname, signal) {
   return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(false);
     const servername = net.isIP(hostname) ? undefined : hostname;
     const socket = tls.connect(
       {
@@ -52,7 +65,8 @@ function checkOldTls(connectIp, port, hostname) {
         rejectUnauthorized: false,
         minVersion: "TLSv1",
         maxVersion: "TLSv1.1",
-        ciphers: "DEFAULT@SECLEVEL=0", // Разрешаем старые шифры для проверки
+        ciphers: "DEFAULT@SECLEVEL=0",
+        signal,
       },
       () => {
         resolve(true); // Если подключился — значит, поддерживает старые TLS
@@ -67,10 +81,21 @@ function checkOldTls(connectIp, port, hostname) {
   });
 }
 
-async function checkSSL(connectIp, port, hostname) {
+async function checkSSL(connectIp, port, hostname, signal) {
   if (!port) return { hasSSL: false };
 
   return new Promise((resolve) => {
+    let settled = false;
+    let mainSucceeded = false;
+    const finish = (data) => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    };
+    const onError = () => {
+      if (!mainSucceeded) finish({ hasSSL: false });
+    };
+
     const servername = net.isIP(hostname) ? undefined : hostname;
     const socket = tls.connect(
       {
@@ -78,13 +103,17 @@ async function checkSSL(connectIp, port, hostname) {
         port,
         servername,
         rejectUnauthorized: false,
+        ciphers: "DEFAULT@SECLEVEL=0",
+        signal,
         minVersion: "TLSv1",
       },
       async () => {
+        mainSucceeded = true;
+        socket.setTimeout(0); // Отключаем таймаут, мы уже получили сертификат
         const cert = socket.getPeerCertificate();
         if (!cert || !cert.valid_to) {
           socket.end();
-          return resolve({ hasSSL: false });
+          return finish({ hasSSL: false });
         }
 
         const verifyError = socket.authorizationError || null;
@@ -96,15 +125,12 @@ async function checkSSL(connectIp, port, hostname) {
 
         socket.end();
 
-        // Проверяем старый TLS только если основной TLS успешен
         let supportsOldTls = false;
         try {
-          supportsOldTls = await checkOldTls(connectIp, port, hostname);
-        } catch (e) {
-          // Игнорируем ошибку проверки старого TLS, чтобы не уронить весь скан
-        }
+          supportsOldTls = await checkOldTls(connectIp, port, hostname, signal);
+        } catch (e) {}
 
-        resolve({
+        finish({
           hasSSL: true,
           valid,
           verifyError,
@@ -122,10 +148,10 @@ async function checkSSL(connectIp, port, hostname) {
       },
     );
 
-    socket.on("error", () => resolve({ hasSSL: false }));
+    socket.on("error", onError);
     socket.setTimeout(5000, () => {
       socket.destroy();
-      resolve({ hasSSL: false });
+      finish({ hasSSL: false });
     });
   });
 }
@@ -133,9 +159,10 @@ async function checkSSL(connectIp, port, hostname) {
 // Проверяет HTTP-заголовки безопасности.
 // Сначала пробует HTTPS, при ошибке — HTTP (для сайтов без SSL).
 // connectIp — IP для подключения, hostname — для SNI и Host-заголовка.
-function checkHeaders(connectIp, port, hostname, retries = 1) {
+function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
   return new Promise((resolve) => {
     if (!port) return resolve({ error: true });
+    if (signal?.aborted) return resolve({ error: true });
 
     const servername = net.isIP(hostname) ? undefined : hostname;
     let settled = false;
@@ -154,6 +181,7 @@ function checkHeaders(connectIp, port, hostname, retries = 1) {
             port,
             headers: { Host: hostname, "User-Agent": "CyberCheck/1.2" },
             timeout: 5000,
+            signal,
           },
           (res) => {
             resolveOnce(parseHeaders(res.headers, "HTTP"));
@@ -176,6 +204,7 @@ function checkHeaders(connectIp, port, hostname, retries = 1) {
             rejectUnauthorized: false,
             headers: { Host: hostname, "User-Agent": "CyberCheck/1.2" },
             timeout: 5000,
+            signal,
           },
           (res) => {
             resolveOnce(parseHeaders(res.headers, "HTTPS"));
