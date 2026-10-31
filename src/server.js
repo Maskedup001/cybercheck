@@ -30,8 +30,16 @@ const PUBLIC_ORIGIN = parsedOrigin.origin;
 
 // Подготовка index.html с динамическим BASE_URL
 const indexPath = path.join(__dirname, "../public/index.html");
-let indexHtml = fs.readFileSync(indexPath, "utf-8");
-indexHtml = indexHtml.replaceAll("__BASE_URL__", () => PUBLIC_ORIGIN);
+
+function buildIndexHtml() {
+  const raw = fs.readFileSync(indexPath, "utf-8");
+  return raw.replaceAll("__BASE_URL__", () => PUBLIC_ORIGIN);
+}
+
+// В продакшене HTML кэшируется на старте — это дешевле.
+// В разработке читаем с диска на каждый запрос, иначе после правки
+// разметки сервер продолжает отдавать старую версию.
+let indexHtml = process.env.NODE_ENV === "production" ? buildIndexHtml() : null;
 
 async function resolveWithTimeout(hostname, ms = 5000) {
   let timer;
@@ -90,7 +98,7 @@ app.use(express.json({ limit: "8kb" }));
 // Отдаем index.html с подставленным BASE_URL
 app.get("/", (req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(indexHtml);
+  res.send(indexHtml ?? buildIndexHtml());
 });
 app.get("/index.html", (req, res) => res.redirect("/"));
 app.get("/favicon.ico", (req, res) => res.redirect(301, "/favicon.svg"));
