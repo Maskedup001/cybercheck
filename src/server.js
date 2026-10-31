@@ -270,6 +270,14 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
   process.on(sig, () => {
     console.log(`${sig}: останавливаюсь...`);
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 20_000).unref();
+
+    // Закрываем "спящие" соединения (Node 18+)
+    if (server.closeIdleConnections) server.closeIdleConnections();
+
+    setTimeout(() => {
+      // Форсированно закрываем оставшиеся соединения
+      if (server.closeAllConnections) server.closeAllConnections();
+      process.exit(1);
+    }, 20_000).unref();
   });
 }
