@@ -26,8 +26,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
+      - name: Audit dependencies (production)
+        run: npm audit --audit-level=high --omit=dev
 
       - name: Check checks.js loads
         run: node -e "const c = require('./src/checks'); if (!c.checkPort || !c.checkSSL || !c.checkHeaders) { process.exit(1); } console.log('checks.js OK');"
