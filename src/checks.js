@@ -155,7 +155,7 @@ async function checkSSL(connectIp, port, hostname, signal) {
           finish({ hasSSL: false });
         }
       },
-    ); // <--- ВОТ ЭТА СКОБКА БЫЛА ПОТЕРЯНА
+    );
 
     socket.on("error", onError);
     socket.setTimeout(5000, () => {
