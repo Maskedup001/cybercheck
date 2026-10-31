@@ -1,12 +1,17 @@
 {
   "name": "cybercheck",
-  "version": "1.1.0",
+	"description": "Web vulnerability scanner with Risk Score",
+  "license": "MIT",
+  "version": "1.2.0",
   "main": "src/server.js",
   "private": true,
-  "engines": { "node": ">=22 <25" },
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"  },
+    "test": "node --test test/*.test.js"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
@@ -14,7 +19,7 @@
     "ipaddr.js": "^2.5.0",
     "qs": "^6.16.1"
   },
-	"overrides": {
+  "overrides": {
     "body-parser": "1.20.9"
   }
 }
