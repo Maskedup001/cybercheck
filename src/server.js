@@ -113,14 +113,19 @@ setInterval(() => {
 }, 30_000).unref();
 
 // Хелпер для ограничения времени выполнения скана
-function withTimeout(promise, ms) {
-  let timeoutId;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error("SCAN_TIMEOUT")), ms);
+function withTimeout(factory, ms) {
+  const controller = new AbortController();
+  let timer;
+  let onAbort;
+  const timeout = new Promise((_, reject) => {
+    onAbort = () => reject(new Error("SCAN_TIMEOUT"));
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(() => controller.abort(), ms);
   });
-  return Promise.race([promise, timeoutPromise]).finally(() =>
-    clearTimeout(timeoutId),
-  );
+  return Promise.race([factory(controller.signal), timeout]).finally(() => {
+    clearTimeout(timer);
+    controller.signal.removeEventListener("abort", onAbort);
+  });
 }
 
 app.post("/api/scan", async (req, res) => {
@@ -207,28 +212,36 @@ app.post("/api/scan", async (req, res) => {
 
   try {
     // Ограничиваем весь процесс сканирования 20 секундами
-    const scanResult = await withTimeout(
-      (async () => {
-        const ports = await Promise.all(
-          [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p)),
-        );
-        const openPorts = ports.filter((p) => p.status === "open");
-        const webPort = [443, 80, 8080].find((p) =>
-          openPorts.some((op) => op.port === p),
-        );
+    const scanResult = await withTimeout(async (signal) => {
+      const ports = await Promise.all(
+        [80, 443, 22, 3306, 8080].map((p) =>
+          checkPort(connectIp, p, 3000, 1, signal),
+        ),
+      );
+      if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
-        if (!webPort) {
-          const ssl = { hasSSL: false };
-          const headers = { error: true };
-          return buildReport(hostname, openPorts, ssl, headers);
-        }
+      const openPorts = ports.filter((p) => p.status === "open");
+      const webPort = [443, 80, 8080].find((p) =>
+        openPorts.some((op) => op.port === p),
+      );
 
-        const ssl = await checkSSL(connectIp, webPort, hostname);
-        const headers = await checkHeaders(connectIp, webPort, hostname);
+      if (!webPort) {
+        const ssl = { hasSSL: false };
+        const headers = { error: true };
         return buildReport(hostname, openPorts, ssl, headers);
-      })(),
-      20000,
-    ); // 20 секунд
+      }
+
+      const ssl = await checkSSL(connectIp, webPort, hostname, signal);
+      if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+      const headers = await checkHeaders(
+        connectIp,
+        webPort,
+        hostname,
+        1,
+        signal,
+      );
+      return buildReport(hostname, openPorts, ssl, headers);
+    }, 20000);
 
     res.json(scanResult);
   } catch (e) {
