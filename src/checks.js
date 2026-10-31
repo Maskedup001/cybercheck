@@ -166,9 +166,17 @@ async function checkSSL(connectIp, port, hostname, signal) {
 }
 
 // Проверяет HTTP-заголовки безопасности.
-// Сначала пробует HTTPS, при ошибке — HTTP (для сайтов без SSL).
+// hasTls — результат checkSSL по этому же порту: если TLS не поднялся,
+// HTTPS-попытка заведомо провалится и только съест таймаут.
 // connectIp — IP для подключения, hostname — для SNI и Host-заголовка.
-function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
+function checkHeaders(
+  connectIp,
+  port,
+  hostname,
+  retries = 1,
+  signal,
+  hasTls = true,
+) {
   return new Promise((resolve) => {
     if (!port) return resolve({ error: true });
     if (signal?.aborted) return resolve({ error: true });
@@ -184,7 +192,18 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
     const attempt = (attemptsLeft) => {
       let failing = false;
 
-      const tryHttp = (callback) => {
+      const retryOrFail = () => {
+        if (settled) return;
+        if (signal?.aborted) return resolveOnce({ error: true });
+        if (attemptsLeft > 0) {
+          // Ждем 1 секунду и пробуем снова
+          setTimeout(() => attempt(attemptsLeft - 1), 1000);
+        } else {
+          resolveOnce({ error: true });
+        }
+      };
+
+      const tryHttp = () => {
         const req = http.get(
           {
             host: connectIp,
@@ -200,9 +219,9 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
         );
         let failed = false;
         const done = () => {
-          if (failed) return;
+          if (failed || settled) return;
           failed = true;
-          callback();
+          retryOrFail();
         };
         req.on("error", done);
         req.on("timeout", () => {
@@ -230,18 +249,8 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
 
         const onFail = () => {
           if (settled || failing) return;
-          if (signal?.aborted) return resolveOnce({ error: true });
           failing = true;
-          tryHttp(() => {
-            if (settled) return;
-            if (signal?.aborted) return resolveOnce({ error: true });
-            if (attemptsLeft > 0) {
-              // Ждем 1 секунду и пробуем снова
-              setTimeout(() => attempt(attemptsLeft - 1), 1000);
-            } else {
-              resolveOnce({ error: true });
-            }
-          });
+          tryHttp();
         };
 
         req.on("error", onFail);
@@ -251,7 +260,8 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
         });
       };
 
-      tryHttps();
+      if (hasTls) tryHttps();
+      else tryHttp();
     };
 
     attempt(retries);

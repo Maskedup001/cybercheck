@@ -28,18 +28,31 @@ if (!["http:", "https:"].includes(parsedOrigin.protocol)) {
 
 const PUBLIC_ORIGIN = parsedOrigin.origin;
 
-// Подготовка index.html с динамическим BASE_URL
-const indexPath = path.join(__dirname, "../public/index.html");
+// HTML-страницы с подставленным BASE_URL: canonical, og:url и og:image
+// должны быть абсолютными, а origin известен только здесь.
+const PUBLIC_DIR = path.join(__dirname, "../public");
+const PAGES = ["index.html", "legal.html", "privacy.html"];
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const pageCache = new Map();
 
-function buildIndexHtml() {
-  const raw = fs.readFileSync(indexPath, "utf-8");
+function renderPage(name) {
+  const raw = fs.readFileSync(path.join(PUBLIC_DIR, name), "utf-8");
   return raw.replaceAll("__BASE_URL__", () => PUBLIC_ORIGIN);
 }
 
-// В продакшене HTML кэшируется на старте — это дешевле.
-// В разработке читаем с диска на каждый запрос, иначе после правки
-// разметки сервер продолжает отдавать старую версию.
-let indexHtml = process.env.NODE_ENV === "production" ? buildIndexHtml() : null;
+function pageHtml(name) {
+  if (!IS_PRODUCTION) return renderPage(name);
+
+  if (!pageCache.has(name)) pageCache.set(name, renderPage(name));
+  return pageCache.get(name);
+}
+
+// В продакшене HTML кэшируется на старте: это дешевле и сразу падает,
+// если файл пропал. В разработке читаем с диска на каждый запрос, иначе
+// после правки разметки сервер продолжает отдавать старую версию.
+if (IS_PRODUCTION) {
+  for (const name of PAGES) pageHtml(name);
+}
 
 async function resolveWithTimeout(hostname, ms = 5000) {
   let timer;
@@ -89,19 +102,36 @@ app.use(
 );
 
 app.use(cors({ origin: [PUBLIC_ORIGIN], methods: ["POST"], maxAge: 600 }));
-app.use((req, res, next) => {
+
+// Динамика не кэшируется, статика — наоборот: браузер перепроверяет её
+// по ETag и получает 304 вместо повторной загрузки двух десятков файлов
+// (17 CSS через @import + 3 JS-модуля).
+function noStore(req, res, next) {
   res.set("Cache-Control", "no-store");
   next();
-});
+}
+
+function revalidate(req, res, next) {
+  res.set("Cache-Control", "public, max-age=0, must-revalidate");
+  next();
+}
+
 app.use(express.json({ limit: "8kb" }));
 
-// Отдаем index.html с подставленным BASE_URL
-app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.send(indexHtml ?? buildIndexHtml());
+// Отдаём страницы с подставленным BASE_URL
+app.get("/", noStore, (req, res) => {
+  res.type("html").send(pageHtml("index.html"));
+});
+app.get("/legal.html", revalidate, (req, res) => {
+  res.type("html").send(pageHtml("legal.html"));
+});
+app.get("/privacy.html", revalidate, (req, res) => {
+  res.type("html").send(pageHtml("privacy.html"));
 });
 app.get("/index.html", (req, res) => res.redirect("/"));
 app.get("/favicon.ico", (req, res) => res.redirect(301, "/favicon.svg"));
+
+app.use("/api", noStore);
 
 app.use(express.static(path.join(__dirname, "../public")));
 
@@ -109,6 +139,12 @@ app.use(express.static(path.join(__dirname, "../public")));
 const lastScan = new Map();
 const COOLDOWN_MS = 10_000;
 const MAX_KEYS = 10_000;
+
+// Потолок одновременных сканов: без него поток запросов с разных IP
+// держит открытыми сотни исходящих сокетов к целям. Лимит на IP
+// от этого не защищает — обходится сменой адреса.
+const MAX_CONCURRENT_SCANS = 25;
+let activeScans = 0;
 
 function rateKey(ip) {
   if (!ip) return "unknown";
@@ -218,14 +254,30 @@ app.post("/api/scan", async (req, res) => {
   // 4. Лимит частоты срабатывает ТОЛЬКО для валидных запросов
   const wait = checkCooldown(rateKey(ip));
   if (wait > 0) {
+    res.set("Retry-After", String(wait));
     return res
       .status(429)
       .json({ error: `Подожди ${wait} сек. перед следующим сканом` });
   }
 
-  // 5. Логируем ПОСЛЕ валидации (защита от log injection)
+  if (activeScans >= MAX_CONCURRENT_SCANS) {
+    res.set("Retry-After", "60");
+    return res.status(503).json({ error: "Сервис занят, попробуй через минуту" });
+  }
+
+  activeScans += 1;
+  // Декремент вешаем на закрытие ответа: оно наступает на любом исходе,
+  // включая обрыв соединения клиентом.
+  res.on("close", () => {
+    activeScans -= 1;
+  });
+
+  // 5. Логируем ПОСЛЕ валидации (защита от log injection).
+  // req.ip — недоверенное значение: при TRUST_PROXY>0 оно приходит
+  // из X-Forwarded-For, поэтому в лог попадает только валидный адрес.
+  const loggedIp = net.isIP(ip) ? ip : "unknown";
   console.log(
-    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${ip}`,
+    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${loggedIp}`,
   );
 
   let connectIp;
@@ -251,7 +303,11 @@ app.post("/api/scan", async (req, res) => {
   }
 
   try {
-    // Ограничиваем весь процесс сканирования 20 секундами
+    // Ограничиваем весь процесс сканирования 30 секундами. Теоретический
+    // худший сценарий по внутренним таймаутам — 35,5 с (порты 6,5 +
+    // TLS 8 + заголовки 21), но он требует цели, которая принимает
+    // соединение и молчит: полезного отчёта по ней всё равно не будет.
+    // 30 с отсекают этот хвост, не заставляя клиента ждать до своих 45 с.
     const scanResult = await withTimeout(async (signal) => {
       const ports = await Promise.all(
         [80, 443, 22, 3306, 8080].map((p) =>
@@ -273,20 +329,23 @@ app.post("/api/scan", async (req, res) => {
 
       const ssl = await checkSSL(connectIp, webPort, hostname, signal);
       if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+      // Если TLS на этом порту не поднялся, HTTPS-попытка заведомо
+      // провалится: не тратим на неё до 5 секунд.
       const headers = await checkHeaders(
         connectIp,
         webPort,
         hostname,
         1,
         signal,
+        Boolean(ssl.hasSSL),
       );
       return buildReport(hostname, openPorts, ssl, headers);
-    }, 20000);
+    }, 30000);
 
     res.json(scanResult);
   } catch (e) {
     if (e.message === "SCAN_TIMEOUT") {
-      console.error("[scan] Превышено время сканирования (20с)");
+      console.error("[scan] Превышено время сканирования (30с)");
       return res
         .status(504)
         .json({ error: "Сканирование заняло слишком много времени" });
@@ -296,27 +355,7 @@ app.post("/api/scan", async (req, res) => {
   }
 });
 
-// 6. Улучшенный Error Handler (NEW-06)
-app.use((err, req, res, next) => {
-  const raw = err.status || err.statusCode || 500;
-  const status = raw >= 400 && raw < 600 ? raw : 500;
-  console.error(`[scan] ${status} ${req.method} ${req.originalUrl}`);
-  console.error(err.stack || err);
-  if (res.headersSent) return next(err);
-
-  const message =
-    status === 413
-      ? "Слишком большой запрос"
-      : status === 400
-        ? "Некорректный запрос"
-        : status === 429
-          ? "Слишком много запросов"
-          : "Внутренняя ошибка сервера";
-
-  res.status(status).json({ error: message });
-});
-
-// Хелпер для сборки ответа
+// 6. Хелпер для сборки ответа
 function buildReport(host, ports, ssl, headers) {
   const { score, grade, findings } = calculateScore({
     host,
@@ -328,13 +367,37 @@ function buildReport(host, ports, ssl, headers) {
 }
 
 // Healthcheck для хостингов (Render, Railway и т.д.)
-app.get("/healthz", (req, res) =>
+app.get("/healthz", noStore, (req, res) =>
   res.json({ ok: true, uptime: process.uptime() }),
 );
 
 // 404 для API (F-19)
 app.use((req, res) => {
   res.status(404).json({ error: "Не найдено" });
+});
+
+// 7. Единый обработчик ошибок. Регистрируется последним: Express идёт
+// по стеку от места ошибки вперёд, поэтому обработчик, стоящий выше
+// остальных маршрутов, чужие ошибки не увидит.
+app.use((err, req, res, next) => {
+  const raw = err.status || err.statusCode || 500;
+  const status = raw >= 400 && raw < 600 ? raw : 500;
+  console.error(`[${status}] ${req.method} ${req.originalUrl}`);
+  console.error(err.stack || err);
+  if (res.headersSent) return next(err);
+
+  const message =
+    status === 413
+      ? "Слишком большой запрос"
+      : status === 400
+        ? "Некорректный запрос"
+        : status === 429
+          ? "Слишком много запросов"
+          : status === 503
+            ? "Сервис занят, попробуй через минуту"
+            : "Внутренняя ошибка сервера";
+
+  res.status(status).json({ error: message });
 });
 
 const PORT = Number(process.env.PORT) || 3000;
