@@ -103,6 +103,9 @@
 
 .legal__body {
   min-width: 0;
+  /* Без скрипта оглавления нет, и текст занял бы всю ширину
+     документа — это ~110 знаков в строке. Держим меру набора. */
+  max-width: var(--legal-column);
 }
 
 .legal__section {
@@ -112,6 +115,16 @@
 
 .legal__section:last-child {
   margin-bottom: 0;
+}
+
+/* Раздел получает фокус программно при переходе из оглавления:
+   следующая табуляция идёт по тексту, а не по пунктам навигации.
+   Рамка — только для клавиатуры, иначе вокруг абзаца мигает
+   системный прямоугольник. */
+.legal__section:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: var(--space-2);
+  border-radius: var(--radius-sm);
 }
 
 .legal__section-title {
