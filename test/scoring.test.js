@@ -38,14 +38,14 @@ test("нет HSTS → ровно 85 (B)", () => {
   assert.strictEqual(r.grade, "B");
 });
 
-test("нет XCTO → ровно 90 (A)", () => {
+test("нет XCTO → ровно 90 (B)", () => {
   const r = calculateScore({
     ports: [],
     ssl: okSSL,
     headers: { ...okHeaders, xcontent: false },
   });
   assert.strictEqual(r.score, 90);
-  assert.strictEqual(r.grade, "A");
+  assert.strictEqual(r.grade, "B");
 });
 
 test("просроченный SSL → ≤ 40 (D/F)", () => {

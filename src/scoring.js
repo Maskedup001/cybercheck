@@ -156,7 +156,7 @@ function calculateScore(report) {
   score = Math.max(0, Math.min(100, score));
 
   let grade = "F";
-  if (score >= 90) grade = "A";
+  if (score >= 95) grade = "A";
   else if (score >= 75) grade = "B";
   else if (score >= 60) grade = "C";
   else if (score >= 40) grade = "D";
