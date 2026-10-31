@@ -4,6 +4,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="theme-color" content="#0f172a">
 	<meta name="description" content="Пользовательское соглашение сервиса CyberCheck: условия использования, ограничение ответственности и отказ от гарантий.">
 	<title>Пользовательское соглашение — CyberCheck</title>
 	<link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -13,7 +14,7 @@
 <body>
 	<a href="#main-content" class="skip-link">Перейти к содержимому</a>
 
-	<main class="legal" id="main-content">
+	<main class="legal" id="main-content" tabindex="-1">
 		<div class="legal__topbar">
 			<a class="button button--ghost legal__back" href="/">← На главную</a>
 		</div>
@@ -26,7 +27,7 @@
 		<div class="legal__layout">
 			<nav class="legal__toc" data-js="legal-toc" aria-label="Содержание документа" hidden>
 				<p class="legal__toc-title">Содержание</p>
-				<ol class="legal__toc-list" data-js="legal-toc-list"></ol>
+				<ol class="legal__toc-list" data-js="legal-toc-list" role="list"></ol>
 			</nav>
 
 			<div class="legal__body">

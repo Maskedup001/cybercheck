@@ -23,7 +23,7 @@
 <body>
 	<a href="#main-content" class="skip-link">Перейти к содержимому</a>
 
-	<main class="container" id="main-content">
+	<main class="container" id="main-content" tabindex="-1">
 		<header class="site-header">
 			<h1 class="site-header__title">CyberCheck</h1>
 			<p class="site-header__subtitle">Экспресс-проверка безопасности сайта</p>
@@ -40,6 +40,10 @@
 			<p class="scan-form__hint" id="form-hint">Домен или IP — проверка занимает до 20 секунд</p>
 			<p class="scan-form__error" data-js="form-error" id="form-error" role="alert" hidden></p>
 		</form>
+
+		<noscript>
+			<p class="noscript">Для проверки нужен JavaScript: сканирование запускается прямо в браузере.</p>
+		</noscript>
 
 		<label class="consent">
 			<input class="consent__control" type="checkbox" id="consent" data-js="consent">
