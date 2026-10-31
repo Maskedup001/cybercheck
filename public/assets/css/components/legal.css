@@ -1,0 +1,172 @@
+/* --- Юридические документы ---
+   Двухколоночный «документ»: оглавление + текст.
+   Оглавление строится из заголовков в legal-toc.js; без JS
+   блок остаётся скрытым, страница читается линейно. */
+
+.legal {
+  --legal-nav: 14rem;
+  --legal-column: 36rem;
+
+  width: 100%;
+  max-width: calc(var(--legal-nav) + var(--legal-column) + var(--space-10));
+  margin-inline: auto;
+}
+
+.legal__topbar {
+  margin-bottom: var(--space-4);
+}
+
+.legal__back {
+  padding-inline: 0;
+}
+
+.legal__header {
+  margin-bottom: var(--space-8);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.legal__title {
+  font-size: var(--font-size-display);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+  text-wrap: balance;
+}
+
+.legal__subtitle {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--leading-normal);
+}
+
+.legal__layout {
+  display: grid;
+  gap: var(--space-8);
+  align-items: start;
+}
+
+/* --- Оглавление --- */
+
+.legal__toc {
+  font-size: var(--font-size-sm);
+}
+
+.legal__toc[hidden] {
+  display: none;
+}
+
+.legal__toc-title {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: var(--space-2);
+}
+
+.legal__toc-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--color-border);
+}
+
+.legal__toc-link {
+  display: block;
+  padding: var(--space-1) var(--space-3);
+  margin-left: -1px;
+  border-left: 2px solid transparent;
+  color: var(--color-text-muted);
+  line-height: var(--leading-normal);
+  text-decoration: none;
+  transition:
+    color var(--duration-fast) var(--easing-standard),
+    border-color var(--duration-fast) var(--easing-standard);
+}
+
+.legal__toc-link:hover {
+  color: var(--color-text);
+}
+
+.legal__toc-link[aria-current] {
+  color: var(--color-accent);
+  border-left-color: var(--color-accent);
+}
+
+.legal__toc-link:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* --- Текст документа --- */
+
+.legal__body {
+  min-width: 0;
+}
+
+.legal__section {
+  margin-bottom: var(--space-8);
+  scroll-margin-top: var(--space-6);
+}
+
+.legal__section:last-child {
+  margin-bottom: 0;
+}
+
+.legal__section-title {
+  font-size: var(--font-size-lg);
+  color: var(--color-accent);
+  margin-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: var(--space-1);
+}
+
+.legal__text {
+  color: var(--color-text-muted);
+  line-height: var(--leading-relaxed);
+  margin-bottom: var(--space-4);
+  text-wrap: pretty;
+}
+
+.legal__text:last-child {
+  margin-bottom: 0;
+}
+
+/* --- Раскладка ---
+   До 56em документ читается одной колонкой, оглавление скрыто:
+   на телефоне оно только отодвигает текст. */
+
+@media (min-width: 56em) {
+  /* Класс ставит legal-toc.js: без скрипта документ остаётся
+     одной колонкой и текст не попадает в узкую колонку оглавления. */
+  .legal__layout--with-nav {
+    grid-template-columns: var(--legal-nav) minmax(0, 1fr);
+    gap: var(--space-10);
+  }
+
+  .legal__toc {
+    position: sticky;
+    top: var(--space-6);
+  }
+}
+
+@media (max-width: 55.98em) {
+  .legal__toc {
+    display: none;
+  }
+}
+
+/* Плавный переход по якорям — только на страницах документа
+   и только если пользователь не просил уменьшить движение. */
+@media (prefers-reduced-motion: no-preference) {
+  .legal-page {
+    scroll-behavior: smooth;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .legal__toc-link {
+    transition: none;
+  }
+}

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" class="legal-page">
 
 <head>
 	<meta charset="UTF-8">
@@ -12,45 +12,62 @@
 
 <body>
 	<a href="#main-content" class="skip-link">Перейти к содержимому</a>
-	<main class="container legal" id="main-content">
+
+	<main class="legal" id="main-content">
+		<div class="legal__topbar">
+			<a class="button button--ghost legal__back" href="/">← На главную</a>
+		</div>
+
 		<header class="legal__header">
 			<h1 class="legal__title">Пользовательское соглашение</h1>
 			<p class="legal__subtitle">Условия использования сервиса CyberCheck</p>
 		</header>
 
-		<section>
-			<div class="legal__section">
-				<h2 class="legal__section-title">1. Назначение сервиса</h2>
-				<p class="legal__text">
-					Сервис CyberCheck предоставляется исключительно для проведения экспресс-аудита безопасности веб-ресурсов.
-					Использование сервиса разрешено только в отношении сайтов, которые принадлежат вам на правах собственности,
-					либо в отношении которых у вас есть официальное письменное разрешение от владельца.
-				</p>
-			</div>
+		<div class="legal__layout">
+			<nav class="legal__toc" data-js="legal-toc" aria-label="Содержание документа" hidden>
+				<p class="legal__toc-title">Содержание</p>
+				<ol class="legal__toc-list" data-js="legal-toc-list"></ol>
+			</nav>
 
-			<div class="legal__section">
-				<h2 class="legal__section-title">2. Ограничение ответственности</h2>
-				<p class="legal__text">
-					Администрация сервиса не несет ответственности за любые противоправные действия, совершенные пользователями
-					с использованием данного инструмента. Несанкционированное сканирование чужих ресурсов является нарушением
-					и может преследоваться по статье 272 УК РФ («Неправомерный доступ к компьютерной информации»).
-				</p>
-			</div>
+			<div class="legal__body">
+				<section class="legal__section" id="purpose">
+					<h2 class="legal__section-title">1. Назначение сервиса</h2>
+					<p class="legal__text">
+						Сервис CyberCheck предоставляется исключительно для проведения экспресс-аудита безопасности веб-ресурсов.
+						Использование сервиса разрешено только в отношении сайтов, которые принадлежат вам на правах собственности,
+						либо в отношении которых у вас есть официальное письменное разрешение от владельца.
+					</p>
+				</section>
 
-			<div class="legal__section">
-				<h2 class="legal__section-title">3. Отказ от гарантий</h2>
-				<p class="legal__text">
-					Отчеты, формируемые сервисом, предоставляются «как есть» (AS IS) и не являются заменой полноценного
-					комплексного аудита безопасности. Администрация не гарантирует выявление всех существующих уязвимостей.
-				</p>
-			</div>
+				<section class="legal__section" id="liability">
+					<h2 class="legal__section-title">2. Ограничение ответственности</h2>
+					<p class="legal__text">
+						Администрация сервиса не несет ответственности за любые противоправные действия, совершенные пользователями
+						с использованием данного инструмента. Несанкционированное сканирование чужих ресурсов является нарушением
+						и может преследоваться по статье 272 УК РФ («Неправомерный доступ к компьютерной информации»).
+					</p>
+				</section>
 
-			<div class="legal__actions">
-				<a class="button button--secondary" href="/">← Вернуться на главную</a>
-				<a class="button button--ghost" href="/privacy.html">Конфиденциальность →</a>
+				<section class="legal__section" id="warranty">
+					<h2 class="legal__section-title">3. Отказ от гарантий</h2>
+					<p class="legal__text">
+						Отчеты, формируемые сервисом, предоставляются «как есть» (AS IS) и не являются заменой полноценного
+						комплексного аудита безопасности. Администрация не гарантирует выявление всех существующих уязвимостей.
+					</p>
+				</section>
 			</div>
-		</section>
+		</div>
 	</main>
+
+	<footer class="page-footer">
+		<a href="/legal.html" aria-current="page">Соглашение</a>
+		<span class="page-footer__divider">·</span>
+		<a href="/privacy.html">Конфиденциальность</a>
+		<span class="page-footer__divider">·</span>
+		<span>CyberCheck © 2026</span>
+	</footer>
+
+	<script type="module" src="/assets/js/legal-toc.js"></script>
 </body>
 
 </html>

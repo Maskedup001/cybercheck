@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" class="legal-page">
 
 <head>
 	<meta charset="UTF-8">
@@ -12,32 +12,55 @@
 
 <body>
 	<a href="#main-content" class="skip-link">Перейти к содержимому</a>
-	<main class="container legal" id="main-content">
+
+	<main class="legal" id="main-content">
+		<div class="legal__topbar">
+			<a class="button button--ghost legal__back" href="/">← На главную</a>
+		</div>
+
 		<header class="legal__header">
 			<h1 class="legal__title">Политика конфиденциальности</h1>
 			<p class="legal__subtitle">Последнее обновление: 31 октября 2026</p>
 		</header>
-		<section class="legal__section">
-			<h2 class="legal__section-title">1. Какие данные мы собираем</h2>
-			<p class="legal__text">При использовании сервиса мы записываем IP-адрес и имя проверяемого домена в серверные логи
-				для предотвращения злоупотреблений (Rate Limiting).</p>
-		</section>
-		<section class="legal__section">
-			<h2 class="legal__section-title">2. Как мы используем данные</h2>
-			<p class="legal__text">Данные используются исключительно для обеспечения работы сервиса и защиты от
-				несанкционированного доступа. Мы не передаем их третьим лицам.</p>
-		</section>
-		<section class="legal__section">
-			<h2 class="legal__section-title">3. Удаление данных</h2>
-			<p class="legal__text">Результаты сканирований не сохраняются на сервере. IP-адреса и hostname
-				попадают в логи хостинг-провайдера. Приложение не задаёт срок хранения и не ротирует
-				логи; срок определяется политикой провайдера.</p>
-		</section>
-		<div class="legal__actions">
-			<a class="button button--secondary" href="/">← Вернуться на главную</a>
-			<a class="button button--ghost" href="/legal.html">Соглашение →</a>
+
+		<div class="legal__layout">
+			<nav class="legal__toc" data-js="legal-toc" aria-label="Содержание документа" hidden>
+				<p class="legal__toc-title">Содержание</p>
+				<ol class="legal__toc-list" data-js="legal-toc-list"></ol>
+			</nav>
+
+			<div class="legal__body">
+				<section class="legal__section" id="data-collected">
+					<h2 class="legal__section-title">1. Какие данные мы собираем</h2>
+					<p class="legal__text">При использовании сервиса мы записываем IP-адрес и имя проверяемого домена в серверные логи
+						для предотвращения злоупотреблений (Rate Limiting).</p>
+				</section>
+
+				<section class="legal__section" id="data-usage">
+					<h2 class="legal__section-title">2. Как мы используем данные</h2>
+					<p class="legal__text">Данные используются исключительно для обеспечения работы сервиса и защиты от
+						несанкционированного доступа. Мы не передаем их третьим лицам.</p>
+				</section>
+
+				<section class="legal__section" id="data-retention">
+					<h2 class="legal__section-title">3. Удаление данных</h2>
+					<p class="legal__text">Результаты сканирований не сохраняются на сервере. IP-адреса и hostname
+						попадают в логи хостинг-провайдера. Приложение не задаёт срок хранения и не ротирует
+						логи; срок определяется политикой провайдера.</p>
+				</section>
+			</div>
 		</div>
 	</main>
+
+	<footer class="page-footer">
+		<a href="/legal.html">Соглашение</a>
+		<span class="page-footer__divider">·</span>
+		<a href="/privacy.html" aria-current="page">Конфиденциальность</a>
+		<span class="page-footer__divider">·</span>
+		<span>CyberCheck © 2026</span>
+	</footer>
+
+	<script type="module" src="/assets/js/legal-toc.js"></script>
 </body>
 
 </html>
