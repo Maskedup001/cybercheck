@@ -1,4 +1,6 @@
 body {
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
   padding: var(--space-10) var(--container-pad);
   background-color: var(--color-bg);
@@ -6,6 +8,12 @@ body {
   font-family: var(--font-sans);
   font-size: var(--font-size-base);
   line-height: var(--leading-relaxed);
+}
+
+/* Короткая страница (до первого скана) не оставляет футер висеть
+   посреди экрана: main забирает свободную высоту. */
+main {
+  flex: 1 0 auto;
 }
 
 /* Мягкое свечение акцентом сверху — даёт глубину тёмному фону,
@@ -26,4 +34,10 @@ body::before {
 
 html {
   scrollbar-color: var(--color-border-control) var(--color-bg);
+}
+
+/* main — цель skip-link: фокус ставится программно, рамка вокруг
+   всего содержимого была бы визуальным шумом. */
+main:focus {
+  outline: none;
 }

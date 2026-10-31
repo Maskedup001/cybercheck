@@ -43,6 +43,17 @@
   margin: 0 var(--space-2);
 }
 
+/* Сообщение для браузеров с отключённым JavaScript */
+.noscript {
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+}
+
 .skip-link {
   position: absolute;
   top: -100px;

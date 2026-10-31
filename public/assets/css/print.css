@@ -32,6 +32,11 @@
     font-size: 11pt;
   }
 
+  /* Флекс-контейнер плохо переносит разрывы страниц */
+  body {
+    display: block;
+  }
+
   /* Декоративное свечение фона в печать не идёт */
   body::before {
     display: none;
@@ -110,8 +115,14 @@
     color: var(--color-success) !important;
   }
 
+  /* Три карточки в две колонки: последняя занимает всю ширину,
+     иначе в нижнем ряду остаётся пустая клетка. */
   .details__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail:last-child {
+    grid-column: 1 / -1;
   }
 
   .detail {
