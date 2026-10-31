@@ -12,6 +12,8 @@
   --color-accent: #38bdf8;
   --color-accent-hover: #0ea5e9;
   --color-accent-active: #0284c7;
+  --color-accent-soft: rgb(56 189 248 / 0.12);
+  --color-accent-line: rgb(56 189 248 / 0.4);
   --color-focus: #7dd3fc;
   --color-success: #4ade80;
   --color-success-bg: rgb(74 222 128 / 0.12);
@@ -68,5 +70,6 @@
     --color-neutral: #cbd5e1;
     --color-border: #475569;
     --color-border-control: #94a3b8;
+    --color-accent-line: rgb(56 189 248 / 0.65);
   }
 }

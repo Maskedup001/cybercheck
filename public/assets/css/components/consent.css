@@ -1,20 +1,108 @@
+/* --- Согласие ---
+   Родной чекбокс рисует сама система: насыщенный квадрат с толстой
+   галочкой — единственный виджет «из ОС» на всей странице, и он
+   перетягивает внимание с формы. Контрол рисуем сами, но состояние
+   читается не только по квадрату: согласие дано — подсвечивается вся
+   строка, тем же акцентным контуром, что и панель поиска в фокусе. */
+
 .consent {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: var(--space-2);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
+  gap: var(--space-3);
   margin-bottom: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--leading-normal);
   cursor: pointer;
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    background-color var(--duration-fast) var(--easing-standard),
+    color var(--duration-fast) var(--easing-standard);
 }
+
+.consent:hover {
+  border-color: var(--color-border-control);
+}
+
+/* Фокус ставится и программно (при отправке без согласия), когда
+   :focus-visible ещё не сработал, — строка отвечает в любом случае. */
+.consent:focus-within {
+  border-color: var(--color-accent);
+}
+
+.consent:has(.consent__control:checked) {
+  border-color: var(--color-accent-line);
+  background-color: var(--color-accent-soft);
+  color: var(--color-text);
+}
+
 .consent__text {
   min-width: 0;
-  line-height: var(--leading-normal);
 }
-.consent__control {
+
+/* Контрол. Сам input спрятан по сетке, но остаётся фокусируемым и
+   кликабельным: квадрат ниже — только его отрисовка. */
+.consent__box {
+  position: relative;
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  /* текст 14/1.5 = 21px: выравниваем квадрат по первой строке */
   margin-top: 2px;
-  width: 24px;
-  height: 24px;
-  cursor: pointer;
-  accent-color: var(--color-accent);
+  border: 1.5px solid var(--color-border-control);
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  transition:
+    border-color var(--duration-fast) var(--easing-standard),
+    background-color var(--duration-fast) var(--easing-standard);
+}
+
+.consent:hover .consent__box {
+  border-color: var(--color-accent);
+}
+
+.consent__control:checked + .consent__box {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent);
+}
+
+/* Галочка — две стороны квадрата под 45°. Появляется с коротким
+   масштабированием: отметка «щёлкает», а не возникает из ниоткуда. */
+.consent__box::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 0.3rem;
+  height: 0.5rem;
+  border: solid var(--color-on-accent);
+  border-width: 0 2px 2px 0;
+  transform: translate(-50%, -50%) rotate(45deg) scale(0.6);
+  opacity: 0;
+  transition:
+    opacity var(--duration-fast) var(--easing-standard),
+    transform var(--duration-base) var(--easing-standard);
+}
+
+.consent__control:checked + .consent__box::after {
+  opacity: 1;
+  transform: translate(-50%, -50%) rotate(45deg) scale(1);
+}
+
+.consent__control:focus-visible + .consent__box {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .consent,
+  .consent__box,
+  .consent__box::after {
+    transition: none;
+  }
 }
