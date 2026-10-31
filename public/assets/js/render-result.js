@@ -3,6 +3,8 @@
 
 const PAGE_TITLE = document.title;
 let reportTitle = "";
+let currentGauge = null;
+let currentScore = 0;
 
 const GRADE_LABELS = {
   A: "Отличная защита",
@@ -73,7 +75,7 @@ function createScore(report, score) {
 
   const grade = document.createElement("span");
   grade.className = "score__grade";
-  grade.textContent = report.grade;
+  grade.textContent = report.grade || "?";
 
   const value = document.createElement("span");
   value.className = "score__value";
@@ -127,6 +129,9 @@ function createFindings(findings) {
 
   const list = document.createElement("ul");
   list.className = "findings__list";
+  // list-style: none убирает список из дерева доступности в Safari —
+  // возвращаем роль явно.
+  list.setAttribute("role", "list");
 
   for (const finding of findings) {
     const severity = SEVERITY[finding.severity] ?? SEVERITY.low;
@@ -395,12 +400,19 @@ export function renderResult(container, body, report) {
   body.append(scoreBlock, createFindings(findings), createDetails(normalized));
 
   container.hidden = false;
+
+  currentGauge = gauge;
+  currentScore = score;
   animateGauge(gauge, score);
 }
 
 window.addEventListener("beforeprint", () => {
   // Печать может быть повторной: заголовок нужен для имени PDF каждый раз.
   if (reportTitle) document.title = reportTitle;
+
+  // И кольцо должно попасть на бумагу в конечном положении,
+  // даже если печать нажали в середине анимации.
+  if (currentGauge) currentGauge.style.setProperty("--value", String(currentScore));
 });
 
 window.addEventListener("afterprint", () => {

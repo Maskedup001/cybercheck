@@ -44,7 +44,6 @@ async function handleSubmit(event) {
 
   formError.hidden = true;
   formError.textContent = "";
-  resultSection.hidden = true;
   input.removeAttribute("aria-invalid");
 
   const url = input.value.trim();
@@ -65,6 +64,11 @@ async function handleSubmit(event) {
     return;
   }
 
+  // Прячем предыдущий отчёт только когда скан действительно стартовал:
+  // ошибка валидации не должна стирать уже полученный результат.
+  const hadReport = !resultSection.hidden;
+
+  resultSection.hidden = true;
   submitBtn.disabled = true;
   submitBtn.textContent = "Проверяем…";
   statusRegion.textContent = "Сканирование началось";
@@ -87,7 +91,13 @@ async function handleSubmit(event) {
       resultTitle.focus();
     }
   } catch (error) {
-    formError.textContent = `Ошибка: ${error.message}`;
+    // Неудачная попытка не должна отнимать уже полученный отчёт
+    // (частый случай — 429 после быстрого повторного скана).
+    if (hadReport) resultSection.hidden = false;
+
+    const message = error instanceof Error ? error.message : "неизвестная ошибка";
+
+    formError.textContent = `Ошибка: ${message}`;
     formError.hidden = false;
     statusRegion.textContent = "Ошибка сканирования";
     input.setAttribute("aria-invalid", "true");
