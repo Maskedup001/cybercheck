@@ -112,6 +112,17 @@ setInterval(() => {
   }
 }, 30_000).unref();
 
+// Хелпер для ограничения времени выполнения скана
+function withTimeout(promise, ms) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error("SCAN_TIMEOUT")), ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() =>
+    clearTimeout(timeoutId),
+  );
+}
+
 app.post("/api/scan", async (req, res) => {
   const ip = req.ip;
 
@@ -195,26 +206,38 @@ app.post("/api/scan", async (req, res) => {
   }
 
   try {
-    const ports = await Promise.all(
-      [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p)),
-    );
-    const openPorts = ports.filter((p) => p.status === "open");
-    const webPort = [443, 80, 8080].find((p) =>
-      openPorts.some((op) => op.port === p),
-    );
+    // Ограничиваем весь процесс сканирования 20 секундами
+    const scanResult = await withTimeout(
+      (async () => {
+        const ports = await Promise.all(
+          [80, 443, 22, 3306, 8080].map((p) => checkPort(connectIp, p)),
+        );
+        const openPorts = ports.filter((p) => p.status === "open");
+        const webPort = [443, 80, 8080].find((p) =>
+          openPorts.some((op) => op.port === p),
+        );
 
-    // Если веб-порта нет, все равно считаем скоринг
-    if (!webPort) {
-      const ssl = { hasSSL: false };
-      const headers = { error: true };
-      return res.json(buildReport(hostname, openPorts, ssl, headers));
-    }
+        if (!webPort) {
+          const ssl = { hasSSL: false };
+          const headers = { error: true };
+          return buildReport(hostname, openPorts, ssl, headers);
+        }
 
-    const ssl = await checkSSL(connectIp, webPort, hostname);
-    const headers = await checkHeaders(connectIp, webPort, hostname);
+        const ssl = await checkSSL(connectIp, webPort, hostname);
+        const headers = await checkHeaders(connectIp, webPort, hostname);
+        return buildReport(hostname, openPorts, ssl, headers);
+      })(),
+      20000,
+    ); // 20 секунд
 
-    res.json(buildReport(hostname, openPorts, ssl, headers));
+    res.json(scanResult);
   } catch (e) {
+    if (e.message === "SCAN_TIMEOUT") {
+      console.error("[scan] Превышено время сканирования (20с)");
+      return res
+        .status(504)
+        .json({ error: "Сканирование заняло слишком много времени" });
+    }
     console.error("[scan] проверка не удалась:", e);
     res.status(500).json({ error: "Ошибка сканирования" });
   }
