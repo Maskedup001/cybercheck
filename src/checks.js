@@ -17,7 +17,10 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1) {
         socket.destroy();
       });
       socket.on("timeout", () => socket.destroy());
-      socket.on("error", () => {});
+      socket.on("error", (err) => {
+        // При явном отказе ретрай бессмыслен
+        if (err.code === "ECONNREFUSED") status = "refused";
+      });
       socket.on("close", () => {
         if (status === "closed" && attemptsLeft > 0) {
           // Если закрыт и есть попытки — пробуем еще раз через 500мс

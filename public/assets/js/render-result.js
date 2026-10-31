@@ -106,8 +106,10 @@ export function renderResult(container, body, report) {
 
     if (typeof valueNode === "string") {
       dd.textContent = valueNode;
+    } else if (valueNode instanceof Node) {
+      dd.appendChild(valueNode);
     } else {
-      dd.appendChild(valueNode); // Если передан готовый элемент (бейджик)
+      dd.textContent = String(valueNode ?? "—");
     }
 
     row.append(dt, dd);
@@ -174,7 +176,7 @@ export function renderResult(container, body, report) {
       : "н/д";
     let daysText = "";
 
-    if (daysLeft !== undefined && daysLeft !== null) {
+    if (Number.isFinite(daysLeft)) {
       if (daysLeft < 0) {
         // Если сертификат просрочен
         daysText = ` (истек ${Math.abs(daysLeft)} дн. назад)`;

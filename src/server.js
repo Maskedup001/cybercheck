@@ -61,6 +61,10 @@ app.use(
 );
 
 app.use(cors({ origin: [PUBLIC_ORIGIN], methods: ["POST"], maxAge: 600 }));
+app.use((req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+});
 app.use(express.json({ limit: "8kb" }));
 app.use(express.static(path.join(__dirname, "../public")));
 
@@ -109,7 +113,6 @@ setInterval(() => {
 }, 30_000).unref();
 
 app.post("/api/scan", async (req, res) => {
-  res.set("Cache-Control", "no-store");
   const ip = req.ip;
 
   // 3. Сначала валидация (NEW-03), чтобы мусорные запросы не жгли лимит
@@ -258,7 +261,11 @@ app.use((req, res) => {
   res.status(404).json({ error: "Не найдено" });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
+if (PORT < 1 || PORT > 65535) {
+  console.error("ОШИБКА: PORT должен быть числом от 1 до 65535");
+  process.exit(1);
+}
 const server = app.listen(PORT, () => {
   console.log(`Сканер запущен: http://localhost:${PORT}`);
   console.log(`[CORS] разрешён origin: ${PUBLIC_ORIGIN}`);
