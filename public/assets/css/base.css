@@ -1,9 +1,29 @@
 body {
   min-height: 100vh;
   padding: var(--space-10) var(--container-pad);
-  background: var(--color-bg);
+  background-color: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: var(--font-size-base);
   line-height: var(--leading-relaxed);
+}
+
+/* Мягкое свечение акцентом сверху — даёт глубину тёмному фону,
+   не мешает чтению и не попадает в печать. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(57rem 26rem at 50% -8rem, rgb(56 189 248 / 0.16), rgb(56 189 248 / 0));
+  pointer-events: none;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+html {
+  scrollbar-color: var(--color-border-control) var(--color-bg);
 }

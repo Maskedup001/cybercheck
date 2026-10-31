@@ -4,7 +4,13 @@
 @import url("layout.css");
 @import url("utilities.css");
 @import url("components/button.css");
+@import url("components/badge.css");
 @import url("components/scan-form.css");
 @import url("components/consent.css");
+@import url("components/scan-status.css");
 @import url("components/result.css");
+@import url("components/score.css");
+@import url("components/findings.css");
+@import url("components/details.css");
+@import url("components/legal.css");
 @import url("print.css");

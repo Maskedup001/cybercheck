@@ -21,6 +21,7 @@
   --color-danger-bg: rgb(248 113 113 / 0.12);
   --color-neutral: #94a3b8;
   --color-neutral-bg: rgb(148 163 184 / 0.12);
+  --color-gauge-track: #263449;
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -57,4 +58,15 @@
   --duration-fast: 150ms;
   --duration-base: 200ms;
   --easing-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Пользователь попросил повышенный контраст — поднимаем приглушённые тона
+   и границы, не меняя акцент и семантические цвета. */
+@media (prefers-contrast: more) {
+  :root {
+    --color-text-muted: #cbd5e1;
+    --color-neutral: #cbd5e1;
+    --color-border: #475569;
+    --color-border-control: #94a3b8;
+  }
 }
