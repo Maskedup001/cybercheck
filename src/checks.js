@@ -34,6 +34,7 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
         if (err.code === "ECONNREFUSED") status = "refused";
       });
       socket.on("close", () => {
+        if (signal?.aborted) return;
         if (status === "closed" && attemptsLeft > 0) {
           // Если закрыт и есть попытки — пробуем еще раз через 500мс
           setTimeout(() => attempt(attemptsLeft - 1), 500);
@@ -214,6 +215,7 @@ function checkHeaders(connectIp, port, hostname, retries = 1, signal) {
 
         const onFail = () => {
           if (settled || failing) return;
+          if (signal?.aborted) return resolveOnce({ error: true });
           failing = true;
           tryHttp(() => {
             if (settled) return;
