@@ -22,6 +22,7 @@
 
 <body>
 	<a href="#main-content" class="skip-link">Перейти к содержимому</a>
+
 	<main class="container" id="main-content">
 		<header class="site-header">
 			<h1 class="site-header__title">CyberCheck</h1>
@@ -29,14 +30,14 @@
 		</header>
 
 		<form class="scan-form" data-js="scan-form" novalidate>
-			<div class="scan-form__row">
-				<div class="scan-form__field">
-					<label class="u-visually-hidden" for="url">Адрес сайта</label>
-					<input class="scan-form__input" id="url" name="url" data-js="url" type="text" placeholder="example.com"
-						autocomplete="url" inputmode="url" autocapitalize="none" spellcheck="false" aria-describedby="form-error">
-				</div>
+			<div class="scan-form__control">
+				<label class="u-visually-hidden" for="url">Адрес сайта</label>
+				<input class="scan-form__input" id="url" name="url" data-js="url" type="text" placeholder="example.com"
+					autocomplete="url" inputmode="url" autocapitalize="none" spellcheck="false"
+					aria-describedby="form-hint form-error">
 				<button class="button button--primary scan-form__submit" type="submit" data-js="scan-submit">Проверить</button>
 			</div>
+			<p class="scan-form__hint" id="form-hint">Домен или IP — проверка занимает до 20 секунд</p>
 			<p class="scan-form__error" data-js="form-error" id="form-error" role="alert" hidden></p>
 		</form>
 
@@ -47,30 +48,32 @@
 
 		<p class="u-visually-hidden" role="status" data-js="status"></p>
 
-		<!-- БЛОК РЕЗУЛЬТАТА (скрыт по умолчанию) -->
+		<div class="scan-status" data-js="scan-status" hidden>
+			<span class="scan-status__spinner" aria-hidden="true"></span>
+			<p class="scan-status__text" data-js="scan-status-text">Проверяем порты, TLS и заголовки…</p>
+		</div>
+
 		<section class="result" data-js="result" aria-label="Результаты проверки" hidden>
 			<header class="result__header">
-				<p class="result__brand">CyberCheck</p>
-				<h2 class="result__title">Отчёт о проверке</h2>
-				<dl class="result__meta">
-					<div class="result__meta-item">
-						<dt class="result__meta-label">Сайт:</dt>
-						<dd class="result__meta-value" data-js="report-host"></dd>
-					</div>
-					<div class="result__meta-item">
-						<dt class="result__meta-label">Дата:</dt>
-						<dd class="result__meta-value" data-js="report-date"></dd>
-					</div>
-				</dl>
+				<div class="result__identity">
+					<p class="result__brand">CyberCheck</p>
+					<h2 class="result__title">Отчёт о проверке</h2>
+					<dl class="result__meta">
+						<div class="result__meta-item">
+							<dt class="result__meta-label">Сайт</dt>
+							<dd class="result__meta-value" data-js="report-host"></dd>
+						</div>
+						<div class="result__meta-item">
+							<dt class="result__meta-label">Дата</dt>
+							<dd class="result__meta-value" data-js="report-date"></dd>
+						</div>
+					</dl>
+				</div>
+				<button class="button button--secondary result__download" type="button" data-js="print">Скачать PDF</button>
 			</header>
 
 			<div class="result__body" data-js="result-body"></div>
 
-			<div class="result__actions">
-				<button class="button button--secondary" type="button" data-js="print">Скачать PDF</button>
-			</div>
-
-			<!-- ВОТ ТОТ САМЫЙ ФУТЕР ОТЧЕТА -->
 			<footer class="report-footer">
 				<p class="report-footer__text">Отчёт сформирован автоматически и не заменяет полноценный аудит. Проверка
 					выполнена с согласия владельца.</p>
@@ -79,16 +82,15 @@
 				</p>
 			</footer>
 		</section>
-
-		<!-- ГЛОБАЛЬНЫЙ ФУТЕР СТРАНИЦЫ -->
-		<footer class="page-footer">
-			<a href="/legal.html" target="_blank" rel="noopener">Соглашение</a>
-			<span class="page-footer__divider">·</span>
-			<a href="/privacy.html" target="_blank" rel="noopener">Конфиденциальность</a>
-			<span class="page-footer__divider">·</span>
-			<span>CyberCheck © 2026</span>
-		</footer>
 	</main>
+
+	<footer class="page-footer">
+		<a href="/legal.html" target="_blank" rel="noopener">Соглашение</a>
+		<span class="page-footer__divider">·</span>
+		<a href="/privacy.html" target="_blank" rel="noopener">Конфиденциальность</a>
+		<span class="page-footer__divider">·</span>
+		<span>CyberCheck © 2026</span>
+	</footer>
 
 	<script type="module" src="/assets/js/app.js"></script>
 </body>

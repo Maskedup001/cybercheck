@@ -1,0 +1,34 @@
+/* Бейджи статуса. Одно семейство тонов используется и в находках,
+   и в деталях проверки: ok / warn / bad / muted. */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem var(--space-2);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--leading-normal);
+  white-space: nowrap;
+}
+
+.badge--ok {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+
+.badge--warn {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.badge--bad {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.badge--muted {
+  color: var(--color-neutral);
+  background: var(--color-neutral-bg);
+}

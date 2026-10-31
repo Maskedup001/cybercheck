@@ -1,0 +1,43 @@
+/* Индикатор скана: появляется на месте будущего отчёта,
+   чтобы страница не «прыгала» при подстановке результата. */
+.scan-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  margin-bottom: var(--space-6);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.scan-status[hidden] {
+  display: none;
+}
+
+.scan-status__spinner {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: scan-status-spin 0.8s linear infinite;
+}
+
+.scan-status__text {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+@keyframes scan-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-status__spinner {
+    animation: none;
+  }
+}

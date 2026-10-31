@@ -1,0 +1,94 @@
+/* Оценка: кольцо прогресса + вердикт человеческим языком.
+   --value (0…100) и --gauge-color ставит render-result.js и модификаторы. */
+
+.score {
+  --gauge-color: var(--color-accent);
+
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.score--good {
+  --gauge-color: var(--color-success);
+}
+
+.score--warn {
+  --gauge-color: var(--color-warning);
+}
+
+.score--bad {
+  --gauge-color: var(--color-danger);
+}
+
+.score__gauge {
+  --value: 0;
+
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 9.5rem;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--gauge-color) calc(var(--value) * 1%),
+    var(--color-gauge-track) 0
+  );
+}
+
+.score__gauge::before {
+  content: "";
+  position: absolute;
+  inset: 0.75rem;
+  border-radius: 50%;
+  background: var(--color-surface);
+}
+
+.score__gauge-body {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: var(--space-1);
+}
+
+.score__grade {
+  font-size: var(--font-size-4xl);
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  color: var(--gauge-color);
+}
+
+.score__value {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.score__verdict {
+  min-width: 0;
+}
+
+.score__title {
+  font-size: var(--font-size-xl);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+  text-wrap: balance;
+}
+
+.score__text {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+@media (max-width: 40em) {
+  .score {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+}

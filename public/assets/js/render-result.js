@@ -1,241 +1,408 @@
-export function renderResult(container, body, report) {
-  const localDate = new Intl.DateTimeFormat("sv-SE").format(new Date());
-  const shortHost = (report.host || "").slice(0, 60);
-  document.title = `CyberCheck_${shortHost}_${localDate}`;
-  window.addEventListener(
-    "afterprint",
-    () => {
-      document.title = "CyberCheck";
-    },
-    { once: true },
+/* Рендер отчёта: оценка → что чинить → детали проверки.
+   Только DOM API и textContent, без innerHTML и инлайн-разметки. */
+
+const PAGE_TITLE = document.title;
+let reportTitle = "";
+
+const GRADE_LABELS = {
+  A: "Отличная защита",
+  B: "Хорошая защита",
+  C: "Средняя защита",
+  D: "Слабая защита",
+  E: "Высокий риск",
+  F: "Критический риск",
+};
+
+const SEVERITY = {
+  high: { label: "Критично", tone: "bad" },
+  medium: { label: "Важно", tone: "warn" },
+  low: { label: "Замечание", tone: "muted" },
+};
+
+const PORT_TONES = { 80: "ok", 443: "ok", 22: "bad", 3306: "bad", 8080: "warn" };
+const PORT_LABELS = { ok: "открыт", bad: "опасный", warn: "риск" };
+
+function plural(count, forms) {
+  const abs = Math.abs(count) % 100;
+  const last = abs % 10;
+
+  if (abs > 10 && abs < 20) return forms[2];
+  if (last > 1 && last < 5) return forms[1];
+  if (last === 1) return forms[0];
+  return forms[2];
+}
+
+function toneForGrade(grade) {
+  if (grade === "A" || grade === "B") return "good";
+  if (grade === "C") return "warn";
+  return "bad";
+}
+
+function createBadge(tone, text) {
+  const badge = document.createElement("span");
+  badge.className = `badge badge--${tone}`;
+  badge.textContent = text;
+  return badge;
+}
+
+function describeFindings(findings) {
+  if (findings.length === 0) {
+    return "Замечаний нет — базовая гигиена в порядке.";
+  }
+
+  const total = `${findings.length} ${plural(findings.length, ["замечание", "замечания", "замечаний"])}`;
+  const critical = findings.filter((item) => item.severity === "high").length;
+
+  if (critical === 0) return `${total}, критичных нет.`;
+
+  const criticalText = `${critical} ${plural(critical, ["критичное", "критичных", "критичных"])}`;
+  return `${total}, из них ${criticalText}.`;
+}
+
+function createScore(report, score) {
+  const tone = toneForGrade(report.grade);
+
+  const block = document.createElement("div");
+  block.className = `score score--${tone}`;
+
+  const gauge = document.createElement("div");
+  gauge.className = "score__gauge";
+
+  const gaugeBody = document.createElement("div");
+  gaugeBody.className = "score__gauge-body";
+
+  const grade = document.createElement("span");
+  grade.className = "score__grade";
+  grade.textContent = report.grade;
+
+  const value = document.createElement("span");
+  value.className = "score__value";
+  value.textContent = `${score}/100`;
+
+  gaugeBody.append(grade, value);
+  gauge.append(gaugeBody);
+
+  const verdict = document.createElement("div");
+  verdict.className = "score__verdict";
+
+  const title = document.createElement("p");
+  title.className = "score__title";
+  title.textContent = GRADE_LABELS[report.grade] ?? "Оценка";
+
+  const text = document.createElement("p");
+  text.className = "score__text";
+  text.textContent = describeFindings(report.findings);
+
+  verdict.append(title, text);
+  block.append(gauge, verdict);
+
+  return { block, gauge };
+}
+
+function createFindings(findings) {
+  const section = document.createElement("section");
+  section.className = "findings";
+
+  const title = document.createElement("h3");
+  title.className = "result__section-title";
+  title.textContent = findings.length === 0 ? "Замечаний нет" : "Что исправить";
+  section.append(title);
+
+  if (findings.length === 0) {
+    const clean = document.createElement("div");
+    clean.className = "findings__clean";
+
+    const mark = document.createElement("span");
+    mark.className = "findings__clean-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = "✓";
+
+    const text = document.createElement("p");
+    text.textContent = "Порты, сертификат и заголовки — всё в порядке.";
+
+    clean.append(mark, text);
+    section.append(clean);
+    return section;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "findings__list";
+
+  for (const finding of findings) {
+    const severity = SEVERITY[finding.severity] ?? SEVERITY.low;
+
+    const item = document.createElement("li");
+    item.className = `finding finding--${severity.tone}`;
+
+    const head = document.createElement("div");
+    head.className = "finding__head";
+
+    const heading = document.createElement("h4");
+    heading.className = "finding__title";
+    heading.textContent = finding.title;
+
+    head.append(createBadge(severity.tone, severity.label), heading);
+
+    const desc = document.createElement("p");
+    desc.className = "finding__desc";
+    desc.textContent = finding.desc;
+
+    const fix = document.createElement("p");
+    fix.className = "finding__fix";
+
+    const fixLabel = document.createElement("span");
+    fixLabel.className = "finding__fix-label";
+    fixLabel.textContent = "Как исправить:";
+
+    fix.append(fixLabel, document.createTextNode(` ${finding.recommendation}`));
+
+    item.append(head, desc, fix);
+    list.append(item);
+  }
+
+  section.append(list);
+  return section;
+}
+
+function createRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "detail__row";
+
+  const term = document.createElement("dt");
+  term.className = "detail__label";
+  term.textContent = label;
+
+  const cell = document.createElement("dd");
+  cell.className = "detail__value";
+
+  if (typeof value === "string") cell.textContent = value;
+  else cell.append(value);
+
+  row.append(term, cell);
+  return row;
+}
+
+function createCard(titleText, rows, note) {
+  const card = document.createElement("section");
+  card.className = "detail";
+
+  const title = document.createElement("h4");
+  title.className = "detail__title";
+  title.textContent = titleText;
+  card.append(title);
+
+  if (rows.length > 0) {
+    const list = document.createElement("dl");
+    list.className = "detail__rows";
+
+    for (const row of rows) {
+      list.append(createRow(row.label, row.value));
+    }
+
+    card.append(list);
+  }
+
+  if (note) {
+    const text = document.createElement("p");
+    text.className = "detail__note";
+    text.textContent = note;
+    card.append(text);
+  }
+
+  return card;
+}
+
+function createPortsCard(ports) {
+  const rows = ports.map((port) => {
+    const tone = PORT_TONES[port.port] ?? "warn";
+    return {
+      label: `Порт ${port.port}`,
+      value: createBadge(tone, PORT_LABELS[tone]),
+    };
+  });
+
+  return createCard(
+    "Порты",
+    rows,
+    ports.length === 0 ? "Открытых портов не найдено" : "",
+  );
+}
+
+function formatDate(raw) {
+  if (!raw) return "н/д";
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "н/д";
+
+  return date.toLocaleString("ru-RU", { dateStyle: "medium" });
+}
+
+function createTlsCard(ssl) {
+  if (!ssl.hasSSL) {
+    return createCard(
+      "TLS",
+      [],
+      "SSL не настроен: сайт отвечает по HTTP, трафик не шифруется.",
+    );
+  }
+
+  const validBadge = createBadge(
+    ssl.valid ? "ok" : "bad",
+    ssl.valid ? "валиден" : "невалиден",
   );
 
-  // 1. Заполняем шапку через безопасный textContent
-  const dateStr = new Date().toLocaleString("ru-RU");
+  const rows = [{ label: "Сертификат", value: validBadge }];
 
-  const hostEl = document.querySelector('[data-js="report-host"]');
-  if (hostEl) hostEl.textContent = report.host;
-
-  const dateEl = document.querySelector('[data-js="report-date"]');
-  if (dateEl) dateEl.textContent = dateStr;
-
-  const footerDateEl = document.querySelector('[data-js="report-date-footer"]');
-  if (footerDateEl) footerDateEl.textContent = dateStr;
-
-  // Очищаем контейнер от предыдущих отчетов
-  body.replaceChildren();
-
-  // Оценка (безопасный рендеринг без инлайн-стилей)
-  const scoreValue = report.score !== undefined ? report.score : 0;
-  const gradeValue = report.grade !== undefined ? report.grade : "?";
-
-  const scoreContainer = document.createElement("div");
-  scoreContainer.className = "result__score";
-
-  const gradeEl = document.createElement("div");
-  gradeEl.className = "result__score-grade";
-  gradeEl.textContent = gradeValue;
-
-  // Добавляем цветовой модификатор в зависимости от оценки
-  if (gradeValue === "A" || gradeValue === "B") {
-    gradeEl.classList.add("result__score-grade--good");
-  } else if (gradeValue === "C") {
-    gradeEl.classList.add("result__score-grade--warn");
-  } else {
-    gradeEl.classList.add("result__score-grade--bad");
+  if (!ssl.valid && ssl.verifyError) {
+    rows.push({ label: "Причина", value: ssl.verifyError });
   }
 
-  const scoreText = document.createElement("div");
-  scoreText.className = "result__score-text";
-  scoreText.textContent = `Риск-скор: ${scoreValue}/100`;
+  const daysLeft = ssl.daysLeft;
 
-  scoreContainer.append(gradeEl, scoreText);
-  body.appendChild(scoreContainer);
+  rows.push({ label: "Истекает", value: formatDate(ssl.validToISO || ssl.validTo) });
 
-  // Вывод списка проблем (findings)
-  if (report.findings && report.findings.length > 0) {
-    const findingsList = document.createElement("ul");
-    findingsList.className = "result__findings";
+  // Срок отдельной строкой: в узкой карточке «дата — осталось N дн.»
+  // переносится на три строки и разваливает сетку.
+  if (Number.isFinite(daysLeft)) {
+    const expired = daysLeft < 0;
+    const tone = expired ? "bad" : daysLeft <= 30 ? "warn" : "ok";
+    const text = expired ? `${Math.abs(daysLeft)} дн. назад` : `${daysLeft} дн.`;
 
-    report.findings.forEach((finding) => {
-      const li = document.createElement("li");
-      li.className = "result__finding";
-
-      const title = document.createElement("strong");
-      title.textContent = finding.title;
-
-      const desc = document.createElement("span");
-      desc.textContent = ` — ${finding.desc}`;
-
-      const rec = document.createElement("p");
-      rec.className = "result__finding-rec";
-      rec.textContent = `Как исправить: ${finding.recommendation}`;
-
-      li.append(title, desc, rec);
-
-      // Красим в красный, если это high, и в желтый, если medium
-      if (finding.severity === "high")
-        li.classList.add("result__finding--high");
-      else if (finding.severity === "medium")
-        li.classList.add("result__finding--medium");
-
-      findingsList.appendChild(li);
-    });
-    body.appendChild(findingsList);
-  }
-
-  // Хелпер: создание статуса (зеленый/красный бейджик)
-  function createStatus(isGood, text) {
-    const span = document.createElement("span");
-    span.className = `result__status result__status--${isGood ? "good" : "bad"}`;
-    span.textContent = text;
-    return span;
-  }
-
-  // Хелпер: создание строки отчета (dt + dd)
-  function createRow(labelText, valueNode) {
-    const row = document.createElement("div");
-    row.className = "result__row";
-
-    const dt = document.createElement("dt");
-    dt.className = "result__label";
-    dt.textContent = labelText;
-
-    const dd = document.createElement("dd");
-    dd.className = "result__value";
-
-    if (typeof valueNode === "string") {
-      dd.textContent = valueNode;
-    } else if (valueNode instanceof Node) {
-      dd.appendChild(valueNode);
-    } else {
-      dd.textContent = String(valueNode ?? "—");
-    }
-
-    row.append(dt, dd);
-    return row;
-  }
-
-  // Хелпер: создание секции с заголовком
-  function createSection(titleText) {
-    const section = document.createElement("div");
-    section.className = "result__section";
-
-    const title = document.createElement("h3");
-    title.className = "result__section-title";
-    title.textContent = titleText;
-
-    const rowsContainer = document.createElement("dl");
-    rowsContainer.className = "result__rows";
-
-    section.append(title, rowsContainer);
-    return { section, rowsContainer };
-  }
-
-  // --- СЕКЦИЯ: ПОРТЫ ---
-  const ports = createSection("Порты");
-  if (report.ports.length === 0) {
-    // <dl> принимает только dt/dd, поэтому пустое состояние — сосед dl
-    const empty = document.createElement("p");
-    empty.className = "result__empty";
-    empty.textContent = "Открытых портов не найдено";
-    ports.section.appendChild(empty);
-  } else {
-    report.ports.forEach((p) => {
-      // 80, 443 - это норма для веба. Остальные - потенциальный риск
-      const isSafePort = [80, 443].includes(p.port);
-      const status = isSafePort
-        ? createStatus(true, "открыт")
-        : createStatus(false, "риск");
-
-      ports.rowsContainer.appendChild(createRow(`Порт ${p.port}`, status));
+    rows.push({
+      label: expired ? "Истёк" : "Осталось",
+      value: createBadge(tone, text),
     });
   }
-  body.appendChild(ports.section);
 
-  // --- СЕКЦИЯ: SSL ---
-  const ssl = createSection("SSL");
-  if (report.ssl.hasSSL) {
-    const status = createStatus(
-      report.ssl.valid,
-      report.ssl.valid ? "валиден" : "невалиден",
-    );
-    ssl.rowsContainer.appendChild(createRow("Сертификат", status));
+  if (ssl.issuer) rows.push({ label: "Издатель", value: ssl.issuer });
+  if (ssl.tlsVersion) rows.push({ label: "Версия TLS", value: ssl.tlsVersion });
 
-    if (!report.ssl.valid && report.ssl.verifyError) {
-      const errStatus = createStatus(false, report.ssl.verifyError);
-      ssl.rowsContainer.appendChild(createRow("Причина", errStatus));
-    }
-    const daysLeft = report.ssl.daysLeft;
-    // Используем validToISO для Safari, fallback на validTo
-    const rawDate = report.ssl.validToISO || report.ssl.validTo;
-    const validToText = rawDate
-      ? new Date(rawDate).toLocaleString("ru-RU", {
-          dateStyle: "medium",
-          timeStyle: "short",
-        })
-      : "н/д";
-    let daysText = "";
-
-    if (Number.isFinite(daysLeft)) {
-      if (daysLeft < 0) {
-        // Если сертификат просрочен
-        daysText = ` (истек ${Math.abs(daysLeft)} дн. назад)`;
-      } else {
-        // Если сертификат еще действует
-        daysText = ` (осталось ${daysLeft} дн.)`;
-      }
-    }
-
-    ssl.rowsContainer.appendChild(
-      createRow("Истекает", validToText + daysText),
-    );
-    ssl.rowsContainer.appendChild(
-      createRow("Издатель", report.ssl.issuer || "неизвестен"),
-    );
-
-    if (report.ssl.tlsVersion) {
-      ssl.rowsContainer.appendChild(
-        createRow("Версия TLS", report.ssl.tlsVersion),
-      );
-    }
-
-    if (report.ssl.supportsOldTls) {
-      ssl.rowsContainer.appendChild(
-        createRow("Устаревший TLS", createStatus(false, "риск")),
-      );
-    }
-  } else {
-    const status = createStatus(false, "SSL отсутствует");
-    ssl.rowsContainer.appendChild(createRow("Статус", status));
-  }
-  body.appendChild(ssl.section);
-
-  // --- СЕКЦИЯ: ЗАГОЛОВКИ БЕЗОПАСНОСТИ ---
-  const headers = createSection("Заголовки безопасности");
-  const h = report.headers;
-
-  if (h.error) {
-    const status = createStatus(false, "Не удалось получить");
-    headers.rowsContainer.appendChild(createRow("Статус", status));
-  } else {
-    headers.rowsContainer.appendChild(createRow("Server", h.server));
-    headers.rowsContainer.appendChild(createRow("Протокол", h.protocol));
-
-    const headersList = [
-      { name: "Content-Security-Policy", val: h.csp },
-      { name: "X-Frame-Options", val: h.xframe },
-      { name: "Strict-Transport-Security", val: h.hsts },
-      { name: "X-Content-Type-Options", val: h.xcontent },
-    ];
-
-    headersList.forEach((item) => {
-      const status = createStatus(item.val, item.val ? "есть" : "НЕТ");
-      headers.rowsContainer.appendChild(createRow(item.name, status));
+  if (ssl.supportsOldTls) {
+    rows.push({
+      label: "Старые протоколы",
+      value: createBadge("warn", "TLS 1.0/1.1"),
     });
   }
-  body.appendChild(headers.section);
 
-  // Показываем результат
-  container.hidden = false;
+  return createCard("TLS", rows);
 }
+
+function createHeadersCard(headers) {
+  if (headers.error) {
+    return createCard(
+      "Заголовки",
+      [],
+      "Сервер не ответил на HTTP-запрос — заголовки не проверены.",
+    );
+  }
+
+  const flag = (present) => createBadge(present ? "ok" : "bad", present ? "есть" : "нет");
+
+  const rows = [
+    { label: "Server", value: headers.server || "не указан" },
+    { label: "Протокол", value: headers.protocol || "—" },
+    { label: "CSP", value: flag(headers.csp) },
+    { label: "X-Frame-Options", value: flag(headers.xframe) },
+    { label: "HSTS", value: flag(headers.hsts) },
+    { label: "X-Content-Type-Options", value: flag(headers.xcontent) },
+  ];
+
+  return createCard("Заголовки", rows);
+}
+
+function createDetails(report) {
+  const section = document.createElement("section");
+  section.className = "details";
+
+  const title = document.createElement("h3");
+  title.className = "result__section-title";
+  title.textContent = "Детали проверки";
+
+  const grid = document.createElement("div");
+  grid.className = "details__grid";
+  grid.append(
+    createPortsCard(report.ports),
+    createTlsCard(report.ssl),
+    createHeadersCard(report.headers),
+  );
+
+  section.append(title, grid);
+  return section;
+}
+
+/**
+ * Кольцо заполняется через CSS-переменную --value.
+ * Это CSSOM-запись, а не inline-разметка, поэтому строгий
+ * style-src 'self' её не блокирует.
+ */
+function animateGauge(gauge, score) {
+  const apply = (value) => gauge.style.setProperty("--value", String(value));
+
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    apply(score);
+    return;
+  }
+
+  const duration = 700;
+  const startedAt = performance.now();
+
+  const tick = (now) => {
+    const progress = Math.min(1, Math.max(0, (now - startedAt) / duration));
+    const eased = 1 - (1 - progress) ** 3;
+
+    apply((score * eased).toFixed(1));
+
+    if (progress < 1) window.requestAnimationFrame(tick);
+  };
+
+  window.requestAnimationFrame(tick);
+}
+
+function setText(selector, text) {
+  const node = document.querySelector(selector);
+  if (node) node.textContent = text ?? "";
+}
+
+export function renderResult(container, body, report) {
+  const now = new Date();
+  const localDate = new Intl.DateTimeFormat("sv-SE").format(now);
+  const shortHost = (report.host || "").slice(0, 60);
+
+  reportTitle = `CyberCheck_${shortHost}_${localDate}`;
+  document.title = reportTitle;
+
+  const dateText = now.toLocaleString("ru-RU", {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+
+  setText('[data-js="report-host"]', report.host);
+  setText('[data-js="report-date"]', dateText);
+  setText('[data-js="report-date-footer"]', dateText);
+
+  const findings = Array.isArray(report.findings) ? report.findings : [];
+  const ports = Array.isArray(report.ports) ? report.ports : [];
+  const ssl = report.ssl && typeof report.ssl === "object" ? report.ssl : { hasSSL: false };
+  const headers =
+    report.headers && typeof report.headers === "object" ? report.headers : { error: true };
+
+  const score = Number.isFinite(report.score) ? report.score : 0;
+
+  const normalized = { ...report, findings, ports, ssl, headers };
+  const { block: scoreBlock, gauge } = createScore(normalized, score);
+
+  body.replaceChildren();
+  body.append(scoreBlock, createFindings(findings), createDetails(normalized));
+
+  container.hidden = false;
+  animateGauge(gauge, score);
+}
+
+window.addEventListener("beforeprint", () => {
+  // Печать может быть повторной: заголовок нужен для имени PDF каждый раз.
+  if (reportTitle) document.title = reportTitle;
+});
+
+window.addEventListener("afterprint", () => {
+  document.title = PAGE_TITLE;
+});

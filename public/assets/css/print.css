@@ -2,10 +2,12 @@
   size: A4 portrait;
   margin: 16mm 14mm;
 }
+
 @media print {
   .page-footer {
     display: none !important;
   }
+
   :root {
     color-scheme: light;
     --color-bg: #ffffff;
@@ -17,11 +19,10 @@
     --color-success: #166534;
     --color-warning: #92400e;
     --color-danger: #991b1b;
+    --color-neutral: #4b5563;
+    --color-gauge-track: #e5e7eb;
   }
-  .result__findings {
-    background: transparent;
-    border: 0.5pt solid #ccc;
-  }
+
   html,
   body {
     min-height: auto;
@@ -30,56 +31,90 @@
     color: var(--color-text) !important;
     font-size: 11pt;
   }
+
+  /* Декоративное свечение фона в печать не идёт */
+  body::before {
+    display: none;
+  }
+
   .site-header,
   .scan-form,
   .consent,
-  .result__actions,
-  .legal__actions,
+  .scan-status,
+  .result__download,
+  .legal__topbar,
+  .legal__toc,
   .skip-link {
     display: none !important;
   }
+
   .container {
     max-width: none;
     margin: 0;
   }
+
+  .legal {
+    max-width: none;
+  }
+
+  .legal__layout {
+    display: block;
+  }
+
   .result {
     padding: 0;
     border: 0;
     background: transparent;
   }
+
   .result__title,
   .result__section-title {
-    color: black !important;
-    border-color: black;
+    color: #111827 !important;
+    border-color: #d1d5db;
     break-after: avoid;
   }
-  .result__row {
-    display: block;
-    padding: 1.5mm 0;
-    border-bottom: 0.5pt solid #ccc;
+
+  /* Не разрывать смысловые блоки между страницами */
+  .score,
+  .finding,
+  .detail,
+  .findings__clean {
     break-inside: avoid;
   }
-  .result__label {
-    display: inline;
+
+  .score__gauge {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
-  .result__label::after {
-    content: ": ";
+
+  .score__grade {
+    color: var(--gauge-color) !important;
   }
-  .result__value {
-    display: inline;
-  }
-  .result__status {
+
+  /* Бейджи печатаются контуром: фон в PDF не нужен */
+  .badge {
     border: 0.5pt solid currentColor;
     background: transparent !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
-  .result__status--good {
+
+  .findings__clean {
+    border: 0.5pt solid #ccc;
+    background: transparent;
+  }
+
+  .findings__clean-mark {
+    border: 0.5pt solid currentColor;
+    background: transparent;
     color: var(--color-success) !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
   }
-  .result__status--bad {
-    color: var(--color-danger) !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
+
+  .details__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .detail {
+    border: 0.5pt solid #ccc;
   }
 }

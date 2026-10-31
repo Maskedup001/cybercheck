@@ -10,22 +10,38 @@
   display: none;
 }
 
+/* --- Шапка отчёта --- */
+
 .result__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
   margin-bottom: var(--space-6);
-  border-bottom: 1px solid var(--color-border);
   padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.result__identity {
+  min-width: 0;
 }
 
 .result__brand {
-  font-weight: var(--font-weight-bold);
   color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   margin-bottom: var(--space-1);
 }
 
 .result__title {
   font-size: var(--font-size-xl);
-  color: var(--color-accent);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
   margin-bottom: var(--space-2);
+  scroll-margin-top: var(--space-6);
 }
 
 /* Убираем рамку при программном фокусе на заголовок (для a11y) */
@@ -40,15 +56,22 @@
 
 .result__meta {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
   font-size: var(--font-size-sm);
 }
 
 .result__meta-item {
   display: flex;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
+}
+
+/* Разделитель между парами «метка — значение», а не внутри пары */
+.result__meta-item + .result__meta-item::before {
+  content: "·";
+  margin-right: var(--space-2);
+  color: var(--color-border-control);
 }
 
 .result__meta-label {
@@ -60,90 +83,29 @@
   overflow-wrap: anywhere;
 }
 
-.result__section {
-  margin-bottom: var(--space-6);
+.result__download {
+  flex: 0 0 auto;
 }
+
+/* --- Заголовки блоков внутри отчёта --- */
 
 .result__section-title {
   font-size: var(--font-size-lg);
-  color: var(--color-accent);
+  line-height: var(--leading-tight);
+  color: var(--color-text);
   margin-bottom: var(--space-3);
+  padding-bottom: var(--space-2);
   border-bottom: 1px solid var(--color-border);
-  padding-bottom: var(--space-1);
 }
 
-.result__rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-/* Пустое состояние секции: живёт рядом с dl, а не внутри него */
-.result__empty {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.result__row {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: var(--space-1);
-  padding: var(--space-1) 0;
-  border-bottom: 1px dashed var(--color-border);
-}
-
-.result__row:last-child {
-  border-bottom: none;
-}
-
-.result__label {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-.result__value {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-  overflow-wrap: anywhere;
-  min-width: 0;
-}
-
-.result__status {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.125rem var(--space-2);
-  border-radius: var(--radius-pill);
-  font-family: var(--font-sans);
-  font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-xs);
-  max-width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.result__status--good {
-  color: var(--color-success);
-  background: var(--color-success-bg);
-}
-
-.result__status--bad {
-  color: var(--color-danger);
-  background: var(--color-danger-bg);
-}
-
-.result__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin-top: var(--space-6);
-}
+/* --- Подвал отчёта --- */
 
 .report-footer {
   margin-top: var(--space-8);
-  font-size: var(--font-size-xs);
-  color: var(--color-text-muted);
-  border-top: 1px solid var(--color-border);
   padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .report-footer__text {
@@ -154,76 +116,12 @@
   margin-top: var(--space-2);
 }
 
-/* --- Оценка (Риск-скор) --- */
-.result__score {
-  text-align: center;
-  margin-bottom: var(--space-6);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--color-border);
-}
+@media (max-width: 40em) {
+  .result {
+    padding: var(--space-4);
+  }
 
-.result__score-grade {
-  font-size: var(--font-size-4xl);
-  font-weight: var(--font-weight-bold);
-  line-height: 1;
-  margin-bottom: var(--space-2);
-}
-
-.result__score-grade--good {
-  color: var(--color-success);
-}
-.result__score-grade--warn {
-  color: var(--color-warning);
-}
-.result__score-grade--bad {
-  color: var(--color-danger);
-}
-
-.result__score-text {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
-/* --- Findings (Находки) --- */
-.result__findings {
-  list-style: none;
-  margin: 0 0 var(--space-6) 0;
-  background: var(--color-surface-raised);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-}
-
-.result__finding {
-  font-size: var(--font-size-sm);
-  margin-bottom: var(--space-2);
-  padding-left: var(--space-4);
-  position: relative;
-  color: var(--color-text);
-}
-
-.result__finding:last-child {
-  margin-bottom: 0;
-}
-
-.result__finding::before {
-  content: "•";
-  position: absolute;
-  left: 0;
-  font-weight: bold;
-}
-
-.result__finding--high::before { color: var(--color-danger); }
-.result__finding--medium::before { color: var(--color-warning); }
-
-.result__finding-rec {
-  margin: var(--space-1) 0 0;
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
-}
-
-@media (min-width: 30em) {
-  .result__row {
-    grid-template-columns: minmax(8rem, 14rem) minmax(0, 1fr);
-    align-items: baseline;
+  .result__download {
+    width: 100%;
   }
 }

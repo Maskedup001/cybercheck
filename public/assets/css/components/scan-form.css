@@ -1,50 +1,75 @@
 .scan-form {
   margin-bottom: var(--space-4);
 }
-.scan-form__row {
+
+/* Поле и кнопка — одна панель: визуально это один контрол,
+   поэтому рамка и фокус живут на обёртке. */
+.scan-form__control {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  align-items: stretch;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-control);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--duration-fast) var(--easing-standard);
 }
-.scan-form__field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-  flex: 1;
+
+.scan-form__control:focus-within {
+  border-color: var(--color-accent);
 }
+
 .scan-form__input {
+  flex: 1 1 auto;
   width: 100%;
   min-width: 0;
   min-height: var(--control-height);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-border-control);
+  padding: var(--space-2) var(--space-4);
+  border: 0;
   border-radius: var(--radius-md);
-  background: var(--color-surface);
+  background: transparent;
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: var(--font-size-base);
 }
-.scan-form__input:focus-visible {
-  border-color: var(--color-accent);
-  outline: 2px solid var(--color-focus);
-  outline-offset: 2px;
+
+.scan-form__input::placeholder {
+  color: var(--color-text-muted);
 }
+
+/* Рамка внутри панели, чтобы фокус не «вылезал» за её границы */
+.scan-form__input:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.scan-form__submit {
+  flex: 0 0 auto;
+  min-width: 9.5rem;
+}
+
+.scan-form__hint {
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
 .scan-form__error {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-bg);
   color: var(--color-danger);
   font-size: var(--font-size-sm);
-  margin-top: var(--space-2);
 }
-.scan-form__submit {
-  width: 100%;
-}
-@media (min-width: 40em) {
-  .scan-form__row {
-    flex-direction: row;
-    align-items: flex-start;
+
+@media (max-width: 40em) {
+  .scan-form__control {
+    flex-direction: column;
   }
+
   .scan-form__submit {
-    width: auto;
-    flex: 0 0 auto;
+    width: 100%;
   }
 }
