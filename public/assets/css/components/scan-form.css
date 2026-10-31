@@ -33,7 +33,7 @@
 .scan-form__error {
   color: var(--color-danger);
   font-size: var(--font-size-sm);
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 .scan-form__submit {
   width: 100%;

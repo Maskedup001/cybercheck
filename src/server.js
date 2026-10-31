@@ -93,6 +93,7 @@ app.get("/", (req, res) => {
   res.send(indexHtml);
 });
 app.get("/index.html", (req, res) => res.redirect("/"));
+app.get("/favicon.ico", (req, res) => res.redirect(301, "/favicon.svg"));
 
 app.use(express.static(path.join(__dirname, "../public")));
 

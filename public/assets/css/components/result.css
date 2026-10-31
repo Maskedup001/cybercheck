@@ -33,6 +33,11 @@
   outline: none;
 }
 
+.result__title:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
 .result__meta {
   display: flex;
   flex-direction: column;
@@ -58,7 +63,7 @@
   color: var(--color-accent);
   margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-border);
-  padding-bottom: 4px;
+  padding-bottom: var(--space-1);
 }
 
 .result__rows {
@@ -183,8 +188,8 @@
 .result__finding--medium::before { color: var(--color-warning); }
 
 .result__finding-rec {
-  margin: 4px 0 0;
-  font-size: 13px;
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-sm);
   color: var(--color-text-muted);
 }
 
