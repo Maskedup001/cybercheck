@@ -93,7 +93,12 @@ async function checkSSL(connectIp, port, hostname) {
         socket.end();
 
         // Проверяем старый TLS только если основной TLS успешен
-        const supportsOldTls = await checkOldTls(connectIp, port, hostname);
+        let supportsOldTls = false;
+        try {
+          supportsOldTls = await checkOldTls(connectIp, port, hostname);
+        } catch (e) {
+          // Игнорируем ошибку проверки старого TLS, чтобы не уронить весь скан
+        }
 
         resolve({
           hasSSL: true,
@@ -165,7 +170,7 @@ function checkHeaders(connectIp, port, hostname, retries = 1) {
             port,
             servername,
             rejectUnauthorized: false,
-            headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
+            headers: { Host: hostname, "User-Agent": "CyberCheck/1.2" },
             timeout: 5000,
           },
           (res) => {
