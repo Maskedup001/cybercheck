@@ -26,3 +26,23 @@ test("checkPort: открытый порт определяется", async () =
 
   server.close();
 });
+
+const { checkHeaders } = require("../src/checks");
+
+test("checkHeaders: находит заголовки безопасности", async () => {
+  const http = require("http");
+  const server = http.createServer((req, res) => {
+    res.setHeader("Content-Security-Policy", "default-src 'self'");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.end("ok");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+
+  const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
+  assert.strictEqual(result.csp, true);
+  assert.strictEqual(result.xframe, true);
+  assert.strictEqual(result.hsts, false); // Не установлен
+
+  server.close();
+});
