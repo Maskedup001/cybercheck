@@ -24,7 +24,7 @@ test("checkPort: открытый порт определяется", async () =
   const result = await checkPort("127.0.0.1", port, 1000, 0);
   assert.strictEqual(result.status, "open");
 
-  server.close();
+  await new Promise((resolve) => server.close(resolve));
 });
 
 const { checkHeaders } = require("../src/checks");
@@ -44,5 +44,5 @@ test("checkHeaders: находит заголовки безопасности",
   assert.strictEqual(result.xframe, true);
   assert.strictEqual(result.hsts, false); // Не установлен
 
-  server.close();
+  await new Promise((resolve) => server.close(resolve));
 });

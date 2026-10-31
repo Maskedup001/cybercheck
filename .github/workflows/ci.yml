@@ -35,6 +35,23 @@ jobs:
       - name: Check server.js syntax
         run: node --check src/server.js
 
+      # node --check читает .js как CommonJS и падает на import. Разбираем
+      # модули через vm, чтобы синтаксическая ошибка во фронтенде ловилась
+      # в CI, а не глазами в браузере.
+      - name: Check frontend modules parse
+        run: |
+          node --experimental-vm-modules -e '
+            const fs = require("node:fs");
+            const vm = require("node:vm");
+            const dir = "public/assets/js";
+            for (const name of fs.readdirSync(dir)) {
+              if (!name.endsWith(".js")) continue;
+              const source = fs.readFileSync(`${dir}/${name}`, "utf8");
+              new vm.SourceTextModule(source, { identifier: name });
+              console.log("ok", name);
+            }
+          '
+
       - name: Run tests
         run: npm test
 
