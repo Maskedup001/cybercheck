@@ -31,7 +31,21 @@ const PUBLIC_ORIGIN = parsedOrigin.origin;
 // Подготовка index.html с динамическим BASE_URL
 const indexPath = path.join(__dirname, "../public/index.html");
 let indexHtml = fs.readFileSync(indexPath, "utf-8");
-indexHtml = indexHtml.replaceAll("__BASE_URL__", PUBLIC_ORIGIN);
+indexHtml = indexHtml.replaceAll("__BASE_URL__", () => PUBLIC_ORIGIN);
+
+async function resolveWithTimeout(hostname, ms = 5000) {
+  let timer;
+  try {
+    return await Promise.race([
+      resolvePublicIps(hostname),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("DNS_TIMEOUT")), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 if (DEMO_MODE && process.env.NODE_ENV !== "development") {
@@ -75,7 +89,7 @@ app.use(express.json({ limit: "8kb" }));
 
 // Отдаем index.html с подставленным BASE_URL
 app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(indexHtml);
 });
 app.get("/index.html", (req, res) => res.redirect("/"));
@@ -211,8 +225,11 @@ app.post("/api/scan", async (req, res) => {
   } else {
     let resolvedIps;
     try {
-      resolvedIps = await resolvePublicIps(hostname);
+      resolvedIps = await resolveWithTimeout(hostname);
     } catch (e) {
+      if (e.message === "DNS_TIMEOUT") {
+        return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
+      }
       return res.status(400).json({ error: "Не удалось разрешить адрес" });
     }
 
