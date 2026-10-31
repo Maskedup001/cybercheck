@@ -154,7 +154,6 @@
 /* --- Findings (Находки) --- */
 .result__findings {
   list-style: none;
-  padding: 0;
   margin: 0 0 var(--space-6) 0;
   background: var(--color-surface-raised);
   border-radius: var(--radius-md);
