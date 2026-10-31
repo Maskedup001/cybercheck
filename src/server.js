@@ -200,46 +200,17 @@ app.post("/api/scan", async (req, res) => {
       openPorts.some((op) => op.port === p),
     );
 
-    // Если веб-порта нет, все равно считаем скоринг (чтобы не было undefined)
+    // Если веб-порта нет, все равно считаем скоринг
     if (!webPort) {
       const ssl = { hasSSL: false };
       const headers = { error: true };
-      const { score, grade, findings } = calculateScore({
-        host: hostname,
-        ports: openPorts,
-        ssl,
-        headers,
-      });
-      return res.json({
-        host: hostname,
-        ports: openPorts,
-        ssl,
-        headers,
-        score,
-        grade,
-        findings,
-      });
+      return res.json(buildReport(hostname, openPorts, ssl, headers));
     }
 
     const ssl = await checkSSL(connectIp, webPort, hostname);
     const headers = await checkHeaders(connectIp, webPort, hostname);
 
-    const { score, grade, findings } = calculateScore({
-      host: hostname,
-      ports: openPorts,
-      ssl,
-      headers,
-    });
-
-    res.json({
-      host: hostname,
-      ports: openPorts,
-      ssl,
-      headers,
-      score,
-      grade,
-      findings,
-    });
+    res.json(buildReport(hostname, openPorts, ssl, headers));
   } catch (e) {
     console.error("[scan] проверка не удалась:", e);
     res.status(500).json({ error: "Ошибка сканирования" });
@@ -266,10 +237,26 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: message });
 });
 
+// Хелпер для сборки ответа
+function buildReport(host, ports, ssl, headers) {
+  const { score, grade, findings } = calculateScore({
+    host,
+    ports,
+    ssl,
+    headers,
+  });
+  return { host, ports, ssl, headers, score, grade, findings };
+}
+
 // Healthcheck для хостингов (Render, Railway и т.д.)
 app.get("/healthz", (req, res) =>
   res.json({ ok: true, uptime: process.uptime() }),
 );
+
+// 404 для API (F-19)
+app.use((req, res) => {
+  res.status(404).json({ error: "Не найдено" });
+});
 
 const PORT = process.env.PORT || 3000;
 const server = app.listen(PORT, () => {
