@@ -51,7 +51,8 @@ function checkOldTls(connectIp, port, hostname) {
         servername,
         rejectUnauthorized: false,
         minVersion: "TLSv1",
-        maxVersion: "TLSv1.1", // Принудительно ограничиваем версию
+        maxVersion: "TLSv1.1",
+        ciphers: "DEFAULT@SECLEVEL=0", // Разрешаем старые шифры для проверки
       },
       () => {
         resolve(true); // Если подключился — значит, поддерживает старые TLS
