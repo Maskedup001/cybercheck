@@ -117,6 +117,7 @@ test("поддержка устаревшего TLS снижает оценку"
     ssl: { hasSSL: true, valid: true, daysLeft: 200, supportsOldTls: true },
     headers: okHeaders,
   });
-  assert.strictEqual(r.score, 90); // 100 - 10
+  assert.strictEqual(r.score, 85); // 100 - 10, потолок 85
+  assert.strictEqual(r.grade, "B");
   assert.ok(r.findings.some((f) => f.id === "old-tls"));
 });

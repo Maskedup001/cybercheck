@@ -278,6 +278,6 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
       // Форсированно закрываем оставшиеся соединения
       if (server.closeAllConnections) server.closeAllConnections();
       process.exit(1);
-    }, 20_000).unref();
+    }, 40_000).unref();
   });
 }

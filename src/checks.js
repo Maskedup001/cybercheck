@@ -66,12 +66,8 @@ function checkOldTls(connectIp, port, hostname) {
 async function checkSSL(connectIp, port, hostname) {
   if (!port) return { hasSSL: false };
 
-  // Параллельно проверяем поддержку устаревших TLS
-  const supportsOldTls = await checkOldTls(connectIp, port, hostname);
-
   return new Promise((resolve) => {
     const servername = net.isIP(hostname) ? undefined : hostname;
-
     const socket = tls.connect(
       {
         host: connectIp,
@@ -80,10 +76,8 @@ async function checkSSL(connectIp, port, hostname) {
         rejectUnauthorized: false,
         minVersion: "TLSv1",
       },
-      () => {
+      async () => {
         const cert = socket.getPeerCertificate();
-
-        // Сертификат не пришёл — значит на этом порту не TLS
         if (!cert || !cert.valid_to) {
           socket.end();
           return resolve({ hasSSL: false });
@@ -94,12 +88,17 @@ async function checkSSL(connectIp, port, hostname) {
         const daysLeft = Math.floor(
           (new Date(cert.valid_to) - Date.now()) / 86400000,
         );
+        const tlsVersion = socket.getProtocol();
 
         socket.end();
+
+        // Проверяем старый TLS только если основной TLS успешен
+        const supportsOldTls = await checkOldTls(connectIp, port, hostname);
+
         resolve({
           hasSSL: true,
           valid,
-          verifyError, // <-- Причина ошибки в ответ
+          verifyError,
           daysLeft,
           validTo: cert.valid_to,
           validToISO: (() => {
@@ -108,8 +107,8 @@ async function checkSSL(connectIp, port, hostname) {
             return Number.isNaN(d.getTime()) ? null : d.toISOString();
           })(),
           issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
-          tlsVersion: socket.getProtocol(),
-          supportsOldTls, // <--- Результат в ответ
+          tlsVersion,
+          supportsOldTls,
         });
       },
     );
@@ -138,12 +137,13 @@ function checkHeaders(connectIp, port, hostname, retries = 1) {
     };
 
     const attempt = (attemptsLeft) => {
+      let failing = false;
       const tryHttp = (callback) => {
         const req = http.get(
           {
             host: connectIp,
             port,
-            headers: { Host: hostname, "User-Agent": "CyberCheck/1.1" },
+            headers: { Host: hostname, "User-Agent": "CyberCheck/1.2" },
             timeout: 5000,
           },
           (res) => {
@@ -175,7 +175,10 @@ function checkHeaders(connectIp, port, hostname, retries = 1) {
         );
 
         const onFail = () => {
+          if (settled || failing) return;
+          failing = true;
           tryHttp(() => {
+            if (settled) return;
             if (attemptsLeft > 0) {
               // Ждем 1 секунду и пробуем снова
               setTimeout(() => attempt(attemptsLeft - 1), 1000);

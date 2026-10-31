@@ -151,6 +151,7 @@ function calculateScore(report) {
   if (!ssl.hasSSL) score = Math.min(score, 30);
   else if (!ssl.valid) score = Math.min(score, 40);
   if (has3306) score = Math.min(score, 70);
+  if (ssl.supportsOldTls) score = Math.min(score, 85);
 
   score = Math.max(0, Math.min(100, score));
 
