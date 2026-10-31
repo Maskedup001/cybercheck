@@ -1,5 +1,6 @@
 const { calculateScore } = require("./scoring");
 const path = require("path");
+const fs = require("node:fs");
 const net = require("node:net");
 const express = require("express");
 const cors = require("cors");
@@ -26,6 +27,11 @@ if (!["http:", "https:"].includes(parsedOrigin.protocol)) {
 }
 
 const PUBLIC_ORIGIN = parsedOrigin.origin;
+
+// Подготовка index.html с динамическим BASE_URL
+const indexPath = path.join(__dirname, "../public/index.html");
+let indexHtml = fs.readFileSync(indexPath, "utf-8");
+indexHtml = indexHtml.replaceAll("__BASE_URL__", PUBLIC_ORIGIN);
 
 const DEMO_MODE = process.env.DEMO_MODE === "true";
 if (DEMO_MODE && process.env.NODE_ENV !== "development") {
@@ -66,6 +72,14 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: "8kb" }));
+
+// Отдаем index.html с подставленным BASE_URL
+app.get("/", (req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(indexHtml);
+});
+app.get("/index.html", (req, res) => res.redirect("/"));
+
 app.use(express.static(path.join(__dirname, "../public")));
 
 // 2. Rate Limit с LRU-вытеснением (NEW-04)
