@@ -68,17 +68,14 @@
 }
 .legal__text {
   color: var(--color-text-muted);
-  line-height: 1.6;
+  line-height: var(--leading-normal);
   margin-bottom: var(--space-4);
 }
-.legal__back {
-  text-decoration: none;
-}
-
 .legal__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-3);
   margin-top: var(--space-6);
 }
@@ -89,7 +86,7 @@
   left: 0;
   background: var(--color-accent);
   color: var(--color-surface);
-  padding: 10px 20px;
+  padding: var(--space-3) var(--space-5);
   z-index: 1000;
   transition: top 0.3s;
 }

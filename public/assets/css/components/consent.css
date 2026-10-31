@@ -7,6 +7,10 @@
   margin-bottom: var(--space-6);
   cursor: pointer;
 }
+.consent__text {
+  min-width: 0;
+  line-height: var(--leading-normal);
+}
 .consent__control {
   margin-top: 2px;
   width: 24px;

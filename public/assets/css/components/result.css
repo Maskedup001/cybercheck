@@ -29,7 +29,7 @@
 }
 
 /* Убираем рамку при программном фокусе на заголовок (для a11y) */
-.result__title:focus {
+.result__title:focus:not(:focus-visible) {
   outline: none;
 }
 
@@ -48,10 +48,16 @@
 .result__meta-item {
   display: flex;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .result__meta-label {
   color: var(--color-text-muted);
+}
+
+.result__meta-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .result__section {
@@ -72,10 +78,16 @@
   gap: var(--space-2);
 }
 
+/* Пустое состояние секции: живёт рядом с dl, а не внутри него */
+.result__empty {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
 .result__row {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 4px;
+  gap: var(--space-1);
   padding: var(--space-1) 0;
   border-bottom: 1px dashed var(--color-border);
 }
@@ -101,6 +113,7 @@
   align-items: center;
   padding: 0.125rem var(--space-2);
   border-radius: var(--radius-pill);
+  font-family: var(--font-sans);
   font-weight: var(--font-weight-semibold);
   font-size: var(--font-size-xs);
   max-width: 100%;
@@ -118,12 +131,27 @@
   background: var(--color-danger-bg);
 }
 
+.result__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
 .report-footer {
   margin-top: var(--space-8);
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
   border-top: 1px solid var(--color-border);
   padding-top: var(--space-4);
+}
+
+.report-footer__text {
+  line-height: var(--leading-normal);
+}
+
+.report-footer__meta {
+  margin-top: var(--space-2);
 }
 
 /* --- Оценка (Риск-скор) --- */
@@ -135,7 +163,7 @@
 }
 
 .result__score-grade {
-  font-size: 4rem; /* 64px */
+  font-size: var(--font-size-4xl);
   font-weight: var(--font-weight-bold);
   line-height: 1;
   margin-bottom: var(--space-2);

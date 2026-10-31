@@ -135,10 +135,11 @@ export function renderResult(container, body, report) {
   // --- СЕКЦИЯ: ПОРТЫ ---
   const ports = createSection("Порты");
   if (report.ports.length === 0) {
-    const p = document.createElement("p");
-    p.className = "result__value";
-    p.textContent = "Открытых портов не найдено";
-    ports.rowsContainer.appendChild(p);
+    // <dl> принимает только dt/dd, поэтому пустое состояние — сосед dl
+    const empty = document.createElement("p");
+    empty.className = "result__empty";
+    empty.textContent = "Открытых портов не найдено";
+    ports.section.appendChild(empty);
   } else {
     report.ports.forEach((p) => {
       // 80, 443 - это норма для веба. Остальные - потенциальный риск

@@ -37,6 +37,7 @@
   --font-size-base: 1rem;
   --font-size-lg: 1.125rem;
   --font-size-xl: 1.5rem;
+  --font-size-4xl: 4rem;
   --font-size-display: clamp(2rem, 1.5rem + 2.5vw, 2.5rem);
   --leading-tight: 1.2;
   --leading-normal: 1.5;
