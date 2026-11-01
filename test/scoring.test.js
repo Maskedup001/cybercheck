@@ -104,7 +104,7 @@ test("HSTS без SSL не дает баллов", () => {
       csp: false,
       xframe: false,
       xcontent: false,
-      server: "nginx",
+      server: "nginx/1.18.0",
       hsts: true,
     },
   });
@@ -130,4 +130,50 @@ test("medium-находка ограничивает оценку до B (90)", 
   });
   assert.strictEqual(r.score, 90);
   assert.strictEqual(r.grade, "B");
+});
+
+test("Server без цифр не считается раскрытием версии", () => {
+  for (const server of [
+    "cloudflare",
+    "github.com",
+    "unknown",
+    "nginx",
+    "AmazonS3",
+  ]) {
+    const r = calculateScore({
+      ports: [],
+      ssl: okSSL,
+      headers: { ...okHeaders, server },
+    });
+    assert.strictEqual(r.score, 100, `server=${server}`);
+    assert.strictEqual(r.grade, "A", `server=${server}`);
+    assert.ok(
+      !r.findings.some((f) => f.id === "server-exposed"),
+      `server=${server}`,
+    );
+  }
+});
+
+test("Server с версией nginx/1.18.0 → находка и −5", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: okSSL,
+    headers: { ...okHeaders, server: "nginx/1.18.0" },
+  });
+  assert.ok(r.findings.some((f) => f.id === "server-exposed"));
+  assert.strictEqual(r.score, 95);
+  assert.strictEqual(r.grade, "A");
+});
+
+test("Server с версией Apache/2.4.49 (Unix) → находка low", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: okSSL,
+    headers: { ...okHeaders, server: "Apache/2.4.49 (Unix)" },
+  });
+  const finding = r.findings.find((f) => f.id === "server-exposed");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "low");
+  assert.strictEqual(finding.weight, 5);
+  assert.strictEqual(r.score, 95);
 });

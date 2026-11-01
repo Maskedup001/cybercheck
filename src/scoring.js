@@ -110,17 +110,20 @@ function calculateScore(report) {
         recommendation: "Добавьте X-Content-Type-Options: nosniff.",
       });
 
-    // ИСПРАВЛЕНИЕ: не считаем раскрытием строку "не указан"
-    if (h.server && h.server !== "не указан")
+    // Версия в Server выдаёт себя цифрами: nginx/1.18.0, Apache/2.4.49,
+    // Microsoft-IIS/10.0. Значение без цифр (cloudflare, github.com, unknown)
+    // раскрывает ПО, но не версию — это распространённая практика, замечания нет.
+    if (/\d+\.\d+/.test(typeof h.server === "string" ? h.server : "")) {
       push({
         id: "server-exposed",
         title: "Раскрыт Server",
-        desc: "Заголовок раскрывает ПО и версию.",
+        desc: "В заголовке Server есть номер версии — это упрощает подбор эксплойтов.",
         severity: "low",
         weight: 5,
-        recommendation: "Скройте Server через конфиг nginx/apache.",
+        recommendation:
+          "Уберите версию из заголовка Server или скройте его в конфиге nginx/apache.",
       });
-    else score += 5;
+    } else score += 5;
   }
 
   if (riskyPorts.length === 0) score += 15;
