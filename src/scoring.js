@@ -8,7 +8,9 @@ function calculateScore(report) {
 
   const hasSSL = !!ssl.hasSSL && !!ssl.valid;
   const daysLeft = typeof ssl.daysLeft === "number" ? ssl.daysLeft : null;
-  const riskyPorts = ports.filter((p) => [22, 3306].includes(p.port));
+  const riskyPorts = ports.filter(
+    (p) => p.status === "open" && [22, 3306].includes(p.port),
+  );
   const has3306 = ports.some((p) => p.port === 3306);
   const push = (f) => findings.push(f);
 
@@ -51,7 +53,7 @@ function calculateScore(report) {
       id: "ssl-expiring",
       title: "SSL истекает скоро",
       desc: `Сертификат истекает через ${daysLeft} дн.`,
-      severity: "medium",
+      severity: "low",
       weight: 5,
       recommendation: "Настройте автопродление сертификата.",
     });
