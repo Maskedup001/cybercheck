@@ -76,9 +76,13 @@ if (DEMO_MODE && process.env.NODE_ENV !== "development") {
 
 const app = express();
 
-// Trust proxy
-const TRUST_PROXY = Number(process.env.TRUST_PROXY ?? 0);
-if (Number.isInteger(TRUST_PROXY) && TRUST_PROXY > 0) {
+// Trust proxy (поддержка "true" для Express и числовых значений)
+const trustProxyEnv = process.env.TRUST_PROXY ?? "0";
+const TRUST_PROXY = trustProxyEnv === "true" ? true : Number(trustProxyEnv);
+if (
+  TRUST_PROXY === true ||
+  (Number.isInteger(TRUST_PROXY) && TRUST_PROXY > 0)
+) {
   app.set("trust proxy", TRUST_PROXY);
 }
 
@@ -185,19 +189,24 @@ setInterval(() => {
   }
 }, 30_000).unref();
 
-// Хелпер для ограничения времени выполнения скана
-function withTimeout(factory, ms) {
+// Хелпер для ограничения времени выполнения скана.
+// Поддерживает внешний сигнал отмены (если клиент оборвал соединение).
+function withTimeout(factory, ms, externalSignal) {
   const controller = new AbortController();
+  const signal = externalSignal
+    ? AbortSignal.any([externalSignal, controller.signal])
+    : controller.signal;
+
   let timer;
-  let onAbort;
   const timeout = new Promise((_, reject) => {
-    onAbort = () => reject(new Error("SCAN_TIMEOUT"));
-    controller.signal.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(() => controller.abort(), ms);
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("SCAN_TIMEOUT"));
+    }, ms);
   });
-  return Promise.race([factory(controller.signal), timeout]).finally(() => {
+
+  return Promise.race([factory(signal), timeout]).finally(() => {
     clearTimeout(timer);
-    controller.signal.removeEventListener("abort", onAbort);
   });
 }
 
@@ -251,6 +260,15 @@ app.post("/api/scan", async (req, res) => {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
 
+  // Проверяем потолок одновременных сканов до списания cooldown,
+  // чтобы ответ 503 не блокировал клиента на 10 секунд.
+  if (activeScans >= MAX_CONCURRENT_SCANS) {
+    res.set("Retry-After", "60");
+    return res
+      .status(503)
+      .json({ error: "Сервис занят, попробуй через минуту" });
+  }
+
   // 4. Лимит частоты срабатывает ТОЛЬКО для валидных запросов
   const wait = checkCooldown(rateKey(ip));
   if (wait > 0) {
@@ -260,17 +278,15 @@ app.post("/api/scan", async (req, res) => {
       .json({ error: `Подожди ${wait} сек. перед следующим сканом` });
   }
 
-  if (activeScans >= MAX_CONCURRENT_SCANS) {
-    res.set("Retry-After", "60");
-    return res.status(503).json({ error: "Сервис занят, попробуй через минуту" });
-  }
-
   activeScans += 1;
-  // Декремент вешаем на закрытие ответа: оно наступает на любом исходе,
-  // включая обрыв соединения клиентом.
-  res.on("close", () => {
-    activeScans -= 1;
-  });
+
+  // Обрабатываем обрыв соединения клиентом:
+  // если клиент ушёл, прерываем скан, чтобы не держать сокеты.
+  const scanAbortController = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) scanAbortController.abort();
+  };
+  res.on("close", onClose);
 
   // 5. Логируем ПОСЛЕ валидации (защита от log injection).
   // req.ip — недоверенное значение: при TRUST_PROXY>0 оно приходит
@@ -280,70 +296,77 @@ app.post("/api/scan", async (req, res) => {
     `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${loggedIp}`,
   );
 
-  let connectIp;
-  if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
-    connectIp = hostname;
-  } else {
-    let resolvedIps;
-    try {
-      resolvedIps = await resolveWithTimeout(hostname);
-    } catch (e) {
-      if (e.message === "DNS_TIMEOUT") {
-        return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
-      }
-      return res.status(400).json({ error: "Не удалось разрешить адрес" });
-    }
-
-    if (resolvedIps.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "Сканирование внутренних адресов запрещено" });
-    }
-    connectIp = resolvedIps[0];
-  }
-
   try {
+    let connectIp;
+    if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
+      connectIp = hostname;
+    } else {
+      let resolvedIps;
+      try {
+        resolvedIps = await resolveWithTimeout(hostname);
+      } catch (e) {
+        if (e.message === "DNS_TIMEOUT") {
+          return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
+        }
+        return res.status(400).json({ error: "Не удалось разрешить адрес" });
+      }
+
+      if (resolvedIps.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Сканирование внутренних адресов запрещено" });
+      }
+      connectIp = resolvedIps[0];
+    }
+
     // Ограничиваем весь процесс сканирования 30 секундами. Теоретический
     // худший сценарий по внутренним таймаутам — 35,5 с (порты 6,5 +
     // TLS 8 + заголовки 21), но он требует цели, которая принимает
     // соединение и молчит: полезного отчёта по ней всё равно не будет.
     // 30 с отсекают этот хвост, не заставляя клиента ждать до своих 45 с.
-    const scanResult = await withTimeout(async (signal) => {
-      const ports = await Promise.all(
-        [80, 443, 22, 3306, 8080].map((p) =>
-          checkPort(connectIp, p, 3000, 1, signal),
-        ),
-      );
-      if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+    const scanResult = await withTimeout(
+      async (signal) => {
+        const ports = await Promise.all(
+          [80, 443, 22, 3306, 8080].map((p) =>
+            checkPort(connectIp, p, 3000, 1, signal),
+          ),
+        );
+        if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
-      const openPorts = ports.filter((p) => p.status === "open");
-      const webPort = [443, 80, 8080].find((p) =>
-        openPorts.some((op) => op.port === p),
-      );
+        const openPorts = ports.filter((p) => p.status === "open");
+        const webPort = [443, 80, 8080].find((p) =>
+          openPorts.some((op) => op.port === p),
+        );
 
-      if (!webPort) {
-        const ssl = { hasSSL: false };
-        const headers = { error: true };
+        if (!webPort) {
+          const ssl = { hasSSL: false };
+          const headers = { error: true };
+          return buildReport(hostname, openPorts, ssl, headers);
+        }
+
+        const ssl = await checkSSL(connectIp, webPort, hostname, signal);
+        if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+
+        // Если TLS на этом порту не поднялся, HTTPS-попытка заведомо
+        // провалится: не тратим на неё до 5 секунд.
+        const headers = await checkHeaders(
+          connectIp,
+          webPort,
+          hostname,
+          1,
+          signal,
+          Boolean(ssl.hasSSL),
+        );
         return buildReport(hostname, openPorts, ssl, headers);
-      }
+      },
+      30000,
+      scanAbortController.signal,
+    );
 
-      const ssl = await checkSSL(connectIp, webPort, hostname, signal);
-      if (signal.aborted) throw new Error("SCAN_TIMEOUT");
-      // Если TLS на этом порту не поднялся, HTTPS-попытка заведомо
-      // провалится: не тратим на неё до 5 секунд.
-      const headers = await checkHeaders(
-        connectIp,
-        webPort,
-        hostname,
-        1,
-        signal,
-        Boolean(ssl.hasSSL),
-      );
-      return buildReport(hostname, openPorts, ssl, headers);
-    }, 30000);
-
+    if (res.writableEnded || scanAbortController.signal.aborted) return;
     res.json(scanResult);
   } catch (e) {
+    if (res.writableEnded) return;
     if (e.message === "SCAN_TIMEOUT") {
       console.error("[scan] Превышено время сканирования (30с)");
       return res
@@ -352,6 +375,10 @@ app.post("/api/scan", async (req, res) => {
     }
     console.error("[scan] проверка не удалась:", e);
     res.status(500).json({ error: "Ошибка сканирования" });
+  } finally {
+    // Декремент семафора гарантированно срабатывает на любом исходе
+    activeScans -= 1;
+    res.off("close", onClose);
   }
 });
 
@@ -400,11 +427,14 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: message });
 });
 
-const PORT = Number(process.env.PORT) || 3000;
-if (PORT < 1 || PORT > 65535) {
-  console.error("ОШИБКА: PORT должен быть числом от 1 до 65535");
+// Строгий парсинг порта (защита от PORT=abc или PORT=3000.5)
+const rawPort = process.env.PORT || "3000";
+const PORT = Number(rawPort);
+if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
+  console.error("ОШИБКА: PORT должен быть целым числом от 0 до 65535");
   process.exit(1);
 }
+
 const server = app.listen(PORT, () => {
   console.log(`Сканер запущен: http://localhost:${PORT}`);
   console.log(`[CORS] разрешён origin: ${PUBLIC_ORIGIN}`);
@@ -427,3 +457,8 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
     }, 40_000).unref();
   });
 }
+
+// Страховка от необработанных ошибок в промисах
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason);
+});
