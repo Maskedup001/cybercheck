@@ -45,11 +45,6 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
   });
 }
 
-// Проверяет SSL-сертификат на указанном порту.
-// connectIp — IP для подключения, hostname — для SNI (только если это домен, не IP).
-// rejectUnauthorized: false нужен, чтобы ПРОЧИТАТЬ информацию о невалидных
-// сертификатах (просроченных, самоподписанных) — иначе соединение оборвётся.
-
 // Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1)
 function checkOldTls(connectIp, port, hostname, signal) {
   return new Promise((resolve) => {
@@ -79,6 +74,10 @@ function checkOldTls(connectIp, port, hostname, signal) {
   });
 }
 
+// Проверяет SSL-сертификат на указанном порту.
+// connectIp — IP для подключения, hostname — для SNI (только если это домен, не IP).
+// rejectUnauthorized: false нужен, чтобы ПРОЧИТАТЬ информацию о невалидных
+// сертификатах (просроченных, самоподписанных) — иначе соединение оборвётся.
 async function checkSSL(connectIp, port, hostname, signal) {
   if (!port) return { hasSSL: false };
 
@@ -182,6 +181,10 @@ function checkHeaders(
     if (signal?.aborted) return resolve({ error: true });
 
     const servername = net.isIP(hostname) ? undefined : hostname;
+    // B-4: Добавляем порт в Host для нестандартных портов (например, 8080)
+    const hostHeader =
+      port === 80 || port === 443 ? hostname : `${hostname}:${port}`;
+
     let settled = false;
     const resolveOnce = (data) => {
       if (settled) return;
@@ -208,7 +211,8 @@ function checkHeaders(
           {
             host: connectIp,
             port,
-            headers: { Host: hostname, "User-Agent": "CyberCheck/1.2" },
+            // B-4 и B-8: Используем hostHeader и актуальную версию UA
+            headers: { Host: hostHeader, "User-Agent": "CyberCheck/2.0" },
             timeout: 5000,
             signal,
           },
@@ -237,7 +241,8 @@ function checkHeaders(
             port,
             servername,
             rejectUnauthorized: false,
-            headers: { Host: hostname, "User-Agent": "CyberCheck/1.2" },
+            // B-4 и B-8: Используем hostHeader и актуальную версию UA
+            headers: { Host: hostHeader, "User-Agent": "CyberCheck/2.0" },
             timeout: 5000,
             signal,
           },
@@ -260,8 +265,12 @@ function checkHeaders(
         });
       };
 
-      if (hasTls) tryHttps();
-      else tryHttp();
+      // B-3: Пробуем HTTPS на 443, даже если checkSSL не успел подтвердить TLS
+      if (hasTls || port === 443) {
+        tryHttps();
+      } else {
+        tryHttp();
+      }
     };
 
     attempt(retries);
