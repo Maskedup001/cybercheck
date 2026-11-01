@@ -49,7 +49,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 | `Content-Security-Policy` | 15 |
 | `X-Frame-Options` | 10 |
 | `X-Content-Type-Options` | 10 |
-| Заголовок `Server` не раскрыт | 5 |
+| Заголовок `Server` без версии (нет цифр) | 5 |
 | Нет открытых портов 22 и 3306 | 15 |
 | Порт 8080 закрыт | 5 |
 | **Поддержка TLS 1.0/1.1** | **−10** |
@@ -159,7 +159,7 @@ Content-Type: application/json
   },
   "headers": {
     "protocol": "HTTPS",
-    "server": "nginx",
+    "server": "nginx/1.18.0",
     "csp": true,
     "xframe": true,
     "hsts": true,
@@ -171,10 +171,10 @@ Content-Type: application/json
     {
       "id": "server-exposed",
       "title": "Раскрыт Server",
-      "desc": "Заголовок раскрывает ПО и версию.",
+      "desc": "В заголовке Server есть номер версии — это упрощает подбор эксплойтов.",
       "severity": "low",
       "weight": 5,
-      "recommendation": "Скройте Server через конфиг nginx/apache."
+      "recommendation": "Уберите версию из заголовка Server или скройте его в конфиге nginx/apache."
     }
   ]
 }
@@ -199,10 +199,10 @@ Content-Type: application/json
 npm test
 ```
 
-Запускается `node --test test/*.test.js` — **18 тестов** в трёх файлах:
+Запускается `node --test test/*.test.js` — **21 тест** в трёх файлах:
 
 - `test/net-guard.test.js` — 3 теста: 20 приватных/служебных адресов блокируются, 4 публичных разрешаются, мусорный ввод блокируется (fail-closed). Покрыты IPv4-mapped, IPv4-compatible, NAT64 и `::/96`.
-- `test/scoring.test.js` — 12 тестов: «всё хорошо» → 100/A; нет CSP → 85/B; нет HSTS → 85/B; нет XCTO → 90/B; просроченный сертификат → ≤ 40; нет HTTPS → ≤ 30; `headers.error` → ≤ 60 и находка; открытый 3306 → ≤ 70; `server: "не указан"` не считается раскрытием; HSTS без TLS не даёт баллов (20); TLS 1.0/1.1 → 85/B; находка `medium` → потолок 90/B.
+- `test/scoring.test.js` — 15 тестов: «всё хорошо» → 100/A; нет CSP → 85/B; нет HSTS → 85/B; нет XCTO → 90/B; просроченный сертификат → ≤ 40; нет HTTPS → ≤ 30; `headers.error` → ≤ 60 и находка; открытый 3306 → ≤ 70; `Server` без цифр (`cloudflare`, `github.com`, `unknown`) → 100/A без находки; `nginx/1.18.0` и `Apache/2.4.49` → находка и 95/A; HSTS без TLS не даёт баллов (20); TLS 1.0/1.1 → 85/B; находка `medium` → потолок 90/B.
 - `test/checks.test.js` — 3 теста: `checkPort` на закрытом и открытом порту, `checkHeaders` на локальном HTTP-сервере (CSP и X-Frame-Options находятся, HSTS — нет).
 
 Не покрыто: HTTP-слой (400/404/429/503/CORS), retry в `checkHeaders`, `checkOldTls`/`supportsOldTls`, URL-валидация, `buildReport`, рендер отчёта. Как это закрыть — в [архитектуре](docs/architecture.md).
@@ -290,7 +290,7 @@ cybercheck/
 │   └── net-guard.js                # SSRF-защита: isPublicIp, resolvePublicIps
 ├── test/
 │   ├── net-guard.test.js           # 3 теста SSRF-классификации
-│   ├── scoring.test.js             # 12 тестов скоринга
+│   ├── scoring.test.js             # 15 тестов скоринга
 │   └── checks.test.js              # 3 теста: порты и заголовки
 ├── .env.example
 ├── .gitignore
