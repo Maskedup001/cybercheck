@@ -75,7 +75,7 @@ test("headers.error → ≤ 60 + находка", () => {
 
 test("открыт 3306 → ≤ 70 + high", () => {
   const r = calculateScore({
-    ports: [{ port: 3306 }],
+    ports: [{ port: 3306, status: "open" }],
     ssl: okSSL,
     headers: okHeaders,
   });
@@ -124,8 +124,8 @@ test("поддержка устаревшего TLS снижает оценку"
 
 test("medium-находка ограничивает оценку до B (90)", () => {
   const r = calculateScore({
-    ports: [],
-    ssl: { hasSSL: true, valid: true, daysLeft: 10 }, // ssl-expiring
+    ports: [{ port: 8080, status: "open" }], // Используем port-8080 (medium)
+    ssl: okSSL,
     headers: okHeaders,
   });
   assert.strictEqual(r.score, 90);
