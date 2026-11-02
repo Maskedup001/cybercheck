@@ -181,7 +181,7 @@ function checkHeaders(
     if (signal?.aborted) return resolve({ error: true });
 
     const servername = net.isIP(hostname) ? undefined : hostname;
-    // B-4: Добавляем порт в Host для нестандартных портов (например, 8080)
+    // Добавляем порт в Host для нестандартных портов (например, 8080)
     const hostHeader =
       port === 80 || port === 443 ? hostname : `${hostname}:${port}`;
 
@@ -211,7 +211,7 @@ function checkHeaders(
           {
             host: connectIp,
             port,
-            // B-4 и B-8: Используем hostHeader и актуальную версию UA
+            // Используем hostHeader и актуальную версию UA
             headers: { Host: hostHeader, "User-Agent": "CyberCheck/2.0" },
             timeout: 5000,
             signal,
@@ -241,7 +241,7 @@ function checkHeaders(
             port,
             servername,
             rejectUnauthorized: false,
-            // B-4 и B-8: Используем hostHeader и актуальную версию UA
+            // Используем hostHeader и актуальную версию UA
             headers: { Host: hostHeader, "User-Agent": "CyberCheck/2.0" },
             timeout: 5000,
             signal,
@@ -265,7 +265,7 @@ function checkHeaders(
         });
       };
 
-      // B-3: Пробуем HTTPS на 443, даже если checkSSL не успел подтвердить TLS
+      // Пробуем HTTPS на 443, даже если checkSSL не успел подтвердить TLS
       if (hasTls || port === 443) {
         tryHttps();
       } else {
