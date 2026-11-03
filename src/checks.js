@@ -1,3 +1,5 @@
+const pkg = require("../package.json");
+const UA = `CyberCheck/${pkg.version}`;
 const net = require("net");
 const tls = require("tls");
 const https = require("https");
@@ -78,89 +80,96 @@ function checkOldTls(connectIp, port, hostname, signal) {
 // connectIp — IP для подключения, hostname — для SNI (только если это домен, не IP).
 // rejectUnauthorized: false нужен, чтобы ПРОЧИТАТЬ информацию о невалидных
 // сертификатах (просроченных, самоподписанных) — иначе соединение оборвётся.
-async function checkSSL(connectIp, port, hostname, signal) {
+async function checkSSL(connectIp, port, hostname, signal, retries = 1) {
   if (!port) return { hasSSL: false };
 
   return new Promise((resolve) => {
-    let settled = false;
-    let mainSucceeded = false;
-    const finish = (data) => {
-      if (settled) return;
-      settled = true;
-      resolve(data);
-    };
-    const onError = () => {
-      if (!mainSucceeded) finish({ hasSSL: false });
-    };
-
-    const servername = net.isIP(hostname) ? undefined : hostname;
-    const socket = tls.connect(
-      {
-        host: connectIp,
-        port,
-        servername,
-        rejectUnauthorized: false,
-        ciphers: "DEFAULT@SECLEVEL=0",
-        signal,
-        minVersion: "TLSv1",
-      },
-      async () => {
-        mainSucceeded = true;
-        socket.setTimeout(0); // Отключаем таймаут, мы уже получили сертификат
-
-        try {
-          const cert = socket.getPeerCertificate();
-          if (!cert || !cert.valid_to) {
-            socket.end();
-            return finish({ hasSSL: false });
+    const attempt = (attemptsLeft) => {
+      let settled = false;
+      let mainSucceeded = false;
+      const finish = (data) => {
+        if (settled) return;
+        settled = true;
+        resolve(data);
+      };
+      const onError = () => {
+        if (!mainSucceeded) {
+          if (attemptsLeft > 0) {
+            setTimeout(() => attempt(attemptsLeft - 1), 500);
+          } else {
+            finish({ hasSSL: false });
           }
-
-          const verifyError = socket.authorizationError || null;
-          const valid = verifyError === null;
-          const daysLeft = Math.floor(
-            (new Date(cert.valid_to) - Date.now()) / 86400000,
-          );
-          const tlsVersion = socket.getProtocol();
-
-          socket.end();
-
-          let supportsOldTls = false;
-          try {
-            supportsOldTls = await checkOldTls(
-              connectIp,
-              port,
-              hostname,
-              signal,
-            );
-          } catch (e) {}
-
-          finish({
-            hasSSL: true,
-            valid,
-            verifyError,
-            daysLeft,
-            validTo: cert.valid_to,
-            validToISO: (() => {
-              if (!cert.valid_to) return null;
-              const d = new Date(cert.valid_to);
-              return Number.isNaN(d.getTime()) ? null : d.toISOString();
-            })(),
-            issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
-            tlsVersion,
-            supportsOldTls,
-          });
-        } catch (e) {
-          socket.end();
-          finish({ hasSSL: false });
         }
-      },
-    );
+      };
 
-    socket.on("error", onError);
-    socket.setTimeout(5000, () => {
-      socket.destroy();
-      finish({ hasSSL: false });
-    });
+      const servername = net.isIP(hostname) ? undefined : hostname;
+      const socket = tls.connect(
+        {
+          host: connectIp,
+          port,
+          servername,
+          rejectUnauthorized: false,
+          ciphers: "DEFAULT@SECLEVEL=0",
+          signal,
+          minVersion: "TLSv1",
+        },
+        async () => {
+          mainSucceeded = true;
+          socket.setTimeout(0);
+          try {
+            const cert = socket.getPeerCertificate();
+            if (!cert || !cert.valid_to) {
+              socket.end();
+              return finish({ hasSSL: false });
+            }
+
+            const verifyError = socket.authorizationError || null;
+            const valid = verifyError === null;
+            const daysLeft = Math.floor(
+              (new Date(cert.valid_to) - Date.now()) / 86400000,
+            );
+            const tlsVersion = socket.getProtocol();
+            socket.end();
+
+            let supportsOldTls = false;
+            try {
+              supportsOldTls = await checkOldTls(
+                connectIp,
+                port,
+                hostname,
+                signal,
+              );
+            } catch (e) {}
+
+            finish({
+              hasSSL: true,
+              valid,
+              verifyError,
+              daysLeft,
+              validTo: cert.valid_to,
+              validToISO: (() => {
+                if (!cert.valid_to) return null;
+                const d = new Date(cert.valid_to);
+                return Number.isNaN(d.getTime()) ? null : d.toISOString();
+              })(),
+              issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
+              tlsVersion,
+              supportsOldTls,
+            });
+          } catch (e) {
+            socket.end();
+            finish({ hasSSL: false });
+          }
+        },
+      );
+
+      socket.on("error", onError);
+      socket.setTimeout(5000, () => {
+        socket.destroy();
+        onError();
+      });
+    };
+    attempt(retries);
   });
 }
 
@@ -212,7 +221,7 @@ function checkHeaders(
             host: connectIp,
             port,
             // Используем hostHeader и актуальную версию UA
-            headers: { Host: hostHeader, "User-Agent": "CyberCheck/2.0" },
+            headers: { Host: hostHeader, "User-Agent": UA },
             timeout: 5000,
             signal,
           },
