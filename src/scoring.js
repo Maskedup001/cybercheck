@@ -14,8 +14,19 @@ function calculateScore(report) {
   const has3306 = ports.some((p) => p.port === 3306 && p.status === "open");
   const push = (f) => findings.push(f);
 
-  if (hasSSL) score += 20;
-  else if (!ssl.hasSSL)
+  if (hasSSL) {
+    score += 20;
+  } else if (ssl.error) {
+    // Отделяем ошибку соединения от отсутствия SSL
+    push({
+      id: "ssl-error",
+      title: "Ошибка проверки SSL",
+      desc: "Не удалось установить TLS-соединение. Возможно, сервер недоступен или блокирует запросы.",
+      severity: "medium",
+      weight: 0,
+      recommendation: "Повторите скан позже.",
+    });
+  } else if (!ssl.hasSSL) {
     push({
       id: "no-ssl",
       title: "Нет SSL",
@@ -24,7 +35,7 @@ function calculateScore(report) {
       weight: 20,
       recommendation: "Настройте HTTPS (Let's Encrypt, Cloudflare).",
     });
-  else
+  } else {
     push({
       id: "bad-ssl",
       title: "Невалидный SSL",
@@ -33,6 +44,7 @@ function calculateScore(report) {
       weight: 20,
       recommendation: "Обновите сертификат или проверьте цепочку.",
     });
+  }
 
   if (ssl.hasSSL && ssl.supportsOldTls) {
     score -= 10;
@@ -153,8 +165,9 @@ function calculateScore(report) {
     });
 
   if (h.error) score = Math.min(score, 60);
-  if (!ssl.hasSSL) score = Math.min(score, 30);
-  else if (!ssl.valid) score = Math.min(score, 40);
+  if (ssl.error) score = Math.min(score, 60);
+  if (!ssl.hasSSL && !ssl.error) score = Math.min(score, 30);
+  else if (ssl.hasSSL && !ssl.valid) score = Math.min(score, 40);
   if (has3306) score = Math.min(score, 70);
   if (ssl.supportsOldTls) score = Math.min(score, 85);
   if (hasSSL && daysLeft !== null && daysLeft <= 7) score = Math.min(score, 90);

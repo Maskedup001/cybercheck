@@ -46,3 +46,12 @@ test("checkHeaders: находит заголовки безопасности",
 
   await new Promise((resolve) => server.close(resolve));
 });
+
+const { checkSSL } = require("../src/checks");
+
+test("checkSSL: возвращает ошибку, если TLS не поднялся", async () => {
+  // Стучимся на заведомо HTTP-порт (1), где TLS не может подняться
+  const result = await checkSSL("127.0.0.1", 1, "localhost", null, 0);
+  assert.strictEqual(result.hasSSL, false);
+  assert.strictEqual(result.error, "HANDSHAKE_FAILED");
+});

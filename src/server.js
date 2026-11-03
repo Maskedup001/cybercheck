@@ -81,11 +81,13 @@ const trustProxyEnv = process.env.TRUST_PROXY;
 let TRUST_PROXY = 0;
 if (trustProxyEnv) {
   TRUST_PROXY = Number(trustProxyEnv);
-  if (!Number.isInteger(TRUST_PROXY) || TRUST_PROXY < 1) {
-    console.error("ОШИБКА: TRUST_PROXY должен быть целым числом >= 1");
+  if (!Number.isInteger(TRUST_PROXY) || TRUST_PROXY < 0) {
+    console.error("ОШИБКА: TRUST_PROXY должен быть целым числом >= 0");
     process.exit(1);
   }
-  app.set("trust proxy", TRUST_PROXY);
+  if (TRUST_PROXY > 0) {
+    app.set("trust proxy", TRUST_PROXY);
+  }
 }
 
 app.disable("x-powered-by");
@@ -386,8 +388,8 @@ app.post("/api/scan", async (req, res) => {
           );
 
           if (!headers.error) {
-            bestSsl = ssl;
             bestHeaders = headers;
+            if (!bestSsl.hasSSL) bestSsl = ssl;
             break;
           } else if (wp === 443) {
             bestSsl = ssl;
@@ -396,7 +398,7 @@ app.post("/api/scan", async (req, res) => {
 
         return buildReport(hostname, openPorts, bestSsl, bestHeaders);
       },
-      30000,
+      45000,
       scanAbortController.signal,
     );
 
@@ -405,7 +407,7 @@ app.post("/api/scan", async (req, res) => {
   } catch (e) {
     if (res.writableEnded || scanAbortController.signal.aborted) return;
     if (e.message === "SCAN_TIMEOUT") {
-      console.error("[scan] Превышено время сканирования (30с)");
+      console.error("[scan] Превышено время сканирования (45с)");
       return res
         .status(504)
         .json({ error: "Сканирование заняло слишком много времени" });

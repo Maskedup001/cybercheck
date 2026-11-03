@@ -97,7 +97,7 @@ async function checkSSL(connectIp, port, hostname, signal, retries = 1) {
           if (attemptsLeft > 0) {
             setTimeout(() => attempt(attemptsLeft - 1), 500);
           } else {
-            finish({ hasSSL: false });
+            finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
           }
         }
       };
@@ -158,7 +158,7 @@ async function checkSSL(connectIp, port, hostname, signal, retries = 1) {
             });
           } catch (e) {
             socket.end();
-            finish({ hasSSL: false });
+            finish({ hasSSL: false, error: "CERT_PARSE_FAILED" });
           }
         },
       );
