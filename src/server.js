@@ -77,12 +77,14 @@ if (DEMO_MODE && process.env.NODE_ENV !== "development") {
 const app = express();
 
 // Trust proxy (поддержка "true" для Express и числовых значений)
-const trustProxyEnv = process.env.TRUST_PROXY ?? "0";
-const TRUST_PROXY = trustProxyEnv === "true" ? true : Number(trustProxyEnv);
-if (
-  TRUST_PROXY === true ||
-  (Number.isInteger(TRUST_PROXY) && TRUST_PROXY > 0)
-) {
+const trustProxyEnv = process.env.TRUST_PROXY;
+let TRUST_PROXY = 0;
+if (trustProxyEnv) {
+  TRUST_PROXY = Number(trustProxyEnv);
+  if (!Number.isInteger(TRUST_PROXY) || TRUST_PROXY < 1) {
+    console.error("ОШИБКА: TRUST_PROXY должен быть целым числом >= 1");
+    process.exit(1);
+  }
   app.set("trust proxy", TRUST_PROXY);
 }
 
@@ -366,7 +368,7 @@ app.post("/api/scan", async (req, res) => {
     if (res.writableEnded || scanAbortController.signal.aborted) return;
     res.json(scanResult);
   } catch (e) {
-    if (res.writableEnded) return;
+    if (res.writableEnded || scanAbortController.signal.aborted) return;
     if (e.message === "SCAN_TIMEOUT") {
       console.error("[scan] Превышено время сканирования (30с)");
       return res
@@ -436,7 +438,8 @@ if (!Number.isInteger(PORT) || PORT < 0 || PORT > 65535) {
 }
 
 const server = app.listen(PORT, () => {
-  console.log(`Сканер запущен: http://localhost:${PORT}`);
+  const actualPort = server.address().port;
+  console.log(`Сканер запущен: http://localhost:${actualPort}`);
   console.log(`[CORS] разрешён origin: ${PUBLIC_ORIGIN}`);
   if (DEMO_MODE) console.log("[DEMO_MODE] localhost разрешён");
 });
@@ -461,4 +464,9 @@ for (const sig of ["SIGTERM", "SIGINT"]) {
 // Страховка от необработанных ошибок в промисах
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+  process.exit(1);
 });
