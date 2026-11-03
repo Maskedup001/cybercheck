@@ -251,7 +251,7 @@ function checkHeaders(
             servername,
             rejectUnauthorized: false,
             // Используем hostHeader и актуальную версию UA
-            headers: { Host: hostHeader, "User-Agent": "CyberCheck/2.0" },
+            headers: { Host: hostHeader, "User-Agent": UA },
             timeout: 5000,
             signal,
           },
