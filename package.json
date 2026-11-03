@@ -2,7 +2,7 @@
   "name": "cybercheck",
   "description": "Web vulnerability scanner with Risk Score",
   "license": "MIT",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "main": "src/server.js",
   "private": true,
   "engines": {
