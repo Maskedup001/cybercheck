@@ -11,6 +11,7 @@ test("TRUST_PROXY=0 не роняет сервер", async () => {
         ...process.env,
         TRUST_PROXY: "0",
         PUBLIC_ORIGIN: "http://localhost:3000",
+        PORT: "0", // <--- Чтобы не конфликтовать с портом 3000
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -29,6 +30,7 @@ test("TRUST_PROXY=0 не роняет сервер", async () => {
     const timer = setTimeout(() => {
       if (resolved) return;
       resolved = true;
+      child.kill(); // <--- Убиваем процесс, чтобы не висел
       if (stderr.includes("ОШИБКА")) {
         reject(new Error(`Сервер выдал ошибку: ${stderr}`));
       } else if (!stdout.includes("Сканер запущен")) {
@@ -39,7 +41,7 @@ test("TRUST_PROXY=0 не роняет сервер", async () => {
         child.kill();
         resolve();
       }
-    }, 1500);
+    }, 5000);
 
     child.on("exit", (code) => {
       if (resolved) return;

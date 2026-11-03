@@ -375,7 +375,11 @@ app.post("/api/scan", async (req, res) => {
         let bestHeaders = { error: true };
 
         for (const wp of availableWebPorts) {
-          const ssl = await checkSSL(connectIpToUse, wp, hostname, signal);
+          // На 80 порту TLS не бывает, не тратим время и не пугаем клиента
+          const ssl =
+            wp === 80
+              ? { hasSSL: false }
+              : await checkSSL(connectIpToUse, wp, hostname, signal);
           if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
           const headers = await checkHeaders(
@@ -398,7 +402,7 @@ app.post("/api/scan", async (req, res) => {
 
         return buildReport(hostname, openPorts, bestSsl, bestHeaders);
       },
-      45000,
+      40000,
       scanAbortController.signal,
     );
 
