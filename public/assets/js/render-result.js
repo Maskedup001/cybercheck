@@ -243,6 +243,14 @@ function formatDate(raw) {
 }
 
 function createTlsCard(ssl) {
+  if (ssl.error) {
+    return createCard(
+      "TLS",
+      [],
+      "Не удалось проверить TLS: сервер не ответил на TLS-хендшейк или сертификат не разобран. Повторите скан позже.",
+    );
+  }
+
   if (!ssl.hasSSL) {
     return createCard(
       "TLS",

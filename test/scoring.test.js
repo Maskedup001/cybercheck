@@ -178,15 +178,52 @@ test("Server с версией Apache/2.4.49 (Unix) → находка low", () 
   assert.strictEqual(r.score, 95);
 });
 
-test("HTTP-сайт получает no-ssl, а не ssl-error (N-16)", () => {
+test("HTTP-сайт получает no-ssl, а не ssl-error", () => {
   const r = calculateScore({
     ports: [{ port: 80, status: "open" }],
     ssl: { hasSSL: false }, // Имитируем HTTP-сайт
     headers: okHeaders,
   });
-  // 20 (SSL) + 20 (заголовки) + 15 (порты) + 5 (8080) = 60, потолок 30 (E)
+  // 20 (порты) + 40 (заголовки) = 60, потолок 30 (E)
   assert.strictEqual(r.score, 30);
   assert.strictEqual(r.grade, "E");
   assert.ok(r.findings.some((f) => f.id === "no-ssl"));
   assert.ok(!r.findings.some((f) => f.id === "ssl-error"));
+});
+
+test("ошибка TLS даёт ssl-error, а не no-ssl", () => {
+  const r = calculateScore({
+    ports: [{ port: 443, status: "open" }],
+    ssl: { hasSSL: false, error: "HANDSHAKE_FAILED" },
+    headers: okHeaders,
+  });
+  assert.ok(r.score <= 60);
+  assert.ok(r.findings.some((f) => f.id === "ssl-error"));
+  assert.ok(!r.findings.some((f) => f.id === "no-ssl"));
+});
+
+test("сертификат истекает через 7 дней → 90 (B)", () => {
+  const r = calculateScore({
+    ports: [],
+    ssl: { hasSSL: true, valid: true, daysLeft: 7 },
+    headers: okHeaders,
+  });
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "B");
+  assert.ok(r.findings.some((f) => f.id === "ssl-expiring"));
+});
+
+test("Server с мажорной версией (nginx/2, lighttpd/2, Foo/3) → находка", () => {
+  for (const server of ["nginx/2", "lighttpd/2", "Foo/3"]) {
+    const r = calculateScore({
+      ports: [],
+      ssl: okSSL,
+      headers: { ...okHeaders, server },
+    });
+    assert.ok(
+      r.findings.some((f) => f.id === "server-exposed"),
+      `server=${server}`,
+    );
+    assert.strictEqual(r.score, 95, `server=${server}`);
+  }
 });

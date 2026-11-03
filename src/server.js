@@ -54,17 +54,31 @@ if (IS_PRODUCTION) {
   for (const name of PAGES) pageHtml(name);
 }
 
-async function resolveWithTimeout(hostname, ms = 5000) {
+async function resolveWithTimeout(hostname, ms = 5000, signal) {
   let timer;
+  let onAbort;
   try {
-    return await Promise.race([
+    const attempts = [
       resolvePublicIps(hostname),
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error("DNS_TIMEOUT")), ms);
       }),
-    ]);
+    ];
+
+    if (signal) {
+      attempts.push(
+        new Promise((_, reject) => {
+          if (signal.aborted) return reject(new Error("SCAN_ABORTED"));
+          onAbort = () => reject(new Error("SCAN_ABORTED"));
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      );
+    }
+
+    return await Promise.race(attempts);
   } finally {
     clearTimeout(timer);
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -76,13 +90,18 @@ if (DEMO_MODE && process.env.NODE_ENV !== "development") {
 
 const app = express();
 
-// Trust proxy (поддержка только целых чисел >= 1 для безопасности)
+// Trust proxy: только целое 0..10. 0 — не доверять прокси, 1 — Render.
+// Верхняя граница не даёт выставить «доверять всей цепочке» числом вроде 1000.
 const trustProxyEnv = process.env.TRUST_PROXY;
 let TRUST_PROXY = 0;
 if (trustProxyEnv) {
   TRUST_PROXY = Number(trustProxyEnv);
-  if (!Number.isInteger(TRUST_PROXY) || TRUST_PROXY < 0) {
-    console.error("ОШИБКА: TRUST_PROXY должен быть целым числом >= 0");
+  if (
+    !Number.isInteger(TRUST_PROXY) ||
+    TRUST_PROXY < 0 ||
+    TRUST_PROXY > 10
+  ) {
+    console.error("ОШИБКА: TRUST_PROXY должен быть целым числом от 0 до 10");
     process.exit(1);
   }
   if (TRUST_PROXY > 0) {
@@ -309,8 +328,15 @@ app.post("/api/scan", async (req, res) => {
       resolvedIps = [hostname]; // <-- Заполняем для демо-режима
     } else {
       try {
-        resolvedIps = await resolveWithTimeout(hostname);
+        resolvedIps = await resolveWithTimeout(
+          hostname,
+          5000,
+          scanAbortController.signal,
+        );
       } catch (e) {
+        if (e.message === "SCAN_ABORTED" || scanAbortController.signal.aborted) {
+          return;
+        }
         if (e.message === "DNS_TIMEOUT") {
           return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
         }
@@ -325,11 +351,11 @@ app.post("/api/scan", async (req, res) => {
       connectIp = resolvedIps[0];
     }
 
-    // Ограничиваем весь процесс сканирования 30 секундами. Теоретический
-    // худший сценарий по внутренним таймаутам — 35,5 с (порты 6,5 +
-    // TLS 8 + заголовки 21), но он требует цели, которая принимает
-    // соединение и молчит: полезного отчёта по ней всё равно не будет.
-    // 30 с отсекают этот хвост, не заставляя клиента ждать до своих 45 с.
+    // Ограничиваем весь процесс сканирования 40 секундами: клиент ждёт 45 с,
+    // поэтому 5 с остаются на DNS, сеть и передачу ответа. Один веб-порт
+    // может занять до 31,5 с (TLS 10,5 + заголовки 21), а перебор трёх
+    // портов теоретически больше 40 с — такие цели всё равно не дают
+    // полезного отчёта и обрываются 504.
     const scanResult = await withTimeout(
       async (signal) => {
         let connectIpToUse = connectIp;
@@ -375,11 +401,13 @@ app.post("/api/scan", async (req, res) => {
         let bestHeaders = { error: true };
 
         for (const wp of availableWebPorts) {
-          // На 80 порту TLS не бывает, не тратим время и не пугаем клиента
-          const ssl =
+          // На 80 порту TLS не бывает, не тратим время и не пугаем клиента.
+          // 8080 по умолчанию тоже HTTP: провал TLS там не означает ошибку.
+          let ssl =
             wp === 80
               ? { hasSSL: false }
               : await checkSSL(connectIpToUse, wp, hostname, signal);
+          if (wp === 8080 && ssl.error) ssl = { hasSSL: false };
           if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
           const headers = await checkHeaders(
@@ -393,7 +421,7 @@ app.post("/api/scan", async (req, res) => {
 
           if (!headers.error) {
             bestHeaders = headers;
-            if (!bestSsl.hasSSL) bestSsl = ssl;
+            if (!bestSsl.hasSSL && !bestSsl.error) bestSsl = ssl;
             break;
           } else if (wp === 443) {
             bestSsl = ssl;
@@ -411,7 +439,7 @@ app.post("/api/scan", async (req, res) => {
   } catch (e) {
     if (res.writableEnded || scanAbortController.signal.aborted) return;
     if (e.message === "SCAN_TIMEOUT") {
-      console.error("[scan] Превышено время сканирования (45с)");
+      console.error("[scan] Превышено время сканирования (40с)");
       return res
         .status(504)
         .json({ error: "Сканирование заняло слишком много времени" });
