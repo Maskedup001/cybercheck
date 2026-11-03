@@ -76,7 +76,7 @@ if (DEMO_MODE && process.env.NODE_ENV !== "development") {
 
 const app = express();
 
-// Trust proxy (поддержка "true" для Express и числовых значений)
+// Trust proxy (поддержка только целых чисел >= 1 для безопасности)
 const trustProxyEnv = process.env.TRUST_PROXY;
 let TRUST_PROXY = 0;
 if (trustProxyEnv) {
@@ -300,10 +300,12 @@ app.post("/api/scan", async (req, res) => {
 
   try {
     let connectIp;
+    let resolvedIps = []; // <--- ВЫНЕСЕНО НАВЕРХ, ЧТОБЫ БЫЛО ВИДНО В withTimeout
+
     if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
       connectIp = hostname;
+      resolvedIps = [hostname]; // <-- Заполняем для демо-режима
     } else {
-      let resolvedIps;
       try {
         resolvedIps = await resolveWithTimeout(hostname);
       } catch (e) {
@@ -328,38 +330,71 @@ app.post("/api/scan", async (req, res) => {
     // 30 с отсекают этот хвост, не заставляя клиента ждать до своих 45 с.
     const scanResult = await withTimeout(
       async (signal) => {
-        const ports = await Promise.all(
-          [80, 443, 22, 3306, 8080].map((p) =>
-            checkPort(connectIp, p, 3000, 1, signal),
-          ),
-        );
-        if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+        let connectIpToUse = connectIp;
+        let openPorts = [];
 
-        const openPorts = ports.filter((p) => p.status === "open");
-        const webPort = [443, 80, 8080].find((p) =>
+        // Перебираем IP, пока не найдем тот, у которого есть открытые порты (максимум 3)
+        for (const ip of resolvedIps.slice(0, 3)) {
+          const ports = await Promise.all(
+            [80, 443, 22, 3306, 8080].map((p) =>
+              checkPort(ip, p, 3000, 1, signal),
+            ),
+          );
+          if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+
+          const currentOpen = ports.filter((p) => p.status === "open");
+          if (currentOpen.length > 0) {
+            connectIpToUse = ip;
+            openPorts = currentOpen;
+            if (currentOpen.some((p) => [443, 80, 8080].includes(p.port)))
+              break;
+          }
+        }
+
+        if (openPorts.length === 0) {
+          return buildReport(hostname, [], { hasSSL: false }, { error: true });
+        }
+
+        const availableWebPorts = [443, 80, 8080].filter((p) =>
           openPorts.some((op) => op.port === p),
         );
 
-        if (!webPort) {
-          const ssl = { hasSSL: false };
-          const headers = { error: true };
-          return buildReport(hostname, openPorts, ssl, headers);
+        if (availableWebPorts.length === 0) {
+          return buildReport(
+            hostname,
+            openPorts,
+            { hasSSL: false },
+            { error: true },
+          );
         }
 
-        const ssl = await checkSSL(connectIp, webPort, hostname, signal);
-        if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+        // Пробуем веб-порты, пока не получим успешные заголовки
+        let bestSsl = { hasSSL: false };
+        let bestHeaders = { error: true };
 
-        // Если TLS на этом порту не поднялся, HTTPS-попытка заведомо
-        // провалится: не тратим на неё до 5 секунд.
-        const headers = await checkHeaders(
-          connectIp,
-          webPort,
-          hostname,
-          1,
-          signal,
-          Boolean(ssl.hasSSL),
-        );
-        return buildReport(hostname, openPorts, ssl, headers);
+        for (const wp of availableWebPorts) {
+          const ssl = await checkSSL(connectIpToUse, wp, hostname, signal);
+          if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+
+          const headers = await checkHeaders(
+            connectIpToUse,
+            wp,
+            hostname,
+            1,
+            signal,
+            Boolean(ssl.hasSSL),
+          );
+
+          if (!headers.error) {
+            bestSsl = ssl;
+            bestHeaders = headers;
+            break;
+          } else if (wp === 443) {
+            bestSsl = ssl;
+          }
+        }
+
+        return buildReport(hostname, openPorts, bestSsl, bestHeaders);
       },
       30000,
       scanAbortController.signal,
