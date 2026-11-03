@@ -177,3 +177,16 @@ test("Server с версией Apache/2.4.49 (Unix) → находка low", () 
   assert.strictEqual(finding.weight, 5);
   assert.strictEqual(r.score, 95);
 });
+
+test("HTTP-сайт получает no-ssl, а не ssl-error (N-16)", () => {
+  const r = calculateScore({
+    ports: [{ port: 80, status: "open" }],
+    ssl: { hasSSL: false }, // Имитируем HTTP-сайт
+    headers: okHeaders,
+  });
+  // 20 (SSL) + 20 (заголовки) + 15 (порты) + 5 (8080) = 60, потолок 30 (E)
+  assert.strictEqual(r.score, 30);
+  assert.strictEqual(r.grade, "E");
+  assert.ok(r.findings.some((f) => f.id === "no-ssl"));
+  assert.ok(!r.findings.some((f) => f.id === "ssl-error"));
+});
