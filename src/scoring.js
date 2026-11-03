@@ -11,7 +11,7 @@ function calculateScore(report) {
   const riskyPorts = ports.filter(
     (p) => p.status === "open" && [22, 3306].includes(p.port),
   );
-  const has3306 = ports.some((p) => p.port === 3306);
+  const has3306 = ports.some((p) => p.port === 3306 && p.status === "open");
   const push = (f) => findings.push(f);
 
   if (hasSSL) score += 20;
@@ -141,7 +141,7 @@ function calculateScore(report) {
       }),
     );
 
-  if (!ports.some((p) => p.port === 8080)) score += 5;
+  if (!ports.some((p) => p.port === 8080 && p.status === "open")) score += 5;
   else
     push({
       id: "port-8080",
@@ -157,6 +157,7 @@ function calculateScore(report) {
   else if (!ssl.valid) score = Math.min(score, 40);
   if (has3306) score = Math.min(score, 70);
   if (ssl.supportsOldTls) score = Math.min(score, 85);
+  if (hasSSL && daysLeft !== null && daysLeft <= 7) score = Math.min(score, 90);
   if (findings.some((f) => f.severity !== "low")) score = Math.min(score, 90);
 
   score = Math.max(0, Math.min(100, score));
