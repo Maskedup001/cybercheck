@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
-test("TRUST_PROXY=0 не роняет сервер (N-15)", async () => {
+test("TRUST_PROXY=0 не роняет сервер", async () => {
   return new Promise((resolve, reject) => {
     const serverPath = path.join(__dirname, "../src/server.js");
     const child = spawn(process.execPath, [serverPath], {
