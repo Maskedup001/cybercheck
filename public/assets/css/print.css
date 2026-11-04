@@ -3,7 +3,25 @@
   margin: 16mm 14mm;
 }
 
+/* Пояснение для печати без отчёта: на экране скрыто. */
+.print-empty-note {
+  display: none;
+}
+
 @media print {
+  /* Печать до первого скана: иначе на A4 остаётся пустая шапка с формой и
+     выглядит как поломка. Прячем всё, кроме пояснения. */
+  body.is-print-empty > *:not(.print-empty-note) {
+    display: none !important;
+  }
+
+  body.is-print-empty .print-empty-note {
+    display: block;
+    margin-top: 24mm;
+    font-size: 12pt;
+    color: #111827;
+  }
+
   .page-footer {
     display: none !important;
   }
