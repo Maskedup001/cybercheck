@@ -1,6 +1,6 @@
 # DISCLAIMER / ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ
 
-**Версия:** v2.0.1 · **Дата:** 3 ноября 2026
+**Версия:** v2.1.0 · **Дата:** 4 ноября 2026
 
 ---
 
@@ -30,13 +30,15 @@ CyberCheck performs **passive, non-destructive checks**:
 
 - TCP connection attempts to five ports (80, 443, 22, 3306, 8080), with one retry per port;
 - one or more TLS handshakes to read the leaf certificate, determine the negotiated TLS version, and probe whether TLS 1.0/1.1 is accepted;
-- one or more HTTP requests for response headers, with a retry if the first attempt fails.
+- one or more HTTP requests for response headers, with a retry if the first attempt fails;
+- DNS TXT/CAA lookups for SPF, DMARC and CAA records;
+- HEAD requests to `/.env`, `/.git/config`, `/.DS_Store` and `/backup.zip`, a GET to `/.well-known/security.txt`, and a limited HTML read (up to 64 KB) for WAF/CMS fingerprinting.
 
-It does **not** exploit vulnerabilities, authenticate, fuzz, brute-force, download page bodies, or modify the target.
+It does **not** exploit vulnerabilities, authenticate, fuzz, brute-force, download full page bodies, or modify the target. A `200` response to `/.env`, `/.git/config`, `/.DS_Store` or `/backup.zip` means only that the server returned 200; SPA/redirect fallbacks can produce false positives. `403` is treated as WAF/blocked, not as proof of a vulnerability. Open-file probing is non-destructive but may be logged by the target, so it must be authorized.
 
 ### Reports and Risk Score
 
-The Risk Score (0–100, A–F) is a **heuristic** based on a small set of observable factors. It is not a vulnerability assessment, not a compliance certificate, and not a substitute for a professional audit. A high score does not mean a system is secure; a low score does not prove it is compromised. Findings describe missing hardening measures, not confirmed exploitable vulnerabilities.
+The Risk Score (0–100, A–F) is a **heuristic** based on a small set of observable factors. It is not a vulnerability assessment, not a compliance certificate, and not a substitute for a professional audit. A high score does not mean a system is secure; a low score does not prove it is compromised. Findings describe missing hardening measures, not confirmed exploitable vulnerabilities. OWASP tags attached to findings are category labels, not a certification.
 
 TLS 1.0/1.1 detection is best-effort: depending on the platform's OpenSSL policy, an old protocol may not be detected. A score of 100/A does not prove that the TLS configuration is complete.
 
@@ -50,7 +52,7 @@ The authors assume **no liability** for any damage, legal consequences, or misus
 
 ### Data
 
-Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.0.1. Do not scan systems whose hostnames or addresses you are not allowed to process.
+Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.1.0. Do not scan systems whose hostnames or addresses you are not allowed to process.
 
 ### Legal notice
 
@@ -90,13 +92,15 @@ CyberCheck выполняет **пассивные, неразрушающие �
 
 - попытки TCP-соединения на пять портов (80, 443, 22, 3306, 8080), по одному retry на порт;
 - одно или несколько TLS-рукопожатий: чтение leaf-сертификата, определение согласованной версии TLS и проверка поддержки TLS 1.0/1.1;
-- один или несколько HTTP-запросов за заголовками ответа, с retry при ошибке.
+- один или несколько HTTP-запросов за заголовками ответа, с retry при ошибке;
+- DNS-запросы TXT/CAA для SPF, DMARC и CAA;
+- HEAD-запросы к `/.env`, `/.git/config`, `/.DS_Store` и `/backup.zip`, GET к `/.well-known/security.txt` и чтение не более 64 КБ HTML для WAF/CMS-фингерпринта.
 
-Инструмент **не** эксплуатирует уязвимости, не аутентифицируется, не фаззит, не перебирает пароли, не скачивает тела страниц и не изменяет цель.
+Инструмент **не** эксплуатирует уязвимости, не аутентифицируется, не фаззит, не перебирает пароли, не скачивает страницы целиком и не изменяет цель. Ответ `200` на `/.env`, `/.git/config`, `/.DS_Store` или `/backup.zip` означает только то, что сервер вернул 200; SPA/редирект-заглушки могут дать ложное срабатывание. `403` трактуется как WAF/запрет, а не как доказательство уязвимости. Проверка открытых файлов неразрушающая, но может попасть в логи цели — на неё нужно разрешение.
 
 ### Отчёты и Risk Score
 
-Risk Score (0–100, A–F) — **эвристическая** оценка по небольшому набору наблюдаемых факторов. Это не оценка уязвимостей, не сертификат соответствия и не замена профессиональному аудиту. Высокий балл не означает, что система защищена; низкий балл не доказывает компрометацию. Находки описывают отсутствие мер защиты, а не подтверждённые эксплуатируемые уязвимости.
+Risk Score (0–100, A–F) — **эвристическая** оценка по небольшому набору наблюдаемых факторов. Это не оценка уязвимостей, не сертификат соответствия и не замена профессиональному аудиту. Высокий балл не означает, что система защищена; низкий балл не доказывает компрометацию. Находки описывают отсутствие мер защиты, а не подтверждённые эксплуатируемые уязвимости. OWASP-теги у находок — категории, а не сертификация.
 
 Детект TLS 1.0/1.1 — best effort: в зависимости от политики OpenSSL на платформе старый протокол может не определиться. Оценка 100/A не доказывает полноту TLS-конфигурации.
 
@@ -110,7 +114,7 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ### Данные
 
-Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.0.1 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
+Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.1.0 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
 
 ### Правовая информация
 
@@ -124,4 +128,4 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ---
 
-**Проект:** CyberCheck · **Версия:** 2.0.1 · **Год:** 2026
+**Проект:** CyberCheck · **Версия:** 2.1.0 · **Год:** 2026
