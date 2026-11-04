@@ -17,6 +17,7 @@ function normalizeFinding(raw) {
     desc: typeof finding.desc === "string" ? finding.desc : "",
     severity: SEVERITIES.includes(finding.severity) ? finding.severity : "low",
     weight: Number.isFinite(finding.weight) ? finding.weight : 0,
+    owasp: typeof finding.owasp === "string" ? finding.owasp : "",
     recommendation:
       typeof finding.recommendation === "string"
         ? finding.recommendation
@@ -53,6 +54,16 @@ export async function scanTarget({ url, consent }) {
         data.headers && typeof data.headers === "object"
           ? data.headers
           : { error: true },
+      dns: data.dns && typeof data.dns === "object" ? data.dns : null,
+      files: data.files && typeof data.files === "object" ? data.files : null,
+      securityTxt:
+        data.securityTxt && typeof data.securityTxt === "object"
+          ? data.securityTxt
+          : null,
+      fingerprint:
+        data.fingerprint && typeof data.fingerprint === "object"
+          ? data.fingerprint
+          : null,
       score: Math.min(
         100,
         Math.max(0, typeof data.score === "number" ? data.score : 0),

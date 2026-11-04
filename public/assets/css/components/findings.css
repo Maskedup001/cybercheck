@@ -37,6 +37,17 @@
   margin-bottom: var(--space-2);
 }
 
+/* Короткий OWASP-тег рядом с severity: A05, A02, A03 … */
+.finding__owasp {
+  padding: 0.0625rem var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-neutral-bg);
+  color: var(--color-neutral);
+  font-size: 0.625rem;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.04em;
+}
+
 .finding__title {
   font-size: var(--font-size-base);
   font-weight: var(--font-weight-semibold);

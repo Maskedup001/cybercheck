@@ -2,9 +2,8 @@
   margin-bottom: var(--space-6);
 }
 
-/* Три карточки: одна колонка на телефоне, две в середине (третья на всю
-   ширину), три на десктопе. auto-fit при трёх карточках оставлял
-   пустую клетку справа в нижнем ряду. */
+/* Сетка карточек: одна колонка на телефоне, две в середине (последняя
+   карточка — «Открытые файлы» — на всю ширину), три на десктопе. */
 .details__grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -76,4 +75,47 @@
 .detail__note {
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+}
+
+.detail__muted {
+  color: var(--color-text-muted);
+}
+
+/* Открытые файлы: только когда есть critical-ответ 200. */
+.detail__file-list {
+  list-style: none;
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: 0;
+}
+
+.detail__file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+}
+
+.detail__file-path {
+  min-width: 0;
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.detail__file-item .badge {
+  flex: 0 0 auto;
+}
+
+@media (min-width: 56em) {
+  .details__grid .detail--files {
+    grid-column: 1 / -1;
+  }
 }
