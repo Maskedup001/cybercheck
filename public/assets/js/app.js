@@ -1,5 +1,5 @@
 import { scanTarget } from "./api.js";
-import { renderResult } from "./render-result.js";
+import { renderResult, resetReportTitle } from "./render-result.js";
 
 const form = document.querySelector('[data-js="scan-form"]');
 const input = document.querySelector('[data-js="url"]');
@@ -20,6 +20,10 @@ function startScanStatus() {
   // Разметка может быть старой (сервер отдаёт HTML, прочитанный при старте),
   // поэтому индикатор — необязательная часть и не должен ронять скан.
   if (!scanStatus || !scanStatusText) return;
+
+  // Повторный вход (программный submit, bfcache) не должен оставлять
+  // второй setInterval: иначе таймеры копятся и пишут в один узел.
+  stopScanStatus();
 
   const startedAt = Date.now();
 
@@ -97,7 +101,9 @@ async function handleSubmit(event) {
     stopScanStatus();
 
     renderResult(resultSection, resultBody, data);
-    statusRegion.textContent = `Отчёт для ${data.host} готов`;
+    // host "—" — заглушка нормализации: «Отчёт для — готов» выглядит поломкой.
+    statusRegion.textContent =
+      data.host && data.host !== "—" ? `Отчёт для ${data.host} готов` : "Отчёт готов";
 
     const resultTitle = resultSection.querySelector(".result__title");
     if (resultTitle) {
@@ -108,6 +114,11 @@ async function handleSubmit(event) {
     // Неудачная попытка не должна отнимать уже полученный отчёт
     // (частый случай — 429 после быстрого повторного скана).
     if (hadReport) resultSection.hidden = false;
+    else {
+      // Без отчёта в заголовке вкладки не должно оставаться имени прошлого
+      // сайта: иначе пустая страница печатается с чужим названием.
+      resetReportTitle();
+    }
 
     const message = error instanceof Error ? error.message : "неизвестная ошибка";
 
@@ -125,6 +136,17 @@ async function handleSubmit(event) {
 
 form.addEventListener("submit", handleSubmit);
 printBtn.addEventListener("click", () => window.print());
+
+// Ctrl+P доступен и без кнопки: печать до первого скана давала пустой A4 с
+// одной шапкой. Класс на body прячет разметку и показывает пояснение.
+function syncPrintState() {
+  document.body.classList.toggle("is-print-empty", resultSection.hidden);
+}
+
+window.addEventListener("beforeprint", syncPrintState);
+window.addEventListener("afterprint", () => {
+  document.body.classList.remove("is-print-empty");
+});
 
 // Ошибка снимается, как только пользователь начал править адрес или
 // отметил согласие: держать красную плашку до следующего сабмита нечестно.

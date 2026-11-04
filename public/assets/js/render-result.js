@@ -1,6 +1,14 @@
 /* Рендер отчёта: оценка → что чинить → детали проверки.
    Только DOM API и textContent, без innerHTML и инлайн-разметки. */
 
+import {
+  sanitizeText,
+  getCriticalPaths,
+  getExposedFiles,
+  filesNote,
+  tlsNotice,
+} from "./report-model.js";
+
 const PAGE_TITLE = document.title;
 let reportTitle = "";
 let currentGauge = null;
@@ -23,12 +31,6 @@ const SEVERITY = {
 
 const PORT_TONES = { 80: "ok", 443: "ok", 22: "bad", 3306: "bad", 8080: "warn" };
 const PORT_LABELS = { ok: "открыт", bad: "опасный", warn: "риск" };
-
-const CRITICAL_FILE_PATHS = new Set([
-  "/.env",
-  "/.git/config",
-  "/backup.zip",
-]);
 
 const TECH_LABELS = {
   cloudflare: "Cloudflare",
@@ -77,10 +79,15 @@ function createMuted(text) {
 }
 
 function formatTechName(value) {
-  if (typeof value !== "string" || value.length === 0) return "";
-  const key = value.toLowerCase();
+  // Имя приходит из ответа сервера: нестроковое значение не должно давать
+  // пустой бейдж, поэтому приводим его к строке.
+  const text =
+    typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
+  if (text.length === 0) return "";
+
+  const key = text.toLowerCase();
   if (TECH_LABELS[key]) return TECH_LABELS[key];
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function dnsSectionUnavailable(section) {
@@ -117,7 +124,9 @@ function getCookieSummary(headers) {
   };
 }
 
-function cookieFlagBadge(summary, missingKey, missingTone) {
+// «2/3» без текста читалось скринридером как «2 слэш 3», а title
+// недоступен с клавиатуры: добавляем визуально скрытое пояснение.
+function cookieFlagBadge(summary, missingKey, missingTone, label) {
   const total = summary.total;
   const missing = Number.isFinite(summary[missingKey])
     ? summary[missingKey]
@@ -126,34 +135,13 @@ function cookieFlagBadge(summary, missingKey, missingTone) {
   const tone = missing === 0 ? "ok" : missing >= total ? missingTone : "warn";
   const badge = createBadge(tone, `${present}/${total}`);
   badge.setAttribute("title", `${present} из ${total} cookie`);
+
+  const hidden = document.createElement("span");
+  hidden.className = "u-visually-hidden";
+  hidden.textContent = ` ${present} из ${total} cookie с флагом ${label}`;
+  badge.append(hidden);
+
   return badge;
-}
-
-function getExposedFiles(files) {
-  const paths = new Set();
-
-  if (Array.isArray(files.exposed)) {
-    for (const path of files.exposed) {
-      if (typeof path === "string") paths.add(path);
-    }
-  }
-
-  if (Array.isArray(files.critical)) {
-    for (const item of files.critical) {
-      if (typeof item === "string") paths.add(item);
-      else if (item && typeof item.path === "string") paths.add(item.path);
-    }
-  }
-
-  if (paths.size === 0 && Array.isArray(files.results)) {
-    for (const item of files.results) {
-      if (item && item.status === 200 && typeof item.path === "string") {
-        paths.add(item.path);
-      }
-    }
-  }
-
-  return Array.from(paths);
 }
 
 function describeFindings(findings) {
@@ -268,9 +256,14 @@ function createFindings(findings) {
 
     head.append(heading);
 
-    const desc = document.createElement("p");
-    desc.className = "finding__desc";
-    desc.textContent = finding.desc;
+    // Пустой desc оставлял бы <p> с margin — визуальную дыру в карточке.
+    const descText = typeof finding.desc === "string" ? finding.desc : "";
+    let desc = null;
+    if (descText.trim() !== "") {
+      desc = document.createElement("p");
+      desc.className = "finding__desc";
+      desc.textContent = descText;
+    }
 
     const fix = document.createElement("p");
     fix.className = "finding__fix";
@@ -281,7 +274,9 @@ function createFindings(findings) {
 
     fix.append(fixLabel, document.createTextNode(` ${finding.recommendation}`));
 
-    item.append(head, desc, fix);
+    item.append(head);
+    if (desc) item.append(desc);
+    item.append(fix);
     list.append(item);
   }
 
@@ -362,7 +357,13 @@ function formatDate(raw) {
   return date.toLocaleString("ru-RU", { dateStyle: "medium" });
 }
 
-function createTlsCard(ssl) {
+function createTlsCard(ssl, ports) {
+  // «SSL не настроен: сайт отвечает по HTTP» — неправда, если сайт вообще
+  // не ответил: такой текст отправлял пользователя чинить HTTPS у
+  // недоступного хоста.
+  const notice = tlsNotice(ssl, ports);
+  if (notice) return createCard("TLS", [], notice);
+
   if (ssl.error) {
     return createCard(
       "TLS",
@@ -387,7 +388,10 @@ function createTlsCard(ssl) {
   const rows = [{ label: "Сертификат", value: validBadge }];
 
   if (!ssl.valid && ssl.verifyError) {
-    rows.push({ label: "Причина", value: ssl.verifyError });
+    rows.push({
+      label: "Причина",
+      value: sanitizeText(ssl.verifyError) || "н/д",
+    });
   }
 
   const daysLeft = ssl.daysLeft;
@@ -407,8 +411,12 @@ function createTlsCard(ssl) {
     });
   }
 
-  if (ssl.issuer) rows.push({ label: "Издатель", value: ssl.issuer });
-  if (ssl.tlsVersion) rows.push({ label: "Версия TLS", value: ssl.tlsVersion });
+  // Издатель — недоверенная строка: ограничиваем длину и убираем bidi/C0.
+  const issuer = sanitizeText(ssl.issuer);
+  if (issuer) rows.push({ label: "Издатель", value: issuer });
+
+  const tlsVersion = sanitizeText(ssl.tlsVersion, 32);
+  if (tlsVersion) rows.push({ label: "Версия TLS", value: tlsVersion });
 
   if (ssl.supportsOldTls) {
     rows.push({
@@ -420,7 +428,7 @@ function createTlsCard(ssl) {
   return createCard("TLS", rows);
 }
 
-function createHeadersCard(headers) {
+function createHeadersCard(headers, ssl) {
   if (headers.error) {
     return createCard(
       "Заголовки",
@@ -429,10 +437,20 @@ function createHeadersCard(headers) {
     );
   }
 
-  const flag = (present) =>
-    createBadge(present ? "ok" : "bad", present ? "есть" : "нет");
-  const optionalFlag = (value) =>
-    value === undefined ? createMuted("н/д") : flag(Boolean(value));
+  const secureContext = Boolean(ssl && ssl.hasSSL);
+
+  // Состояние заголовка: ok / weak (есть, но выключен) / missing.
+  // Scoring считает так же, поэтому «есть» и «небезопасно» не расходятся.
+  const stateFlag = (state, present) => {
+    if (present) return createBadge("ok", "есть");
+    if (state === "weak") return createBadge("bad", "небезопасно");
+    if (state === undefined && present === undefined) return createMuted("н/д");
+    return createBadge("bad", "нет");
+  };
+  const optionalFlag = (value, state) =>
+    value === undefined && state === undefined
+      ? createMuted("н/д")
+      : stateFlag(state, Boolean(value));
 
   const cors =
     headers.corsWildcard === true
@@ -441,19 +459,42 @@ function createHeadersCard(headers) {
         ? createBadge("ok", "ограничен")
         : createMuted("н/д");
 
+  // Без HTTPS HSTS неприменим: scoring его не штрафует, значит и карточка
+  // не должна рисовать красное «нет».
+  const hstsValue = secureContext
+    ? stateFlag(headers.hstsState, headers.hsts)
+    : createMuted(
+        ssl && ssl.error ? "н/д (TLS не проверен)" : "н/д (нет HTTPS)",
+      );
+
   const rows = [
-    { label: "Server", value: headers.server || "не указан" },
+    {
+      label: "Server",
+      value: sanitizeText(headers.server) || "не указан",
+    },
     { label: "Протокол", value: headers.protocol || "—" },
-    { label: "CSP", value: flag(headers.csp) },
-    { label: "X-Frame-Options", value: flag(headers.xframe) },
-    { label: "HSTS", value: flag(headers.hsts) },
-    { label: "X-Content-Type-Options", value: flag(headers.xcontent) },
-    { label: "Referrer-Policy", value: optionalFlag(headers.referrerPolicy) },
+    { label: "CSP", value: stateFlag(headers.cspState, headers.csp) },
+    {
+      label: "X-Frame-Options",
+      value: stateFlag(headers.xframeState, headers.xframe),
+    },
+    { label: "HSTS", value: hstsValue },
+    {
+      label: "X-Content-Type-Options",
+      value: stateFlag(headers.xcontentState, headers.xcontent),
+    },
+    {
+      label: "Referrer-Policy",
+      value: optionalFlag(headers.referrerPolicy, headers.referrerPolicyState),
+    },
     {
       label: "Permissions-Policy",
-      value: optionalFlag(headers.permissionsPolicy),
+      value: optionalFlag(
+        headers.permissionsPolicy,
+        headers.permissionsPolicyState,
+      ),
     },
-    { label: "COOP", value: optionalFlag(headers.coop) },
+    { label: "COOP", value: optionalFlag(headers.coop, headers.coopState) },
     { label: "CORS", value: cors },
   ];
 
@@ -478,16 +519,25 @@ function createMailCard(dns) {
   }
 
   const spf = dns.spf;
-  const spfValue = dnsSectionUnavailable(spf)
-    ? createMuted("Не удалось проверить")
-    : spf.present
-      ? createBadge("ok", "есть")
-      : createBadge("bad", "нет");
+  let spfValue;
+  if (dnsSectionUnavailable(spf)) {
+    spfValue = createMuted("Не удалось проверить");
+  } else if (!spf.present) {
+    spfValue = createBadge("bad", "нет");
+  } else if (spf.multiple) {
+    spfValue = createBadge("bad", "несколько записей");
+  } else if (spf.weak) {
+    spfValue = createBadge("warn", "слабый");
+  } else {
+    spfValue = createBadge("ok", "есть");
+  }
 
   const dmarc = dns.dmarc;
   let dmarcValue;
   if (dnsSectionUnavailable(dmarc)) {
     dmarcValue = createMuted("Не удалось проверить");
+  } else if (dmarc.multiple) {
+    dmarcValue = createBadge("bad", "несколько записей");
   } else if (!dmarc.present) {
     dmarcValue = createBadge("bad", "нет");
   } else {
@@ -528,7 +578,7 @@ function createMailCard(dns) {
   );
 }
 
-function createCookieCard(headers) {
+function createCookieCard(headers, ssl) {
   if (!headers || headers.error) {
     return createCard(
       "Флаги Cookie",
@@ -550,26 +600,35 @@ function createCookieCard(headers) {
     return createCard("Флаги Cookie", [], "Cookie не найдены.");
   }
 
+  // Secure имеет смысл только на HTTPS. Scoring без HTTPS его не штрафует —
+  // значит, и карточка не должна показывать красное «0/1».
+  const secureContext = Boolean(ssl && ssl.hasSSL);
+  const tlsKnown = Boolean(ssl) && !ssl.error && ssl.hasSSL !== undefined;
+
+  const secureValue = secureContext
+    ? cookieFlagBadge(summary, "missingSecure", "bad", "Secure")
+    : createMuted(
+        tlsKnown ? "н/д (нет HTTPS)" : "н/д (TLS не проверен)",
+      );
+
   const rows = [
-    {
-      label: "Secure",
-      value: cookieFlagBadge(summary, "missingSecure", "bad"),
-    },
+    { label: "Secure", value: secureValue },
     {
       label: "HttpOnly",
-      value: cookieFlagBadge(summary, "missingHttpOnly", "bad"),
+      value: cookieFlagBadge(summary, "missingHttpOnly", "bad", "HttpOnly"),
     },
     {
       label: "SameSite",
-      value: cookieFlagBadge(summary, "missingSameSite", "warn"),
+      value: cookieFlagBadge(summary, "missingSameSite", "warn", "SameSite"),
     },
   ];
 
-  return createCard(
-    "Флаги Cookie",
-    rows,
-    `Всего cookie: ${summary.total}.`,
-  );
+  let note = `Всего cookie: ${summary.total}.`;
+  if (secureContext && summary.insecureNone > 0) {
+    note += " Часть cookie с SameSite=None без Secure — браузеры их отвергают.";
+  }
+
+  return createCard("Флаги Cookie", rows, note);
 }
 
 function createTechCard(fingerprint) {
@@ -594,18 +653,22 @@ function createTechCard(fingerprint) {
         ? fingerprint.cms
         : null;
 
+  // «Не обнаружен» — это результат проверки. При не-200 странице CMS не
+  // искали (заглушка ошибки или WAF), поэтому честнее «не проверялся».
+  const checked = fingerprint.status === 200;
+
   const rows = [
     {
       label: "WAF",
       value: wafName
         ? createBadge("ok", formatTechName(wafName))
-        : createMuted("не обнаружен"),
+        : createMuted(checked ? "не обнаружен" : "не проверялся"),
     },
     {
       label: "CMS",
       value: cmsName
         ? createBadge("muted", formatTechName(cmsName))
-        : createMuted("не обнаружена"),
+        : createMuted(checked ? "не обнаружена" : "не проверялась"),
     },
   ];
 
@@ -616,7 +679,7 @@ function createTechCard(fingerprint) {
     Number.isInteger(fingerprint.status) &&
     fingerprint.status !== 200
   ) {
-    note = `Страница ответила ${fingerprint.status}; WAF/CMS могли быть скрыты.`;
+    note = `Страница ответила ${fingerprint.status}; WAF/CMS не проверялись — заглушка ошибки не доказывает их отсутствие.`;
   }
 
   return createCard("Информация о технологиях", rows, note);
@@ -627,10 +690,13 @@ function securityTxtValue(securityTxt) {
     return createMuted("н/д");
   }
   if (securityTxt.present) return createBadge("ok", "есть");
-  if (securityTxt.blocked) return createBadge("warn", "403");
-  if (securityTxt.error) return createMuted("Не удалось проверить");
-  if (securityTxt.status === 404) return createBadge("bad", "нет");
-  return createMuted("н/д");
+  if (securityTxt.blocked) return createBadge("warn", "403 (заблокировано)");
+  if (securityTxt.error) return createMuted("не удалось проверить");
+  if (securityTxt.status === 404) return createBadge("bad", "нет (404)");
+  if (securityTxt.status === 200) return createBadge("warn", "некорректный");
+  return createMuted(
+    Number.isInteger(securityTxt.status) ? `н/д (${securityTxt.status})` : "н/д",
+  );
 }
 
 function createFilesCard(files, securityTxt) {
@@ -638,46 +704,26 @@ function createFilesCard(files, securityTxt) {
     { label: "security.txt", value: securityTxtValue(securityTxt) },
   ];
 
-  if (!files || typeof files !== "object") {
-    const card = createCard(
-      "Открытые файлы",
-      rows,
-      "Не удалось проверить: данные HEAD-проб не получены.",
-    );
-    card.classList.add("detail--files");
-    return card;
-  }
+  const card = createCard("Открытые файлы", rows, filesNote(files));
+  card.classList.add("detail--files");
+
+  if (!files || typeof files !== "object") return card;
 
   const exposed = getExposedFiles(files);
-  if (exposed.length === 0) {
-    const blocked = Array.isArray(files.blocked) ? files.blocked.length : 0;
-    const note =
-      blocked > 0
-        ? `Открытых файлов не найдено; ${blocked} путей заблокировано (403/WAF).`
-        : "Открытых файлов не найдено.";
-    const card = createCard("Открытые файлы", rows, note);
-    card.classList.add("detail--files");
-    return card;
-  }
+  if (exposed.length === 0) return card;
 
-  const hasCritical = exposed.some((path) => CRITICAL_FILE_PATHS.has(path));
-  const card = createCard(
-    "Открытые файлы",
-    rows,
-    hasCritical
-      ? "Найдены файлы, доступные без авторизации. Это критично."
-      : "Найден /.DS_Store: он раскрывает структуру каталогов, но это низкий риск.",
-  );
-  card.classList.add("detail--files");
+  const criticalPaths = getCriticalPaths(files);
 
   const list = document.createElement("ul");
   list.className = "detail__file-list";
   list.setAttribute("role", "list");
 
   for (const path of exposed) {
-    const critical = CRITICAL_FILE_PATHS.has(path);
+    const critical = criticalPaths.has(path);
     const item = document.createElement("li");
-    item.className = "detail__file-item";
+    item.className = critical
+      ? "detail__file-item detail__file-item--critical"
+      : "detail__file-item detail__file-item--low";
 
     const pathNode = document.createElement("span");
     pathNode.className = "detail__file-path";
@@ -708,10 +754,10 @@ function createDetails(report) {
   grid.className = "details__grid";
   grid.append(
     createPortsCard(report.ports),
-    createTlsCard(report.ssl),
-    createHeadersCard(report.headers),
+    createTlsCard(report.ssl, report.ports),
+    createHeadersCard(report.headers, report.ssl),
     createMailCard(report.dns),
-    createCookieCard(report.headers),
+    createCookieCard(report.headers, report.ssl),
     createTechCard(report.fingerprint),
     createFilesCard(report.files, report.securityTxt),
   );
@@ -756,17 +802,26 @@ function setText(selector, text) {
 export function renderResult(container, body, report) {
   const now = new Date();
   const localDate = new Intl.DateTimeFormat("sv-SE").format(now);
-  const shortHost = (report.host || "").slice(0, 60);
 
-  reportTitle = `CyberCheck_${shortHost}_${localDate}`;
-  document.title = reportTitle;
+  // host "—" — заглушка нормализации, а не домен: печатать её в заголовок
+  // документа (и в имя PDF через beforeprint) нельзя.
+  const host = typeof report.host === "string" ? report.host : "";
+  const shortHost = sanitizeText(host, 60);
+
+  if (shortHost && shortHost !== "—") {
+    reportTitle = `CyberCheck_${shortHost}_${localDate}`;
+    document.title = reportTitle;
+  } else {
+    reportTitle = "";
+    document.title = PAGE_TITLE;
+  }
 
   const dateText = now.toLocaleString("ru-RU", {
     dateStyle: "short",
     timeStyle: "short",
   });
 
-  setText('[data-js="report-host"]', report.host);
+  setText('[data-js="report-host"]', shortHost || "—");
   setText('[data-js="report-date"]', dateText);
   setText('[data-js="report-date-footer"]', dateText);
 
@@ -825,9 +880,17 @@ export function renderResult(container, body, report) {
   animateGauge(gauge, score);
 }
 
+// Возвращает исходный заголовок вкладки. После неудачного скана старый
+// «CyberCheck_<host>_<date>» вводил бы в заблуждение и попадал в имя PDF.
+export function resetReportTitle() {
+  reportTitle = "";
+  document.title = PAGE_TITLE;
+}
+
 window.addEventListener("beforeprint", () => {
   // Печать может быть повторной: заголовок нужен для имени PDF каждый раз.
   if (reportTitle) document.title = reportTitle;
+  else document.title = PAGE_TITLE;
 
   // И кольцо должно попасть на бумагу в конечном положении,
   // даже если печать нажали в середине анимации.

@@ -2,6 +2,9 @@ const API_URL = "/api";
 const TIMEOUT_MS = 65_000;
 
 const SEVERITIES = ["high", "medium", "low"];
+// Оценка — только A–F: произвольная строка из ответа не должна попадать ни
+// в текст, ни в поиск по объекту (например, "__proto__").
+const GRADES = ["A", "B", "C", "D", "E", "F"];
 
 /**
  * Рендер отчёта читает поля находки напрямую: элемент без title или desc
@@ -45,8 +48,15 @@ export async function scanTarget({ url, consent }) {
     // Защита от неполного или некорректного JSON
     const normalized = {
       host: typeof data.host === "string" ? data.host : "—",
+      // Карточка портов рисует «открыт/опасный», поэтому закрытый порт в
+      // списке показывался бы открытым. Старый контракт без status — open.
       ports: Array.isArray(data.ports)
-        ? data.ports.filter((p) => Number.isInteger(p?.port))
+        ? data.ports.filter(
+            (p) =>
+              p &&
+              Number.isInteger(p.port) &&
+              (p.status === undefined || p.status === "open"),
+          )
         : [],
       ssl:
         data.ssl && typeof data.ssl === "object" ? data.ssl : { hasSSL: false },
@@ -64,11 +74,12 @@ export async function scanTarget({ url, consent }) {
         data.fingerprint && typeof data.fingerprint === "object"
           ? data.fingerprint
           : null,
-      score: Math.min(
-        100,
-        Math.max(0, typeof data.score === "number" ? data.score : 0),
-      ),
-      grade: typeof data.grade === "string" ? data.grade : "?",
+      // Number.isFinite(NaN) === false, а typeof NaN === "number":
+      // Math.max(0, NaN) дал бы NaN в UI.
+      score: Number.isFinite(data.score)
+        ? Math.min(100, Math.max(0, data.score))
+        : 0,
+      grade: GRADES.includes(data.grade) ? data.grade : "?",
       findings: Array.isArray(data.findings)
         ? data.findings.map(normalizeFinding)
         : [],
