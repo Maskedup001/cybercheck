@@ -126,6 +126,11 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
   const server = await startServer((req, res) => {
     accepts.push(req.headers.accept);
     res.statusCode = status;
+    if (status === 200) {
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.end("Contact: mailto:security@example.com\nExpires: 2030-01-01T00:00:00Z\n");
+      return;
+    }
     res.end();
   });
   t.after(() => server.close());
@@ -175,6 +180,45 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
   });
 
   assert.deepEqual(accepts, ["text/plain", "text/plain", "text/plain"]);
+});
+
+test("checkSecurityTxt: 200 с HTML-заглушкой не считается security.txt", async (t) => {
+  const server = await startServer((req, res) => {
+    // SPA/catch-all отдаёт 200 HTML на любой путь — это не security.txt.
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end("<!doctype html><html><body>Not found</body></html>");
+  });
+  t.after(() => server.close());
+
+  const result = await checkSecurityTxt(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(result.present, false);
+  assert.equal(result.blocked, false);
+  assert.equal(result.error, null);
+});
+
+test("checkSecurityTxt: 200 text/plain без Contact тоже не security.txt", async (t) => {
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/plain");
+    res.end("hello\n");
+  });
+  t.after(() => server.close());
+
+  const result = await checkSecurityTxt(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(result.present, false);
 });
 
 test("checkFingerprint: находит WordPress и Cloudflare и не даёт ложных срабатываний", async (t) => {
@@ -347,4 +391,50 @@ test("request: AbortSignal возвращает ошибку, не бросае�
   assert.equal(result.body, "");
   assert.equal(result.protocol, "HTTP");
   assert.equal(result.error, "ABORT_ERR");
+});
+
+test("request: нелитеральный connectIp отклоняется fail-closed", async () => {
+  // Имя хоста увело бы http.request в собственный DNS-резолв (SSRF).
+  for (const connectIp of ["example.com", "localhost", undefined, ""]) {
+    const result = await request({
+      method: "GET",
+      path: "/",
+      connectIp,
+      port: 80,
+      hostname: "example.com",
+      hasTls: false,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result.status, null, String(connectIp));
+    assert.equal(result.error, "INVALID_CONNECT_IP", String(connectIp));
+  }
+});
+
+test("request: таймаут тела сохраняет статус и заголовки", async (t) => {
+  const server = await startServer((req, res) => {
+    res.writeHead(200, {
+      "content-type": "text/html",
+      "cf-ray": "8f2a1b3c4d5e6f70-FRA",
+    });
+    res.write("<html><body>partial");
+    // Тело не завершаем: проверяем, что таймаут не стирает уже полученное.
+  });
+  t.after(() => server.close());
+
+  const result = await request({
+    method: "GET",
+    path: "/",
+    connectIp: "127.0.0.1",
+    port: server.port,
+    hostname: "localhost",
+    hasTls: false,
+    readBody: true,
+    timeoutMs: 100,
+  });
+
+  assert.equal(result.status, 200);
+  assert.equal(result.headers["cf-ray"], "8f2a1b3c4d5e6f70-FRA");
+  assert.match(result.body, /partial/);
+  assert.equal(result.error, "ETIMEDOUT");
 });

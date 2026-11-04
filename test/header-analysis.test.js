@@ -63,7 +63,7 @@ test("parseSetCookie: массив нескольких cookie с разными
   ]);
 });
 
-test("parseSetCookie: регистр флагов и SameSite без значения", () => {
+test("parseSetCookie: регистр флагов, SameSite без значения не считается", () => {
   const cookies = parseSetCookie("x=1; sEcUrE; hTtPoNlY; sAmEsItE");
 
   assert.deepStrictEqual(cookies, [
@@ -71,9 +71,18 @@ test("parseSetCookie: регистр флагов и SameSite без значе�
       name: "x",
       secure: true,
       httpOnly: true,
-      sameSite: true,
+      // SameSite без значения браузеры не применяют — это не защита.
+      sameSite: false,
       sameSiteValue: null,
     },
+  ]);
+});
+
+test("parseSetCookie: невалидное SameSite не засчитывается", () => {
+  const cookies = parseSetCookie("a=1; SameSite=Foo");
+
+  assert.deepStrictEqual(cookies, [
+    { name: "a", secure: false, httpOnly: false, sameSite: false, sameSiteValue: null },
   ]);
 });
 
@@ -82,6 +91,7 @@ test("parseSetCookie: мусорные записи не роняют разбо
     "",
     "   ",
     "=orphan; Secure",
+    // Запись без "=" — не cookie: токен не должен попасть в name (PS-07).
     "nameonly",
     "good=1; Secure",
     42,
@@ -89,13 +99,6 @@ test("parseSetCookie: мусорные записи не роняют разбо
   ]);
 
   assert.deepStrictEqual(cookies, [
-    {
-      name: "nameonly",
-      secure: false,
-      httpOnly: false,
-      sameSite: false,
-      sameSiteValue: null,
-    },
     {
       name: "good",
       secure: true,
@@ -128,65 +131,133 @@ test("summarizeCookies: считает флаги и пропуски", () => {
     secure: 1,
     httpOnly: 1,
     sameSite: 2,
+    insecureNone: 0,
     missingSecure: 2,
     missingHttpOnly: 2,
     missingSameSite: 1,
   });
 });
 
+test("summarizeCookies: SameSite=None без Secure попадает в insecureNone", () => {
+  const cookies = parseSetCookie([
+    "a=1; SameSite=None",
+    "b=2; SameSite=None; Secure",
+  ]);
+
+  const summary = summarizeCookies(cookies);
+  assert.strictEqual(summary.insecureNone, 1);
+  assert.strictEqual(summary.total, 2);
+});
+
 test("summarizeCookies: пустой список", () => {
-  assert.deepStrictEqual(summarizeCookies([]), {
+  const empty = {
     total: 0,
     secure: 0,
     httpOnly: 0,
     sameSite: 0,
+    insecureNone: 0,
     missingSecure: 0,
     missingHttpOnly: 0,
     missingSameSite: 0,
-  });
-  assert.deepStrictEqual(summarizeCookies(undefined), {
-    total: 0,
-    secure: 0,
-    httpOnly: 0,
-    sameSite: 0,
-    missingSecure: 0,
-    missingHttpOnly: 0,
-    missingSameSite: 0,
-  });
+  };
+
+  assert.deepStrictEqual(summarizeCookies([]), empty);
+  assert.deepStrictEqual(summarizeCookies(undefined), empty);
 });
 
 test("analyzeSecurityHeaders: все заголовки присутствуют", () => {
   const result = analyzeSecurityHeaders({
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "content-security-policy": "default-src 'self'",
+    "x-frame-options": "DENY",
+    "x-content-type-options": "nosniff",
     "referrer-policy": " strict-origin-when-cross-origin ",
     "permissions-policy": "camera=()",
     "cross-origin-opener-policy": "same-origin",
     "access-control-allow-origin": " * ",
   });
 
-  assert.deepStrictEqual(result, {
-    referrerPolicy: true,
-    permissionsPolicy: true,
-    coop: true,
-    corsWildcard: true,
-    accessControlAllowOrigin: "*",
-  });
+  assert.strictEqual(result.hsts, true);
+  assert.strictEqual(result.hstsState, "ok");
+  assert.strictEqual(result.csp, true);
+  assert.strictEqual(result.cspState, "ok");
+  assert.strictEqual(result.xframe, true);
+  assert.strictEqual(result.xframeState, "ok");
+  assert.strictEqual(result.xcontent, true);
+  assert.strictEqual(result.xcontentState, "ok");
+  assert.strictEqual(result.referrerPolicy, true);
+  assert.strictEqual(result.referrerPolicyState, "ok");
+  assert.strictEqual(result.permissionsPolicy, true);
+  assert.strictEqual(result.permissionsPolicyState, "ok");
+  assert.strictEqual(result.coop, true);
+  assert.strictEqual(result.coopState, "ok");
+  assert.strictEqual(result.corsWildcard, true);
+  assert.strictEqual(result.accessControlAllowOrigin, "*");
 });
 
 test("analyzeSecurityHeaders: пустые значения не считаются", () => {
   const result = analyzeSecurityHeaders({
+    "strict-transport-security": "  ",
+    "content-security-policy": "",
+    "x-frame-options": "   ",
+    "x-content-type-options": " ",
     "referrer-policy": "  ",
     "permissions-policy": "",
     "cross-origin-opener-policy": "   ",
     "access-control-allow-origin": "  ",
   });
 
-  assert.deepStrictEqual(result, {
-    referrerPolicy: false,
-    permissionsPolicy: false,
-    coop: false,
-    corsWildcard: false,
-    accessControlAllowOrigin: null,
-  });
+  for (const state of [
+    result.hstsState,
+    result.cspState,
+    result.xframeState,
+    result.xcontentState,
+    result.referrerPolicyState,
+    result.permissionsPolicyState,
+    result.coopState,
+  ]) {
+    assert.strictEqual(state, "missing");
+  }
+
+  assert.strictEqual(result.hsts, false);
+  assert.strictEqual(result.corsWildcard, false);
+  assert.strictEqual(result.accessControlAllowOrigin, null);
+});
+
+test("analyzeSecurityHeaders: небезопасные значения дают weak, а не баллы", () => {
+  const cases = [
+    ["strict-transport-security", "max-age=0", "hsts"],
+    ["strict-transport-security", "includeSubDomains", "hsts"],
+    ["cross-origin-opener-policy", "unsafe-none", "coop"],
+    ["referrer-policy", "unsafe-url", "referrerPolicy"],
+    ["x-content-type-options", "foo", "xcontent"],
+    ["x-frame-options", "ALLOW-FROM https://example.com", "xframe"],
+    ["content-security-policy", "default-src *", "csp"],
+    ["content-security-policy", "script-src 'unsafe-inline'", "csp"],
+    ["content-security-policy", "img-src 'self'", "csp"],
+  ];
+
+  for (const [header, value, field] of cases) {
+    const result = analyzeSecurityHeaders({ [header]: value });
+    assert.strictEqual(result[`${field}State`], "weak", `${header}: ${value}`);
+    assert.strictEqual(result[field], false, `${header}: ${value}`);
+  }
+
+  // Безопасные варианты — ok.
+  assert.strictEqual(
+    analyzeSecurityHeaders({ "referrer-policy": "no-referrer" })
+      .referrerPolicyState,
+    "ok",
+  );
+  assert.strictEqual(
+    analyzeSecurityHeaders({ "x-frame-options": "sameorigin" }).xframeState,
+    "ok",
+  );
+  assert.strictEqual(
+    analyzeSecurityHeaders({ "cross-origin-opener-policy": "same-origin-allow-popups" })
+      .coopState,
+    "ok",
+  );
 });
 
 test("analyzeSecurityHeaders: ACAO со звёздочкой и конкретный origin", () => {
@@ -332,4 +403,14 @@ test("detectCms: обычный HTML не даёт ложного срабаты
   );
 
   assert.deepStrictEqual(result, { name: null, evidence: [] });
+});
+
+test("detectCms: meta content=drupal без name=generator не считается", () => {
+  const result = detectCms(
+    '<html><head><meta name="description" content="Drupal hosting"></head></html>',
+    {},
+    [],
+  );
+
+  assert.strictEqual(result.name, null);
 });

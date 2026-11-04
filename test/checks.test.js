@@ -70,6 +70,7 @@ test("checkHeaders: находит заголовки, cookie-флаги и CORS
     secure: 1,
     httpOnly: 1,
     sameSite: 2,
+    insecureNone: 0,
     missingSecure: 1,
     missingHttpOnly: 1,
     missingSameSite: 0,
@@ -85,4 +86,32 @@ test("checkSSL: возвращает ошибку, если TLS не подня�
   const result = await checkSSL("127.0.0.1", 1, "localhost", null, 0);
   assert.strictEqual(result.hasSSL, false);
   assert.strictEqual(result.error, "HANDSHAKE_FAILED");
+});
+
+test("checkHeaders: небезопасные значения заголовков не дают защиты", async () => {
+  const http = require("http");
+  const server = http.createServer((req, res) => {
+    // Заголовки есть, но защиту не включают — ровно кейс PS-03.
+    res.setHeader("Strict-Transport-Security", "max-age=0");
+    res.setHeader("Content-Security-Policy", "default-src *");
+    res.setHeader("X-Frame-Options", "ALLOW-FROM https://example.com");
+    res.setHeader("X-Content-Type-Options", "foo");
+    res.setHeader("Referrer-Policy", "unsafe-url");
+    res.setHeader("Cross-Origin-Opener-Policy", "unsafe-none");
+    res.end("ok");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+
+  const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
+
+  for (const field of ["hsts", "csp", "xframe", "xcontent", "referrerPolicy", "coop"]) {
+    assert.strictEqual(result[field], false, `${field} не должен считаться защитой`);
+    assert.strictEqual(result[`${field}State`], "weak", `${field} должен быть weak`);
+  }
+
+  // server нормализован: строка или null, без заглушки «не указан».
+  assert.strictEqual(result.server, null);
+
+  await new Promise((resolve) => server.close(resolve));
 });

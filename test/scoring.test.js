@@ -484,3 +484,300 @@ test("у каждой находки есть OWASP-тег", () => {
     );
   }
 });
+
+// --- PS-04 / FE-01: недоступный хост не получает ложный no-ssl -------------
+
+test("NO_WEB_PORT → нет no-ssl и потолка 30, есть tls-not-checked", () => {
+  const r = calculateScore(
+    report({
+      ports: [],
+      ssl: { hasSSL: false, error: "NO_WEB_PORT" },
+      headers: { error: true },
+      files: null,
+      securityTxt: null,
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "no-ssl"));
+  assert.ok(r.findings.some((f) => f.id === "tls-not-checked"));
+  assert.ok(!r.findings.some((f) => f.id === "ssl-error"));
+  assert.ok(r.score > 30, `потолок 30 применён не должен быть: ${r.score}`);
+  assert.ok(r.score <= 60);
+});
+
+test("только 22/3306 без веб-портов — тоже NO_WEB_PORT", () => {
+  const r = calculateScore(
+    report({
+      ports: [{ port: 22, status: "open" }],
+      ssl: { hasSSL: false, error: "NO_WEB_PORT" },
+      headers: { error: true },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "no-ssl"));
+  assert.ok(r.findings.some((f) => f.id === "tls-not-checked"));
+});
+
+// --- PS-01 / PS-02 / PS-09 / PS-10: точность DNS-начислений -----------------
+
+test("две SPF-записи → spf-multiple и 0 баллов", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        spf: {
+          present: true,
+          record: "v=spf1 -all",
+          multiple: true,
+          weak: false,
+          error: null,
+        },
+      },
+    }),
+  );
+
+  const finding = r.findings.find((f) => f.id === "spf-multiple");
+  assert.ok(finding);
+  assert.strictEqual(finding.weight, WEIGHTS.spf);
+  assert.ok(!r.findings.some((f) => f.id === "spf-missing"));
+  // 100 - 4 = 96, но medium-находка опускает потолок до 90.
+  assert.strictEqual(r.score, 90);
+});
+
+test("SPF +all → spf-weak и 0 баллов", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        spf: {
+          present: true,
+          record: "v=spf1 +all",
+          multiple: false,
+          weak: true,
+          error: null,
+        },
+      },
+    }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "spf-weak"));
+  assert.strictEqual(r.score, 90);
+});
+
+test("две DMARC-записи → dmarc-invalid и 0 баллов", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        dmarc: {
+          present: true,
+          record: "v=DMARC1; p=reject",
+          policy: "reject",
+          strict: true,
+          weak: false,
+          multiple: true,
+          error: null,
+        },
+      },
+    }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "dmarc-invalid"));
+  // 100 - 3 = 97, потолок для medium-находки — 90.
+  assert.strictEqual(r.score, 90);
+});
+
+test("CAA только с iodef не даёт баллов", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        caa: {
+          present: true,
+          records: [{ critical: 0, iodef: "mailto:security@example.com" }],
+          restrictive: false,
+          error: null,
+        },
+      },
+    }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "caa-missing"));
+  assert.strictEqual(r.score, 98);
+});
+
+test("apex ENOTFOUND — нейтрально, _dmarc ENOTFOUND — отсутствие записи", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        applicable: true,
+        spf: { present: false, multiple: false, weak: false, error: "ENOTFOUND" },
+        dmarc: {
+          present: false,
+          policy: null,
+          strict: false,
+          weak: false,
+          multiple: false,
+          error: "ENOTFOUND",
+        },
+        caa: { present: false, records: [], restrictive: false, error: "ENOTFOUND" },
+      },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "spf-missing"));
+  assert.ok(!r.findings.some((f) => f.id === "caa-missing"));
+  assert.ok(r.findings.some((f) => f.id === "dmarc-missing"));
+});
+
+// --- PS-03: значения заголовков ------------------------------------------
+
+test("небезопасные значения заголовков не дают баллов и дают weak-находки", () => {
+  const r = calculateScore(
+    report({
+      headers: {
+        ...okHeaders,
+        hsts: false,
+        hstsState: "weak",
+        csp: false,
+        cspState: "weak",
+        xframe: false,
+        xframeState: "weak",
+        xcontent: false,
+        xcontentState: "weak",
+        referrerPolicy: false,
+        referrerPolicyState: "weak",
+        coop: false,
+        coopState: "weak",
+      },
+    }),
+  );
+
+  const ids = r.findings.map((f) => f.id);
+  for (const id of [
+    "weak-hsts",
+    "weak-csp",
+    "weak-xframe",
+    "weak-xcontent",
+    "weak-referrer-policy",
+    "weak-coop",
+  ]) {
+    assert.ok(ids.includes(id), `ожидали ${id}, получили ${ids.join(", ")}`);
+  }
+
+  assert.ok(!ids.includes("no-hsts"));
+  // 8+10+6+6+2+2 = 34 балла не начислены.
+  assert.ok(r.score <= 66, `score=${r.score}`);
+});
+
+// --- PS-06: упавшие HEAD-пробы не начисляют баллы -------------------------
+
+test("все HEAD-пробы упали → баллы за файлы не начисляются, находок нет", () => {
+  const failed = (path) => ({
+    path,
+    status: null,
+    exposed: false,
+    blocked: false,
+    error: "ETIMEDOUT",
+  });
+
+  const r = calculateScore(
+    report({
+      files: {
+        exposed: [],
+        blocked: [],
+        results: [
+          failed("/.env"),
+          failed("/.git/config"),
+          failed("/.DS_Store"),
+          failed("/backup.zip"),
+        ],
+      },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id.startsWith("exposed-")));
+  // 7+4+2+1 не начислены: неизвестно, открыты ли пути.
+  assert.strictEqual(r.score, 86);
+});
+
+// --- PS-16: мусорный вход не бросает -------------------------------------
+
+test("calculateScore(null) и мусорные ports не бросают", () => {
+  assert.doesNotThrow(() => calculateScore(null));
+  assert.doesNotThrow(() => calculateScore(undefined));
+  assert.doesNotThrow(() => calculateScore("garbage"));
+
+  const r = calculateScore(
+    report({ ports: [null, 42, { port: 22, status: "open" }] }),
+  );
+  assert.strictEqual(typeof r.score, "number");
+  assert.ok(r.findings.some((f) => f.id === "port-22"));
+});
+
+// --- PS-22 / PS-08: cookie -------------------------------------------------
+
+test("Secure не начисляется при ssl.error", () => {
+  const cookies = {
+    total: 1,
+    secure: 0,
+    httpOnly: 1,
+    sameSite: 1,
+    insecureNone: 0,
+    missingSecure: 1,
+    missingHttpOnly: 0,
+    missingSameSite: 0,
+  };
+
+  const r = calculateScore(
+    report({
+      ssl: { hasSSL: false, error: "HANDSHAKE_FAILED" },
+      headers: { ...okHeaders, cookieSummary: cookies },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "cookie-no-secure"));
+});
+
+test("SameSite=None без Secure → отдельная находка", () => {
+  const r = calculateScore(
+    report({
+      headers: {
+        ...okHeaders,
+        cookieSummary: {
+          total: 1,
+          secure: 0,
+          httpOnly: 1,
+          sameSite: 1,
+          insecureNone: 1,
+          missingSecure: 1,
+          missingHttpOnly: 0,
+          missingSameSite: 0,
+        },
+      },
+    }),
+  );
+
+  assert.ok(
+    r.findings.some((f) => f.id === "cookie-samesite-none-insecure"),
+  );
+});
+
+// --- PS-23: порядок находок по severity -----------------------------------
+
+test("находки отсортированы по severity, затем по весу", () => {
+  const r = calculateScore(
+    report({
+      headers: { ...okHeaders, csp: false, referrerPolicy: false },
+    }),
+  );
+
+  const ranks = r.findings.map((f) =>
+    f.severity === "high" ? 0 : f.severity === "medium" ? 1 : 2,
+  );
+
+  for (let i = 1; i < ranks.length; i += 1) {
+    assert.ok(ranks[i - 1] <= ranks[i], `порядок severity нарушен: ${ranks}`);
+  }
+});
+

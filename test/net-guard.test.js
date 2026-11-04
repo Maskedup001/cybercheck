@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { isPublicIp } = require("../src/net-guard");
+const { isPublicIp, resolvePublicIps } = require("../src/net-guard");
 
 const blocked = [
   "0.0.0.0",
@@ -52,4 +52,91 @@ test("Fail-closed: невалидный ввод блокируется", () => 
       `ОШИБКА: должен блокировать ${ip}`,
     );
   }
+});
+
+// --- BE-04: резолв через c-ares (resolve4/resolve6), с инъекцией ----------
+
+function fakeResolver({ a = [], aaaa = [], aError = null, aaaaError = null } = {}) {
+  return {
+    calls: [],
+    async resolve4(name) {
+      this.calls.push({ type: "A", name });
+      if (aError) throw aError;
+      return a;
+    },
+    async resolve6(name) {
+      this.calls.push({ type: "AAAA", name });
+      if (aaaaError) throw aaaaError;
+      return aaaa;
+    },
+  };
+}
+
+function dnsError(code) {
+  const err = new Error(`query failed: ${code}`);
+  err.code = code;
+  return err;
+}
+
+test("resolvePublicIps: литеральный IP не требует DNS", async () => {
+  const resolver = fakeResolver();
+
+  assert.deepStrictEqual(
+    await resolvePublicIps("8.8.8.8", { resolver }),
+    ["8.8.8.8"],
+  );
+  assert.deepStrictEqual(await resolvePublicIps("10.0.0.1", { resolver }), []);
+  assert.deepStrictEqual(resolver.calls, []);
+});
+
+test("resolvePublicIps: объединяет A/AAAA и ставит IPv4 вперёд", async () => {
+  const resolver = fakeResolver({
+    a: ["93.184.216.34", "1.1.1.1"],
+    aaaa: ["2606:4700::1111"],
+  });
+
+  const ips = await resolvePublicIps("example.com", { resolver });
+
+  assert.deepStrictEqual(ips, ["93.184.216.34", "1.1.1.1", "2606:4700::1111"]);
+  assert.deepStrictEqual(
+    resolver.calls.map((call) => call.type),
+    ["A", "AAAA"],
+  );
+});
+
+test("resolvePublicIps: приватный адрес в наборе блокирует весь домен", async () => {
+  const resolver = fakeResolver({ a: ["93.184.216.34", "127.0.0.1"] });
+
+  assert.deepStrictEqual(await resolvePublicIps("example.com", { resolver }), []);
+});
+
+test("resolvePublicIps: обе записи отсутствуют → пустой список", async () => {
+  const resolver = fakeResolver({
+    aError: dnsError("ENODATA"),
+    aaaaError: dnsError("ENOTFOUND"),
+  });
+
+  assert.deepStrictEqual(await resolvePublicIps("example.com", { resolver }), []);
+});
+
+test("resolvePublicIps: реальная ошибка DNS пробрасывается", async () => {
+  const resolver = fakeResolver({
+    aError: dnsError("ESERVFAIL"),
+    aaaaError: dnsError("ESERVFAIL"),
+  });
+
+  await assert.rejects(
+    () => resolvePublicIps("example.com", { resolver }),
+    /query failed/,
+  );
+});
+
+test("resolvePublicIps: зависший резолвер обрывается по таймауту", async () => {
+  const never = () => new Promise(() => {});
+  const resolver = { resolve4: never, resolve6: never };
+
+  await assert.rejects(
+    () => resolvePublicIps("example.com", { resolver, timeoutMs: 20 }),
+    (err) => err.code === "ETIMEOUT",
+  );
 });

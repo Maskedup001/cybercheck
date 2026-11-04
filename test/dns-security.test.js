@@ -38,16 +38,17 @@ function dnsError(code) {
 
 const notApplicable = {
   applicable: false,
-  spf: { present: false, record: null, multiple: false, error: null },
+  spf: { present: false, record: null, multiple: false, weak: false, error: null },
   dmarc: {
     present: false,
     record: null,
     policy: null,
     strict: false,
     weak: false,
+    multiple: false,
     error: null,
   },
-  caa: { present: false, records: [], error: null },
+  caa: { present: false, records: [], restrictive: false, error: null },
 };
 
 // --- SPF ------------------------------------------------------------------
@@ -61,6 +62,7 @@ test("parseSpfTxt: находит SPF и склеивает chunks", () => {
     present: true,
     record: "v=spf1 include:_spf.example.com -all",
     multiple: false,
+    weak: false,
   });
 });
 
@@ -70,13 +72,14 @@ test("parseSpfTxt: возвращает absent, если SPF нет", () => {
       ["google-site-verification=abc"],
       ["v=spf10 -all"], // не SPF: после версии нет пробела/конца строки
     ]),
-    { present: false, record: null, multiple: false },
+    { present: false, record: null, multiple: false, weak: false },
   );
 
   assert.deepStrictEqual(parseSpfTxt([]), {
     present: false,
     record: null,
     multiple: false,
+    weak: false,
   });
 });
 
@@ -91,6 +94,7 @@ test("parseSpfTxt: несколько SPF-записей помечает multip
     present: true,
     record: "v=spf1 include:first.example -all",
     multiple: true,
+    weak: false,
   });
 });
 
@@ -101,7 +105,27 @@ test("parseSpfTxt: версия не чувствительна к регист�
     present: true,
     record: "V=SPF1 -all",
     multiple: false,
+    weak: false,
   });
+});
+
+test("parseSpfTxt: +all, ?all и пустой SPF помечаются weak", () => {
+  for (const record of [
+    "v=spf1 +all",
+    "v=spf1 ?all",
+    "v=spf1 all",
+    "v=spf1",
+    "v=spf1 ",
+  ]) {
+    const result = parseSpfTxt([[record]]);
+    assert.strictEqual(result.present, true, record);
+    assert.strictEqual(result.weak, true, `должен быть weak: ${record}`);
+  }
+
+  // -all и ~all — рабочие конфигурации, слабыми не считаются.
+  for (const record of ["v=spf1 -all", "v=spf1 ~all"]) {
+    assert.strictEqual(parseSpfTxt([[record]]).weak, false, record);
+  }
 });
 
 // --- DMARC ----------------------------------------------------------------
@@ -115,6 +139,7 @@ test("parseDmarcTxt: p=reject считается strict", () => {
     policy: "reject",
     strict: true,
     weak: false,
+    multiple: false,
     error: null,
   });
 });
@@ -128,6 +153,7 @@ test("parseDmarcTxt: p=quarantine считается strict", () => {
     policy: "quarantine",
     strict: true,
     weak: false,
+    multiple: false,
     error: null,
   });
 });
@@ -141,6 +167,7 @@ test("parseDmarcTxt: p=none считается weak", () => {
     policy: "none",
     strict: false,
     weak: true,
+    multiple: false,
     error: null,
   });
 });
@@ -152,11 +179,24 @@ test("parseDmarcTxt: отсутствие DMARC-записи", () => {
     policy: null,
     strict: false,
     weak: false,
+    multiple: false,
     error: null,
   };
 
   assert.deepStrictEqual(parseDmarcTxt([["v=spf1 -all"]]), expected);
   assert.deepStrictEqual(parseDmarcTxt([]), expected);
+});
+
+test("parseDmarcTxt: несколько DMARC-записей помечаются multiple", () => {
+  const result = parseDmarcTxt([
+    ["v=DMARC1; p=reject"],
+    ["v=DMARC1; p=none"],
+  ]);
+
+  assert.strictEqual(result.present, true);
+  assert.strictEqual(result.multiple, true);
+  // Поля первой записи сохраняются: решение принимает scoring, а не парсер.
+  assert.strictEqual(result.policy, "reject");
 });
 
 test("parseDmarcTxt: некорректная политика даёт policy=null", () => {
@@ -168,6 +208,7 @@ test("parseDmarcTxt: некорректная политика даёт policy=n
     policy: null,
     strict: false,
     weak: false,
+    multiple: false,
     error: null,
   });
 
@@ -197,14 +238,31 @@ test("parseCaaRecords: возвращает непустые CAA-записи", 
   assert.deepStrictEqual(parseCaaRecords(records), {
     present: true,
     records,
+    restrictive: true,
     error: null,
   });
+});
+
+test("parseCaaRecords: только iodef не ограничивает выпуск", () => {
+  const records = [{ critical: 0, iodef: "mailto:security@example.com" }];
+
+  const result = parseCaaRecords(records);
+  assert.strictEqual(result.present, true);
+  assert.strictEqual(result.restrictive, false);
+});
+
+test("parseCaaRecords: issuewild тоже ограничение", () => {
+  const result = parseCaaRecords([
+    { critical: 0, issuewild: "letsencrypt.org" },
+  ]);
+  assert.strictEqual(result.restrictive, true);
 });
 
 test("parseCaaRecords: пустой массив", () => {
   assert.deepStrictEqual(parseCaaRecords([]), {
     present: false,
     records: [],
+    restrictive: false,
     error: null,
   });
 });
@@ -221,6 +279,7 @@ test("checkDnsSecurity: ошибка CAA возвращается в caa.error",
   assert.deepStrictEqual(result.caa, {
     present: false,
     records: [],
+    restrictive: false,
     error: "ESERVFAIL",
   });
 });
@@ -268,6 +327,7 @@ test("checkDnsSecurity: собирает SPF, DMARC и CAA", async () => {
       present: true,
       record: "v=spf1 include:_spf.example.com -all",
       multiple: false,
+      weak: false,
       error: null,
     },
     dmarc: {
@@ -276,11 +336,13 @@ test("checkDnsSecurity: собирает SPF, DMARC и CAA", async () => {
       policy: "quarantine",
       strict: true,
       weak: false,
+      multiple: false,
       error: null,
     },
     caa: {
       present: true,
       records: caaRecords,
+      restrictive: true,
       error: null,
     },
   });
@@ -307,16 +369,23 @@ test("checkDnsSecurity: известные DNS-ошибки возвращают
 
     assert.deepStrictEqual(result, {
       applicable: true,
-      spf: { present: false, record: null, multiple: false, error: code },
+      spf: {
+        present: false,
+        record: null,
+        multiple: false,
+        weak: false,
+        error: code,
+      },
       dmarc: {
         present: false,
         record: null,
         policy: null,
         strict: false,
         weak: false,
+        multiple: false,
         error: code,
       },
-      caa: { present: false, records: [], error: code },
+      caa: { present: false, records: [], restrictive: false, error: code },
     });
   }
 });
@@ -361,16 +430,23 @@ test("checkDnsSecurity: каждый запрос завершается по т
   assert.strictEqual(calls, 3);
   assert.deepStrictEqual(result, {
     applicable: true,
-    spf: { present: false, record: null, multiple: false, error: "TIMEOUT" },
+    spf: {
+      present: false,
+      record: null,
+      multiple: false,
+      weak: false,
+      error: "TIMEOUT",
+    },
     dmarc: {
       present: false,
       record: null,
       policy: null,
       strict: false,
       weak: false,
+      multiple: false,
       error: "TIMEOUT",
     },
-    caa: { present: false, records: [], error: "TIMEOUT" },
+    caa: { present: false, records: [], restrictive: false, error: "TIMEOUT" },
   });
 });
 
@@ -397,16 +473,23 @@ test("checkDnsSecurity: отменённый signal даёт ABORTED, без thr
 
   assert.deepStrictEqual(result, {
     applicable: true,
-    spf: { present: false, record: null, multiple: false, error: "ABORTED" },
+    spf: {
+      present: false,
+      record: null,
+      multiple: false,
+      weak: false,
+      error: "ABORTED",
+    },
     dmarc: {
       present: false,
       record: null,
       policy: null,
       strict: false,
       weak: false,
+      multiple: false,
       error: "ABORTED",
     },
-    caa: { present: false, records: [], error: "ABORTED" },
+    caa: { present: false, records: [], restrictive: false, error: "ABORTED" },
   });
   assert.strictEqual(calls, 0);
 });
