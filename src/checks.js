@@ -8,12 +8,17 @@ const {
   parseSetCookie,
   summarizeCookies,
   analyzeSecurityHeaders,
+  sanitizeHeaderText,
 } = require("./header-analysis");
 
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
 // Если соединение установилось — порт открыт. Таймаут или ошибка — порт закрыт.
 function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
+  // socket.setTimeout(0) отключает таймаут, а не делает его мгновенным:
+  // нулевой остаток бюджета должен означать «проверять некогда».
+  const socketTimeout = Number.isFinite(timeout) && timeout > 0 ? timeout : 1;
+
   return new Promise((resolve) => {
     const attempt = (attemptsLeft) => {
       if (signal?.aborted) return resolve({ port, status: "closed" });
@@ -26,7 +31,7 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
       };
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
-      socket.setTimeout(timeout);
+      socket.setTimeout(socketTimeout);
       socket.on("connect", () => {
         status = "open";
         socket.destroy();
@@ -85,8 +90,18 @@ function checkOldTls(connectIp, port, hostname, signal) {
 // connectIp — IP для подключения, hostname — для SNI (только если это домен, не IP).
 // rejectUnauthorized: false нужен, чтобы ПРОЧИТАТЬ информацию о невалидных
 // сертификатах (просроченных, самоподписанных) — иначе соединение оборвётся.
-async function checkSSL(connectIp, port, hostname, signal, retries = 1) {
+async function checkSSL(
+  connectIp,
+  port,
+  hostname,
+  signal,
+  retries = 1,
+  timeoutMs = 5000,
+) {
   if (!port) return { hasSSL: false };
+
+  const handshakeTimeout =
+    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1;
 
   return new Promise((resolve) => {
     const attempt = (attemptsLeft) => {
@@ -125,7 +140,12 @@ async function checkSSL(connectIp, port, hostname, signal, retries = 1) {
             const cert = socket.getPeerCertificate();
             if (!cert || !cert.valid_to) {
               socket.end();
-              return finish({ hasSSL: false });
+              // TLS поднялся, но сертификат не разобран: это ошибка проверки,
+              // а не «SSL нет». Иначе отчёт печатал бы no-ssl и потолок 30.
+              return finish({
+                hasSSL: false,
+                error: "CERT_PARSE_FAILED",
+              });
             }
 
             const verifyError = socket.authorizationError || null;
@@ -169,7 +189,7 @@ async function checkSSL(connectIp, port, hostname, signal, retries = 1) {
       );
 
       socket.on("error", onError);
-      socket.setTimeout(5000, () => {
+      socket.setTimeout(handshakeTimeout, () => {
         socket.destroy();
         onError();
       });
@@ -189,10 +209,14 @@ function checkHeaders(
   retries = 1,
   signal,
   hasTls = true,
+  timeoutMs = 5000,
 ) {
   return new Promise((resolve) => {
     if (!port) return resolve({ error: true });
     if (signal?.aborted) return resolve({ error: true });
+
+    const requestTimeout =
+      Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1;
 
     const servername = net.isIP(hostname) ? undefined : hostname;
     // Добавляем порт в Host для нестандартных портов (например, 8080)
@@ -227,7 +251,7 @@ function checkHeaders(
             port,
             // Используем hostHeader и актуальную версию UA
             headers: { Host: hostHeader, "User-Agent": UA },
-            timeout: 5000,
+            timeout: requestTimeout,
             signal,
           },
           (res) => {
@@ -257,7 +281,7 @@ function checkHeaders(
             rejectUnauthorized: false,
             // Используем hostHeader и актуальную версию UA
             headers: { Host: hostHeader, "User-Agent": UA },
-            timeout: 5000,
+            timeout: requestTimeout,
             signal,
           },
           (res) => {
@@ -293,17 +317,15 @@ function checkHeaders(
 
 // Приводит заголовки к единому формату для фронтенда.
 // protocol — 'HTTP' или 'HTTPS', чтобы клиент видел реальную схему.
+// server нормализован в строку или null: «не указан» — это решение UI,
+// а не данные API (иначе у headers и fingerprint разные контракты).
 function parseHeaders(h, protocol) {
   const cookies = parseSetCookie(h["set-cookie"]);
   const security = analyzeSecurityHeaders(h);
 
   return {
     protocol,
-    server: h["server"] || "не указан",
-    csp: !!h["content-security-policy"],
-    xframe: !!h["x-frame-options"],
-    hsts: !!h["strict-transport-security"],
-    xcontent: !!h["x-content-type-options"],
+    server: sanitizeHeaderText(h["server"]),
     ...security,
     cookies,
     cookieSummary: summarizeCookies(cookies),

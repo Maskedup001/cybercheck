@@ -7,13 +7,24 @@ const {
   detectWaf,
   detectCms,
 } = require("./header-analysis");
+const { SENSITIVE_FILE_PATHS } = require("./file-paths");
 
 const UA = `CyberCheck/${pkg.version}`;
 const DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_MAX_BODY = 65536;
 
-const SENSITIVE_PATHS = ["/.env", "/.git/config", "/.DS_Store", "/backup.zip"];
 const SECURITY_TXT_PATH = "/.well-known/security.txt";
+const SECURITY_TXT_MAX_BODY = 8192;
+
+// Значение заголовка строкой (первое из списка) или null.
+function headerText(headers, name) {
+  if (!headers || typeof headers !== "object") return null;
+  const raw = headers[name];
+  if (raw === undefined || raw === null) return null;
+  const text = Array.isArray(raw) ? raw[0] : raw;
+  const trimmed = String(text).trim();
+  return trimmed === "" ? null : trimmed;
+}
 
 // Host без порта только для стандартных портов, иначе браузер/сервер
 // должны видеть hostname:port.
@@ -122,6 +133,21 @@ function request(options = {}) {
     let currentProtocol = protocols[0];
     let timer = null;
     let abortHandler = null;
+
+    // SSRF-инвариант: соединение возможно только с литеральным IP. Имя хоста
+    // или undefined увели бы http.request в собственный DNS-резолв (а
+    // undefined — на localhost), то есть обошли бы проверку адреса.
+    if (typeof connectIp !== "string" || net.isIP(connectIp) === 0) {
+      resolve(networkError(protocols[0], { code: "INVALID_CONNECT_IP" }));
+      return;
+    }
+
+    // Заголовки и тело, уже полученные до таймаута: если страница ответила
+    // медленно, статус и cf-ray всё равно нужны отчёту (PS-11).
+    let partialStatus = null;
+    let partialHeaders = {};
+    let bodyChunks = [];
+    let bodyTotal = 0;
 
     function clearTimer() {
       if (timer !== null) {
@@ -236,9 +262,30 @@ function request(options = {}) {
           return;
         }
 
+        // Ответ уже пришёл, но тело не дочиталось за отведённое время:
+        // отдаём статус/заголовки и то, что успели прочитать, с пометкой
+        // ошибки. Иначе медленная страница теряла бы WAF и статус.
+        if (gotResponse) {
+          finish({
+            status: partialStatus,
+            headers: partialHeaders,
+            body: readPartialBody(),
+            protocol,
+            error: "ETIMEDOUT",
+          });
+          if (failedReq) failedReq.destroy();
+          return;
+        }
+
         fail(protocol, { code: "ETIMEDOUT" });
         if (failedReq) failedReq.destroy();
       }, timeout);
+
+      function readPartialBody() {
+        return bodyTotal > 0
+          ? Buffer.concat(bodyChunks, bodyTotal).toString("utf8")
+          : "";
+      }
 
       function handleRequestError(err) {
         if (settled || attemptEnded) return;
@@ -264,9 +311,12 @@ function request(options = {}) {
         }
         gotResponse = true;
 
-        const status =
+        partialStatus =
           typeof res.statusCode === "number" ? res.statusCode : null;
-        const responseHeaders = res.headers || {};
+        partialHeaders = res.headers || {};
+
+        const status = partialStatus;
+        const responseHeaders = partialHeaders;
 
         if (!readBody) {
           attemptEnded = true;
@@ -277,8 +327,8 @@ function request(options = {}) {
           return;
         }
 
-        const chunks = [];
-        let total = 0;
+        bodyChunks = [];
+        bodyTotal = 0;
         let bodyDone = false;
 
         function finishBody() {
@@ -286,9 +336,13 @@ function request(options = {}) {
           bodyDone = true;
           attemptEnded = true;
           stopTimer();
-          const body =
-            total > 0 ? Buffer.concat(chunks, total).toString("utf8") : "";
-          finish({ status, headers: responseHeaders, body, protocol, error: null });
+          finish({
+            status,
+            headers: responseHeaders,
+            body: readPartialBody(),
+            protocol,
+            error: null,
+          });
         }
 
         function failBody(err) {
@@ -296,26 +350,33 @@ function request(options = {}) {
           bodyDone = true;
           attemptEnded = true;
           stopTimer();
-          fail(protocol, err);
+          // Оборванное тело не отменяет уже полученные заголовки.
+          finish({
+            status,
+            headers: responseHeaders,
+            body: readPartialBody(),
+            protocol,
+            error: err && err.code ? String(err.code) : "ECONNRESET",
+          });
         }
 
         res.on("data", (chunk) => {
           if (bodyDone || settled) return;
           const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          const remaining = maxBytes - total;
+          const remaining = maxBytes - bodyTotal;
 
           if (buf.length >= remaining) {
             if (remaining > 0) {
-              chunks.push(buf.subarray(0, remaining));
-              total += remaining;
+              bodyChunks.push(buf.subarray(0, remaining));
+              bodyTotal += remaining;
             }
             finishBody();
             res.destroy();
             return;
           }
 
-          chunks.push(buf);
-          total += buf.length;
+          bodyChunks.push(buf);
+          bodyTotal += buf.length;
         });
         res.on("end", finishBody);
         res.on("error", failBody);
@@ -332,9 +393,16 @@ function request(options = {}) {
 // Проверка типовых файлов утечки. Только HEAD, 200 — единственный признак
 // экспозиции. 403 — это WAF/запрет, не уязвимость; 404 и прочие статусы —
 // просто данные. Ошибки не выбрасываются, а попадают в results[].error.
-async function checkSensitiveFiles(connectIp, port, hostname, hasTls, signal) {
+async function checkSensitiveFiles(
+  connectIp,
+  port,
+  hostname,
+  hasTls,
+  signal,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+) {
   const responses = await Promise.all(
-    SENSITIVE_PATHS.map(async (probePath) => {
+    SENSITIVE_FILE_PATHS.map(async (probePath) => {
       try {
         return await request({
           method: "HEAD",
@@ -344,7 +412,7 @@ async function checkSensitiveFiles(connectIp, port, hostname, hasTls, signal) {
           hostname,
           hasTls,
           signal,
-          timeoutMs: DEFAULT_TIMEOUT_MS,
+          timeoutMs,
         });
       } catch (err) {
         return networkError(null, err);
@@ -355,7 +423,7 @@ async function checkSensitiveFiles(connectIp, port, hostname, hasTls, signal) {
   const results = responses.map((response, index) => {
     const status = response.status;
     return {
-      path: SENSITIVE_PATHS[index],
+      path: SENSITIVE_FILE_PATHS[index],
       status,
       exposed: status === 200,
       blocked: status === 403,
@@ -372,8 +440,17 @@ async function checkSensitiveFiles(connectIp, port, hostname, hasTls, signal) {
   };
 }
 
-// security.txt: тело не нужно, важен только статус.
-async function checkSecurityTxt(connectIp, port, hostname, hasTls, signal) {
+// security.txt: статус 200 сам по себе ничего не доказывает — SPA и
+// catch-all отдают 200 HTML на любой путь. Требуем text/plain и строку
+// Contact: (RFC 9116), читая не больше 8 КБ.
+async function checkSecurityTxt(
+  connectIp,
+  port,
+  hostname,
+  hasTls,
+  signal,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+) {
   const response = await request({
     method: "GET",
     path: SECURITY_TXT_PATH,
@@ -382,24 +459,40 @@ async function checkSecurityTxt(connectIp, port, hostname, hasTls, signal) {
     hostname,
     hasTls,
     signal,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
+    timeoutMs,
     headers: { Accept: "text/plain" },
-    readBody: false,
+    readBody: true,
+    maxBody: SECURITY_TXT_MAX_BODY,
   });
+
+  const contentType = headerText(response.headers, "content-type");
+  const body = typeof response.body === "string" ? response.body : "";
+  // Без Content-Type не отбрасываем: часть серверов его не отдаёт.
+  const plainText = contentType === null || /^text\/plain\b/i.test(contentType);
+  const hasContact = /(?:^|\n)\s*Contact\s*:/i.test(body);
+  const present = response.status === 200 && plainText && hasContact;
 
   return {
     path: SECURITY_TXT_PATH,
     status: response.status,
-    present: response.status === 200,
+    present,
     blocked: response.status === 403,
     error: response.error,
   };
 }
 
 // Фингерпринт WAF/CMS. Тело читается не больше 64 КБ, чтобы не тянуть
-// большие страницы. WAF определяется и по заголовкам при любом статусе;
-// CMS — только если есть тело (или это успешный ответ).
-async function checkFingerprint(connectIp, port, hostname, hasTls, signal) {
+// большие страницы. WAF определяется по заголовкам при любом статусе;
+// CMS — только по успешному ответу: иначе заглушка ошибки/WAF даёт ложное
+// «CMS не обнаружена» либо случайное совпадение в тексте ошибки.
+async function checkFingerprint(
+  connectIp,
+  port,
+  hostname,
+  hasTls,
+  signal,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+) {
   const response = await request({
     method: "GET",
     path: "/",
@@ -408,7 +501,7 @@ async function checkFingerprint(connectIp, port, hostname, hasTls, signal) {
     hostname,
     hasTls,
     signal,
-    timeoutMs: DEFAULT_TIMEOUT_MS,
+    timeoutMs,
     headers: { Accept: "text/html" },
     readBody: true,
     maxBody: DEFAULT_MAX_BODY,
@@ -426,7 +519,7 @@ async function checkFingerprint(connectIp, port, hostname, hasTls, signal) {
   }
 
   let cms = null;
-  if (response.status === 200 || body.length > 0) {
+  if (response.status === 200 && body.length > 0) {
     try {
       cms = normalizeDetection(detectCms(body, headers, cookies));
     } catch {
@@ -437,7 +530,7 @@ async function checkFingerprint(connectIp, port, hostname, hasTls, signal) {
   return {
     waf,
     cms,
-    server: headers.server || null,
+    server: headerText(headers, "server"),
     status: response.status,
     error: response.error,
     bodyBytes: Buffer.byteLength(body, "utf8"),

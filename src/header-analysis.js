@@ -4,6 +4,77 @@
 const SAME_SITE_VALUES = new Set(["lax", "strict", "none"]);
 const CLOUDFLARE_COOKIES = ["cf_clearance", "__cf_bm", "__cfduid"];
 
+// Значения заголовков, которые действительно включают защиту. Присутствие
+// заголовка с небезопасным значением (HSTS: max-age=0, COOP: unsafe-none,
+// Referrer-Policy: unsafe-url, XCTO: foo) защитой не считается — иначе сайт
+// получал бы баллы за явно отключённую настройку.
+const SAFE_REFERRER_POLICIES = new Set([
+  "no-referrer",
+  "no-referrer-when-downgrade",
+  "same-origin",
+  "origin",
+  "strict-origin",
+  "origin-when-cross-origin",
+  "strict-origin-when-cross-origin",
+]);
+const SAFE_COOP = new Set(["same-origin", "same-origin-allow-popups"]);
+const SAFE_XFRAME = new Set(["deny", "sameorigin"]);
+
+// Максимальная длина недоверенного заголовка в отчёте (Server, issuer).
+const MAX_HEADER_TEXT = 120;
+
+// Убирает управляющие символы и bidi-переопределения: они позволяют визуально
+// подменить текст карточки или PDF, хотя XSS при textContent невозможен.
+function sanitizeHeaderText(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    // C0/C1, DEL
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    // bidi-марки/переопределения и zero-width
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned === "") return null;
+  return cleaned.slice(0, MAX_HEADER_TEXT);
+}
+
+// Первое значение из списка: "deny, sameorigin" → "deny".
+function firstToken(value) {
+  if (typeof value !== "string") return "";
+  return value.split(",")[0].trim().toLowerCase();
+}
+
+// max-age из Strict-Transport-Security. null, если параметра нет.
+function hstsMaxAge(value) {
+  const match = /(?:^|;)\s*max-age\s*=\s*"?(\d+)"?/i.exec(String(value));
+  return match ? Number(match[1]) : null;
+}
+
+// CSP считается рабочей, если она ограничивает default-src или script-src
+// чем-то кроме "*" / "'unsafe-inline'": пустая или wildcard-политика не
+// защищает от XSS и баллов не даёт.
+function cspIsRestrictive(value) {
+  if (typeof value !== "string" || value.trim() === "") return false;
+
+  const directives = value
+    .split(";")
+    .map((directive) => directive.trim())
+    .filter(Boolean);
+
+  const relevant = directives.filter((directive) =>
+    /^(default-src|script-src)\b/i.test(directive),
+  );
+  if (relevant.length === 0) return false;
+
+  const weakSources = new Set(["*", "'unsafe-inline'", "'unsafe-eval'"]);
+
+  return relevant.some((directive) => {
+    const sources = directive.split(/\s+/).slice(1).filter(Boolean);
+    if (sources.length === 0) return false;
+    return sources.some((source) => !weakSources.has(source.toLowerCase()));
+  });
+}
+
 // Возвращает непустое значение заголовка или null.
 // Node отдаёт set-cookie массивом, остальные заголовки — строкой;
 // на всякий случай поддерживаем оба варианта.
@@ -49,15 +120,6 @@ function hasGeneratorMeta(html, value) {
   return nameFirst.test(html) || contentFirst.test(html);
 }
 
-// Ищет <meta ... content="Drupal"> без требования конкретного name.
-function hasMetaContent(html, value) {
-  const pattern = new RegExp(
-    `<meta\\b[^>]*\\bcontent\\s*=\\s*["']?${escapeRegExp(value)}\\b`,
-    "i",
-  );
-  return pattern.test(html);
-}
-
 // Разбирает Set-Cookie. Значение cookie никогда не попадает в результат:
 // нужны только имя и флаги. Одна запись массива — один cookie.
 function parseSetCookie(value) {
@@ -84,7 +146,12 @@ function parseSetCookie(value) {
     const parts = raw.split(";");
     const pair = parts[0];
     const equals = pair.indexOf("=");
-    const name = (equals === -1 ? pair : pair.slice(0, equals)).trim();
+    // Запись без "=" — не cookie, а мусор от прокси/WAF: имя не определено,
+    // и любой токен в такой строке мог бы оказаться значением. Молча
+    // пропускаем, чтобы «значения cookie не отдаются» оставалось правдой.
+    if (equals === -1) continue;
+
+    const name = pair.slice(0, equals).trim();
     if (!name) continue;
 
     const cookie = {
@@ -117,7 +184,6 @@ function parseSetCookie(value) {
         continue;
       }
       if (key === "samesite") {
-        cookie.sameSite = true;
         let attributeValue =
           attributeEquals === -1
             ? ""
@@ -131,9 +197,12 @@ function parseSetCookie(value) {
           attributeValue = attributeValue.slice(1, -1).trim();
         }
         const normalized = attributeValue.toLowerCase();
-        cookie.sameSiteValue = SAME_SITE_VALUES.has(normalized)
-          ? normalized
-          : null;
+        // Только lax/strict/none. SameSite без значения или SameSite=Foo
+        // браузеры не применяют — это не защита, и считать её флагом нельзя.
+        if (SAME_SITE_VALUES.has(normalized)) {
+          cookie.sameSite = true;
+          cookie.sameSiteValue = normalized;
+        }
       }
     }
 
@@ -144,17 +213,20 @@ function parseSetCookie(value) {
 }
 
 // Сводка по флагам: сколько cookie имеют каждый флаг и сколько его лишены.
+// insecureNone — SameSite=None без Secure: браузеры такое cookie отвергают.
 function summarizeCookies(cookies) {
   const list = Array.isArray(cookies) ? cookies : [];
   let secure = 0;
   let httpOnly = 0;
   let sameSite = 0;
+  let insecureNone = 0;
 
   for (const cookie of list) {
     if (!cookie || typeof cookie !== "object") continue;
     if (cookie.secure) secure += 1;
     if (cookie.httpOnly) httpOnly += 1;
     if (cookie.sameSite) sameSite += 1;
+    if (cookie.sameSiteValue === "none" && !cookie.secure) insecureNone += 1;
   }
 
   const total = list.length;
@@ -163,24 +235,86 @@ function summarizeCookies(cookies) {
     secure,
     httpOnly,
     sameSite,
+    insecureNone,
     missingSecure: total - secure,
     missingHttpOnly: total - httpOnly,
     missingSameSite: total - sameSite,
   };
 }
 
-// Наличие security-заголовков и точное значение ACAO "*".
-// Значения не интерпретируются, только trim и проверка на пустоту.
+// Наличие security-заголовков, проверка их значений и точное значение ACAO "*".
+// Каждый заголовок получает состояние:
+//   missing — заголовка нет;
+//   weak    — заголовок есть, но значение не включает защиту;
+//   ok      — защита действительно включена.
+// Булевы поля (csp/hsts/...) означают «защита работает»: так их читают
+// scoring и UI, поэтому HSTS: max-age=0 больше не даёт баллов.
 function analyzeSecurityHeaders(headers) {
   const accessControlAllowOrigin = headerValue(
     headers,
     "access-control-allow-origin",
   );
 
+  const hstsValue = headerValue(headers, "strict-transport-security");
+  let hstsState = "missing";
+  if (hstsValue !== null) {
+    const maxAge = hstsMaxAge(hstsValue);
+    hstsState = maxAge !== null && maxAge > 0 ? "ok" : "weak";
+  }
+
+  const cspValue = headerValue(headers, "content-security-policy");
+  let cspState = "missing";
+  if (cspValue !== null) {
+    cspState = cspIsRestrictive(cspValue) ? "ok" : "weak";
+  }
+
+  const xframeValue = headerValue(headers, "x-frame-options");
+  let xframeState = "missing";
+  if (xframeValue !== null) {
+    xframeState = SAFE_XFRAME.has(firstToken(xframeValue)) ? "ok" : "weak";
+  }
+
+  const xcontentValue = headerValue(headers, "x-content-type-options");
+  let xcontentState = "missing";
+  if (xcontentValue !== null) {
+    xcontentState = firstToken(xcontentValue) === "nosniff" ? "ok" : "weak";
+  }
+
+  const referrerValue = headerValue(headers, "referrer-policy");
+  let referrerPolicyState = "missing";
+  if (referrerValue !== null) {
+    referrerPolicyState = SAFE_REFERRER_POLICIES.has(firstToken(referrerValue))
+      ? "ok"
+      : "weak";
+  }
+
+  const coopValue = headerValue(headers, "cross-origin-opener-policy");
+  let coopState = "missing";
+  if (coopValue !== null) {
+    coopState = SAFE_COOP.has(firstToken(coopValue)) ? "ok" : "weak";
+  }
+
+  // Permissions-Policy: безопасного «значения по умолчанию» нет — пустой
+  // заголовок бесполезен, любой непустой ограничивает API.
+  const permissionsValue = headerValue(headers, "permissions-policy");
+  const permissionsPolicyState =
+    permissionsValue === null ? "missing" : "ok";
+
   return {
-    referrerPolicy: headerValue(headers, "referrer-policy") !== null,
-    permissionsPolicy: headerValue(headers, "permissions-policy") !== null,
-    coop: headerValue(headers, "cross-origin-opener-policy") !== null,
+    hsts: hstsState === "ok",
+    hstsState,
+    csp: cspState === "ok",
+    cspState,
+    xframe: xframeState === "ok",
+    xframeState,
+    xcontent: xcontentState === "ok",
+    xcontentState,
+    referrerPolicy: referrerPolicyState === "ok",
+    referrerPolicyState,
+    permissionsPolicy: permissionsPolicyState === "ok",
+    permissionsPolicyState,
+    coop: coopState === "ok",
+    coopState,
     corsWildcard: accessControlAllowOrigin === "*",
     accessControlAllowOrigin,
   };
@@ -261,7 +395,7 @@ function detectCms(body, headers, cookies) {
   if (htmlLower.includes("sites/default/files")) {
     drupal.push("body:sites-default-files");
   }
-  if (hasMetaContent(html, "drupal")) drupal.push("body:meta-generator");
+  if (hasGeneratorMeta(html, "drupal")) drupal.push("body:meta-generator");
   const generator = headerValue(headers, "x-generator");
   if (generator && generator.toLowerCase().includes("drupal")) {
     drupal.push("header:x-generator");
@@ -277,7 +411,7 @@ function detectCms(body, headers, cookies) {
   if (htmlLower.includes("/media/system/js/")) {
     joomla.push("body:media-system-js");
   }
-  if (hasMetaContent(html, "joomla")) joomla.push("body:meta-generator");
+  if (hasGeneratorMeta(html, "joomla")) joomla.push("body:meta-generator");
   if (joomla.length > 0) {
     return { name: "joomla", evidence: joomla };
   }
@@ -300,4 +434,5 @@ module.exports = {
   analyzeSecurityHeaders,
   detectWaf,
   detectCms,
+  sanitizeHeaderText,
 };
