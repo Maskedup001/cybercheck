@@ -7,6 +7,12 @@ const cors = require("cors");
 const helmet = require("helmet");
 const { checkPort, checkSSL, checkHeaders } = require("./checks");
 const { resolvePublicIps } = require("./net-guard");
+const { checkDnsSecurity } = require("./dns-security");
+const {
+  checkSensitiveFiles,
+  checkSecurityTxt,
+  checkFingerprint,
+} = require("./web-probes");
 
 // 1. Строгая проверка PUBLIC_ORIGIN (NEW-02)
 const envOrigin =
@@ -351,15 +357,18 @@ app.post("/api/scan", async (req, res) => {
       connectIp = resolvedIps[0];
     }
 
-    // Ограничиваем весь процесс сканирования 40 секундами: клиент ждёт 45 с,
+    // Ограничиваем весь процесс сканирования 60 секундами: клиент ждёт 65 с,
     // поэтому 5 с остаются на DNS, сеть и передачу ответа. Один веб-порт
-    // может занять до 31,5 с (TLS 10,5 + заголовки 21), а перебор трёх
-    // портов теоретически больше 40 с — такие цели всё равно не дают
-    // полезного отчёта и обрываются 504.
+    // может занять до 31,5 с (TLS 10,5 + заголовки 21), плюс DNS/файлы/
+    // security.txt/fingerprint; три «молчащих» порта по-прежнему обрываются 504.
     const scanResult = await withTimeout(
       async (signal) => {
         let connectIpToUse = connectIp;
         let openPorts = [];
+        // DNS/email-проверки не зависят от веб-портов и идут параллельно
+        // с перебором адресов/портов. Для IP и localhost модуль вернёт
+        // applicable:false, не обращаясь к резолверу.
+        const dnsPromise = checkDnsSecurity(hostname, { signal });
 
         // Перебираем IP, пока не найдем тот, у которого есть открытые порты (максимум 3)
         for (const ip of resolvedIps.slice(0, 3)) {
@@ -380,7 +389,14 @@ app.post("/api/scan", async (req, res) => {
         }
 
         if (openPorts.length === 0) {
-          return buildReport(hostname, [], { hasSSL: false }, { error: true });
+          const dns = await dnsPromise;
+          return buildReport(
+            hostname,
+            [],
+            { hasSSL: false },
+            { error: true },
+            { dns, files: null, securityTxt: null, fingerprint: null },
+          );
         }
 
         const availableWebPorts = [443, 80, 8080].filter((p) =>
@@ -388,17 +404,21 @@ app.post("/api/scan", async (req, res) => {
         );
 
         if (availableWebPorts.length === 0) {
+          const dns = await dnsPromise;
           return buildReport(
             hostname,
             openPorts,
             { hasSSL: false },
             { error: true },
+            { dns, files: null, securityTxt: null, fingerprint: null },
           );
         }
 
         // Пробуем веб-порты, пока не получим успешные заголовки
         let bestSsl = { hasSSL: false };
         let bestHeaders = { error: true };
+        let bestPort = availableWebPorts[0];
+        let bestPortTls = false;
 
         for (const wp of availableWebPorts) {
           // На 80 порту TLS не бывает, не тратим время и не пугаем клиента.
@@ -408,6 +428,7 @@ app.post("/api/scan", async (req, res) => {
               ? { hasSSL: false }
               : await checkSSL(connectIpToUse, wp, hostname, signal);
           if (wp === 8080 && ssl.error) ssl = { hasSSL: false };
+          if (wp === bestPort) bestPortTls = Boolean(ssl.hasSSL);
           if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
           const headers = await checkHeaders(
@@ -421,6 +442,8 @@ app.post("/api/scan", async (req, res) => {
 
           if (!headers.error) {
             bestHeaders = headers;
+            bestPort = wp;
+            bestPortTls = Boolean(ssl.hasSSL);
             if (!bestSsl.hasSSL && !bestSsl.error) bestSsl = ssl;
             break;
           } else if (wp === 443) {
@@ -428,9 +451,46 @@ app.post("/api/scan", async (req, res) => {
           }
         }
 
-        return buildReport(hostname, openPorts, bestSsl, bestHeaders);
+        // Все пробы идут на проверенный connectIp; hostname — только Host/SNI.
+        // TLS берём именно у bestPort: bestSsl может остаться от 443, пока
+        // заголовки успешно сняты с 80/8080.
+        const hasTls = bestPort !== 80 && bestPortTls;
+        const [dns, files, securityTxt, fingerprint] = await Promise.all([
+          dnsPromise,
+          checkSensitiveFiles(
+            connectIpToUse,
+            bestPort,
+            hostname,
+            hasTls,
+            signal,
+          ),
+          checkSecurityTxt(connectIpToUse, bestPort, hostname, hasTls, signal),
+          checkFingerprint(connectIpToUse, bestPort, hostname, hasTls, signal),
+        ]);
+        if (signal.aborted) throw new Error("SCAN_TIMEOUT");
+
+        // 200 OK на файл утечки — критическая находка Step 1; скоринг её
+        // пока не учитывает, но в отчёте она помечена явно.
+        const filesReport = files
+          ? {
+              ...files,
+              critical: Array.isArray(files.exposed)
+                ? files.exposed.map((path) => ({
+                    path,
+                    severity: "critical",
+                  }))
+                : [],
+            }
+          : files;
+
+        return buildReport(hostname, openPorts, bestSsl, bestHeaders, {
+          dns,
+          files: filesReport,
+          securityTxt,
+          fingerprint,
+        });
       },
-      40000,
+      60000,
       scanAbortController.signal,
     );
 
@@ -439,7 +499,7 @@ app.post("/api/scan", async (req, res) => {
   } catch (e) {
     if (res.writableEnded || scanAbortController.signal.aborted) return;
     if (e.message === "SCAN_TIMEOUT") {
-      console.error("[scan] Превышено время сканирования (40с)");
+      console.error("[scan] Превышено время сканирования (60с)");
       return res
         .status(504)
         .json({ error: "Сканирование заняло слишком много времени" });
@@ -454,14 +514,16 @@ app.post("/api/scan", async (req, res) => {
 });
 
 // 6. Хелпер для сборки ответа
-function buildReport(host, ports, ssl, headers) {
+// extra — данные Step 1 (dns/files/securityTxt/fingerprint); скоринг их пока
+// не использует, он по-прежнему считается только по ports/ssl/headers.
+function buildReport(host, ports, ssl, headers, extra = {}) {
   const { score, grade, findings } = calculateScore({
     host,
     ports,
     ssl,
     headers,
   });
-  return { host, ports, ssl, headers, score, grade, findings };
+  return { host, ports, ssl, headers, ...extra, score, grade, findings };
 }
 
 // Healthcheck для хостингов (Render, Railway и т.д.)

@@ -4,6 +4,11 @@ const net = require("net");
 const tls = require("tls");
 const https = require("https");
 const http = require("http");
+const {
+  parseSetCookie,
+  summarizeCookies,
+  analyzeSecurityHeaders,
+} = require("./header-analysis");
 
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
@@ -289,6 +294,9 @@ function checkHeaders(
 // Приводит заголовки к единому формату для фронтенда.
 // protocol — 'HTTP' или 'HTTPS', чтобы клиент видел реальную схему.
 function parseHeaders(h, protocol) {
+  const cookies = parseSetCookie(h["set-cookie"]);
+  const security = analyzeSecurityHeaders(h);
+
   return {
     protocol,
     server: h["server"] || "не указан",
@@ -296,7 +304,10 @@ function parseHeaders(h, protocol) {
     xframe: !!h["x-frame-options"],
     hsts: !!h["strict-transport-security"],
     xcontent: !!h["x-content-type-options"],
+    ...security,
+    cookies,
+    cookieSummary: summarizeCookies(cookies),
   };
 }
 
-module.exports = { checkPort, checkSSL, checkHeaders };
+module.exports = { checkPort, checkSSL, checkHeaders, parseHeaders };
