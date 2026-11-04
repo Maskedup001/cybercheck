@@ -1,5 +1,5 @@
 const API_URL = "/api";
-const TIMEOUT_MS = 45_000;
+const TIMEOUT_MS = 65_000;
 
 const SEVERITIES = ["high", "medium", "low"];
 
@@ -66,7 +66,7 @@ export async function scanTarget({ url, consent }) {
   } catch (error) {
     if (error.name === "AbortError") {
       throw new Error(
-        "Превышено время ожидания (45 сек). Попробуйте другой адрес.",
+        "Превышено время ожидания (65 сек). Попробуйте другой адрес.",
       );
     }
     throw error;
