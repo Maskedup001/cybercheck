@@ -105,14 +105,23 @@ const FILE_CHECKS = [
   },
 ];
 
-function isMissingDnsError(error) {
-  return !error || error === "ENODATA" || error === "ENOTFOUND";
+// ENODATA — «записи нет» и для apex, и для _dmarc. ENOTFOUND у apex-домена,
+// у которого уже разрешились A/AAAA, означает рассинхрон/split-horizon DNS,
+// а не доказательство отсутствия TXT/CAA, поэтому баллы за это не снимаются.
+const APEX_MISSING_ERRORS = new Set(["ENODATA"]);
+const SUBDOMAIN_MISSING_ERRORS = new Set(["ENODATA", "ENOTFOUND"]);
+
+function isMissingDnsError(error, missingErrors = SUBDOMAIN_MISSING_ERRORS) {
+  return !error || missingErrors.has(error);
 }
 
 // Ошибка резолвера (таймаут, SERVFAIL, abort) — не доказательство отсутствия
 // записи: баллы не отнимаем, находку не создаём.
-function isDnsUnavailable(section) {
-  return Boolean(section && section.error) && !isMissingDnsError(section.error);
+function isDnsUnavailable(section, missingErrors) {
+  return (
+    Boolean(section && section.error) &&
+    !isMissingDnsError(section.error, missingErrors)
+  );
 }
 
 function cookieSummaryFrom(headers) {
@@ -130,12 +139,14 @@ function cookieSummaryFrom(headers) {
   let secure = 0;
   let httpOnly = 0;
   let sameSite = 0;
+  let insecureNone = 0;
 
   for (const cookie of headers.cookies) {
     if (!cookie || typeof cookie !== "object") continue;
     if (cookie.secure) secure += 1;
     if (cookie.httpOnly) httpOnly += 1;
     if (cookie.sameSite) sameSite += 1;
+    if (cookie.sameSiteValue === "none" && !cookie.secure) insecureNone += 1;
   }
 
   return {
@@ -143,6 +154,7 @@ function cookieSummaryFrom(headers) {
     secure,
     httpOnly,
     sameSite,
+    insecureNone,
     missingSecure: total - secure,
     missingHttpOnly: total - httpOnly,
     missingSameSite: total - sameSite,
@@ -181,13 +193,22 @@ function exposedPaths(files) {
   return result;
 }
 
-function calculateScore(report = {}) {
+function calculateScore(report) {
+  // Чистая функция не должна бросать на мусорном входе: неизвестный отчёт
+  // (null, массив, строка) считается пустым объектом.
+  const input = report && typeof report === "object" ? report : {};
+
   const findings = [];
   let score = 0;
 
-  const ssl = report.ssl || {};
-  const h = report.headers || { error: true };
-  const ports = Array.isArray(report.ports) ? report.ports : [];
+  const ssl = input.ssl && typeof input.ssl === "object" ? input.ssl : {};
+  const h =
+    input.headers && typeof input.headers === "object"
+      ? input.headers
+      : { error: true };
+  const ports = (Array.isArray(input.ports) ? input.ports : []).filter(
+    (p) => p && typeof p === "object",
+  );
 
   const hasSSL = !!ssl.hasSSL && !!ssl.valid;
   const daysLeft = typeof ssl.daysLeft === "number" ? ssl.daysLeft : null;
@@ -203,6 +224,19 @@ function calculateScore(report = {}) {
   // --- TLS / сертификат -----------------------------------------------------
   if (hasSSL) {
     score += WEIGHTS.ssl;
+  } else if (ssl.error === "NO_WEB_PORT") {
+    // Ни один веб-порт не открыт: TLS не проверялся. Утверждать «SSL нет» и
+    // ставить потолок 30 здесь нельзя — это ложный вывод о недоступном хосте.
+    add({
+      id: "tls-not-checked",
+      title: "TLS не проверялся",
+      desc: "У цели не открыт ни один веб-порт (80/443/8080), поэтому TLS-соединение не устанавливалось. Это не значит, что HTTPS не настроен.",
+      severity: "medium",
+      weight: 0,
+      recommendation:
+        "Проверьте, что сайт отвечает по 80/443, и повторите скан.",
+      owasp: OWASP.crypto,
+    });
   } else if (ssl.error) {
     add({
       id: "ssl-error",
@@ -275,55 +309,85 @@ function calculateScore(report = {}) {
       owasp: OWASP.misconfig,
     });
   } else {
+    // Заголовок с небезопасным значением (HSTS: max-age=0, COOP: unsafe-none,
+    // Referrer-Policy: unsafe-url, XCTO: foo) — это «weak»: защита выключена,
+    // поэтому баллов он не даёт, но и формулировка «нет заголовка» неверна.
+    const headerFinding = (state, weight, options) => {
+      const weak = state === "weak";
+      add({
+        id: weak ? options.weakId : options.id,
+        title: weak ? options.weakTitle : options.title,
+        desc: weak ? options.weakDesc : options.desc,
+        severity: options.severity,
+        weight,
+        recommendation: options.recommendation,
+        owasp: OWASP.misconfig,
+      });
+    };
+
     if (h.hsts && hasSSL) {
       score += WEIGHTS.hsts;
     } else if (hasSSL) {
-      add({
+      headerFinding(h.hstsState, WEIGHTS.hsts, {
         id: "no-hsts",
+        weakId: "weak-hsts",
         title: "Нет HSTS",
+        weakTitle: "HSTS не защищает",
         desc: "Не включён Strict-Transport-Security — риск downgrade-атаки после первого визита.",
+        weakDesc:
+          "Strict-Transport-Security есть, но max-age=0 или отсутствует: браузер не запоминает HTTPS.",
         severity: "medium",
-        weight: WEIGHTS.hsts,
         recommendation: "Добавьте Strict-Transport-Security: max-age=31536000.",
-        owasp: OWASP.misconfig,
       });
     }
 
-    if (h.csp) score += WEIGHTS.csp;
-    else
-      add({
+    if (h.csp) {
+      score += WEIGHTS.csp;
+    } else {
+      headerFinding(h.cspState, WEIGHTS.csp, {
         id: "no-csp",
+        weakId: "weak-csp",
         title: "Нет CSP",
+        weakTitle: "CSP не ограничивает источники",
         desc: "Отсутствие Content-Security-Policy снижает защиту от XSS.",
+        weakDesc:
+          "Content-Security-Policy есть, но script-src/default-src не ограничены (wildcard или unsafe-inline).",
         severity: "high",
-        weight: WEIGHTS.csp,
         recommendation: "Добавьте CSP с ограничением script-src.",
-        owasp: OWASP.misconfig,
       });
+    }
 
-    if (h.xframe) score += WEIGHTS.xframe;
-    else
-      add({
+    if (h.xframe) {
+      score += WEIGHTS.xframe;
+    } else {
+      headerFinding(h.xframeState, WEIGHTS.xframe, {
         id: "no-xframe",
+        weakId: "weak-xframe",
         title: "Нет X-Frame-Options",
+        weakTitle: "X-Frame-Options не защищает",
         desc: "Страницу можно встроить во фрейм — риск кликджекинга.",
+        weakDesc:
+          "X-Frame-Options есть, но значение не DENY/SAMEORIGIN — встраивание не запрещено.",
         severity: "medium",
-        weight: WEIGHTS.xframe,
         recommendation: "Добавьте X-Frame-Options: DENY.",
-        owasp: OWASP.misconfig,
       });
+    }
 
-    if (h.xcontent) score += WEIGHTS.xcontent;
-    else
-      add({
+    if (h.xcontent) {
+      score += WEIGHTS.xcontent;
+    } else {
+      headerFinding(h.xcontentState, WEIGHTS.xcontent, {
         id: "no-xcontent",
+        weakId: "weak-xcontent",
         title: "Нет X-Content-Type-Options",
+        weakTitle: "X-Content-Type-Options не включён",
         desc: "Браузер может интерпретировать файлы неверно.",
+        weakDesc:
+          "X-Content-Type-Options есть, но значение не nosniff — MIME-sniffing не отключён.",
         severity: "medium",
-        weight: WEIGHTS.xcontent,
         recommendation: "Добавьте X-Content-Type-Options: nosniff.",
-        owasp: OWASP.misconfig,
       });
+    }
 
     if (/(?:^|[\s/])\d+(?:\.\d+)*/.test(typeof h.server === "string" ? h.server : "")) {
       add({
@@ -342,41 +406,47 @@ function calculateScore(report = {}) {
 
     // Дополнительные заголовки: undefined значит «не проверялось» — не
     // штрафуем старые/частичные отчёты, false значит «проверено и отсутствует».
-    const headerCheck = (value, weight, finding) => {
+    const headerCheck = (value, state, weight, options) => {
       if (value === undefined) return weight;
       if (value) return weight;
-      add({ ...finding, weight });
+      headerFinding(state, weight, options);
       return 0;
     };
 
-    score += headerCheck(h.referrerPolicy, WEIGHTS.referrer, {
+    score += headerCheck(h.referrerPolicy, h.referrerPolicyState, WEIGHTS.referrer, {
       id: "no-referrer-policy",
+      weakId: "weak-referrer-policy",
       title: "Нет Referrer-Policy",
+      weakTitle: "Referrer-Policy не защищает",
       desc: "Браузер может передавать полный URL во внешние ресурсы через Referer.",
+      weakDesc:
+        "Referrer-Policy задаёт unsafe-url или неизвестное значение — полный URL утекает во внешние ресурсы.",
       severity: "low",
-      weight: WEIGHTS.referrer,
       recommendation: "Добавьте Referrer-Policy: strict-origin-when-cross-origin.",
-      owasp: OWASP.misconfig,
     });
 
-    score += headerCheck(h.permissionsPolicy, WEIGHTS.permissions, {
+    score += headerCheck(h.permissionsPolicy, h.permissionsPolicyState, WEIGHTS.permissions, {
       id: "no-permissions-policy",
+      weakId: "no-permissions-policy",
       title: "Нет Permissions-Policy",
+      weakTitle: "Нет Permissions-Policy",
       desc: "Браузерные API (камера, микрофон, геолокация) не ограничены заголовком.",
+      weakDesc:
+        "Браузерные API (камера, микрофон, геолокация) не ограничены заголовком.",
       severity: "low",
-      weight: WEIGHTS.permissions,
       recommendation: "Добавьте Permissions-Policy и отключите ненужные API.",
-      owasp: OWASP.misconfig,
     });
 
-    score += headerCheck(h.coop, WEIGHTS.coop, {
+    score += headerCheck(h.coop, h.coopState, WEIGHTS.coop, {
       id: "no-coop",
+      weakId: "weak-coop",
       title: "Нет Cross-Origin-Opener-Policy",
+      weakTitle: "COOP не изолирует страницу",
       desc: "Страница не изолирована от cross-origin opener — возможны атаки через window.opener.",
+      weakDesc:
+        "Cross-Origin-Opener-Policy есть, но значение (например, unsafe-none) не изолирует opener.",
       severity: "medium",
-      weight: WEIGHTS.coop,
       recommendation: "Добавьте Cross-Origin-Opener-Policy: same-origin.",
-      owasp: OWASP.misconfig,
     });
 
     if (h.corsWildcard) {
@@ -399,9 +469,13 @@ function calculateScore(report = {}) {
       score +=
         WEIGHTS.cookieSecure + WEIGHTS.cookieHttpOnly + WEIGHTS.cookieSameSite;
     } else {
-      if (!hasSSL || cookieSummary.missingSecure === 0) {
+      // Secure имеет смысл только на подтверждённом HTTPS. На чистом HTTP
+      // этот флаг неприменим (как и в UI), а при ssl.error/невалидном
+      // сертификате отсутствие Secure — следствие сломанного TLS, за которое
+      // уже есть отдельная находка.
+      if (cookieSummary.missingSecure === 0) {
         score += WEIGHTS.cookieSecure;
-      } else {
+      } else if (hasSSL) {
         add({
           id: "cookie-no-secure",
           title: "Cookie без Secure",
@@ -410,6 +484,24 @@ function calculateScore(report = {}) {
           weight: WEIGHTS.cookieSecure,
           recommendation: "Добавьте флаг Secure всем cookie на HTTPS-сайте.",
           owasp: OWASP.crypto,
+        });
+      } else if (ssl.error || (ssl.hasSSL && !ssl.valid)) {
+        // Отдельный штраф не начисляем: причина уже в ssl-error/bad-ssl.
+      } else {
+        score += WEIGHTS.cookieSecure;
+      }
+
+      // SameSite=None без Secure браузеры отвергают: cookie просто не
+      // доедет, поэтому это отдельная находка, а не «флаг есть».
+      if (cookieSummary.insecureNone > 0) {
+        add({
+          id: "cookie-samesite-none-insecure",
+          title: "SameSite=None без Secure",
+          desc: "Cookie с SameSite=None не имеет флага Secure — современные браузеры такое cookie отвергают.",
+          severity: "medium",
+          weight: 0,
+          recommendation: "Добавьте Secure к cookie с SameSite=None.",
+          owasp: OWASP.misconfig,
         });
       }
 
@@ -475,15 +567,37 @@ function calculateScore(report = {}) {
   }
 
   // --- DNS / email ---------------------------------------------------------
-  const dns = report.dns;
+  const dns = input.dns;
   if (!dns || dns.applicable === false) {
     // Для IP/localhost проверки неприменимы, для старого отчёта их просто нет.
     score += WEIGHTS.spf + WEIGHTS.dmarc + WEIGHTS.caa;
   } else {
     const spf = dns.spf;
-    if (!spf || spf.present) {
+    if (!spf) {
       score += WEIGHTS.spf;
-    } else if (!isDnsUnavailable(spf)) {
+    } else if (spf.multiple) {
+      add({
+        id: "spf-multiple",
+        title: "Несколько SPF-записей",
+        desc: "В TXT-записях домена больше одного v=spf1. По RFC 7208 это permerror: проверка SPF не проходит.",
+        severity: "medium",
+        weight: WEIGHTS.spf,
+        recommendation: "Оставьте ровно одну TXT-запись v=spf1 и перенесите в неё все include.",
+        owasp: OWASP.auth,
+      });
+    } else if (spf.present && spf.weak) {
+      add({
+        id: "spf-weak",
+        title: "Слабый SPF",
+        desc: "SPF разрешает отправку писем от имени домена всем (+all/?all) или не содержит механизмов.",
+        severity: "medium",
+        weight: WEIGHTS.spf,
+        recommendation: "Замените +all на -all и перечислите только доверенных отправителей.",
+        owasp: OWASP.auth,
+      });
+    } else if (spf.present) {
+      score += WEIGHTS.spf;
+    } else if (!isDnsUnavailable(spf, APEX_MISSING_ERRORS)) {
       add({
         id: "spf-missing",
         title: "Нет SPF",
@@ -500,6 +614,16 @@ function calculateScore(report = {}) {
     const dmarc = dns.dmarc;
     if (!dmarc) {
       score += WEIGHTS.dmarc;
+    } else if (dmarc.multiple) {
+      add({
+        id: "dmarc-invalid",
+        title: "Несколько DMARC-записей",
+        desc: "В _dmarc опубликовано больше одной v=DMARC1. По RFC 7489 такие записи не применяются: политика не действует.",
+        severity: "medium",
+        weight: WEIGHTS.dmarc,
+        recommendation: "Оставьте ровно одну _dmarc-запись с политикой p=quarantine или p=reject.",
+        owasp: OWASP.auth,
+      });
     } else if (dmarc.present) {
       const policy =
         typeof dmarc.policy === "string" ? dmarc.policy.toLowerCase() : null;
@@ -541,9 +665,15 @@ function calculateScore(report = {}) {
     }
 
     const caa = dns.caa;
-    if (!caa || caa.present) {
+    // iodef-запись сообщает, куда слать отчёты, но не ограничивает выпуск
+    // сертификатов: ограничением считаем только issue/issuewild.
+    const caaRestrictive =
+      !caa ||
+      (caa.restrictive === undefined ? Boolean(caa.present) : caa.restrictive);
+
+    if (caaRestrictive) {
       score += WEIGHTS.caa;
-    } else if (!isDnsUnavailable(caa)) {
+    } else if (!isDnsUnavailable(caa, APEX_MISSING_ERRORS)) {
       add({
         id: "caa-missing",
         title: "Нет CAA",
@@ -559,7 +689,7 @@ function calculateScore(report = {}) {
   }
 
   // --- Открытые файлы ------------------------------------------------------
-  const files = report.files;
+  const files = input.files;
   let filesCap = 100;
 
   if (!files) {
@@ -567,6 +697,18 @@ function calculateScore(report = {}) {
       WEIGHTS.env + WEIGHTS.git + WEIGHTS.backup + WEIGHTS.dsStore;
   } else {
     const exposed = exposedPaths(files);
+
+    // HEAD-проба, которая упала (WAF/таймаут), ничего не доказывает:
+    // за такой путь баллы не начисляем, но и находку не создаём.
+    const failedProbes = new Set();
+    if (Array.isArray(files.results)) {
+      for (const item of files.results) {
+        if (item && item.error && typeof item.path === "string") {
+          failedProbes.add(item.path);
+        }
+      }
+    }
+
     for (const check of FILE_CHECKS) {
       if (exposed.has(check.path)) {
         add({
@@ -581,6 +723,8 @@ function calculateScore(report = {}) {
         if (Number.isFinite(check.cap)) {
           filesCap = Math.min(filesCap, check.cap);
         }
+      } else if (failedProbes.has(check.path)) {
+        // Неизвестно, открыт ли путь: оставляем статус «не проверено».
       } else {
         score += check.weight;
       }
@@ -588,7 +732,7 @@ function calculateScore(report = {}) {
   }
 
   // --- security.txt --------------------------------------------------------
-  const securityTxt = report.securityTxt;
+  const securityTxt = input.securityTxt;
   if (!securityTxt || securityTxt.present || securityTxt.status !== 404) {
     score += WEIGHTS.securityTxt;
   } else {
@@ -604,7 +748,7 @@ function calculateScore(report = {}) {
   }
 
   // --- Fingerprint (информационно, без баллов) -----------------------------
-  const fingerprint = report.fingerprint;
+  const fingerprint = input.fingerprint;
   if (fingerprint && fingerprint.waf && fingerprint.waf.name) {
     add({
       id: "waf-detected",
@@ -654,7 +798,16 @@ function calculateScore(report = {}) {
   else if (score >= 40) grade = "D";
   else if (score >= 20) grade = "E";
 
-  findings.sort((a, b) => b.weight - a.weight);
+  // Порядок в отчёте: сначала severity (high → medium → low), внутри уровня —
+  // по весу. Только по весу low-находка могла стоять выше medium.
+  const SEVERITY_RANK = { high: 0, medium: 1, low: 2 };
+  findings.sort((a, b) => {
+    const rank =
+      (SEVERITY_RANK[a.severity] ?? 3) - (SEVERITY_RANK[b.severity] ?? 3);
+    if (rank !== 0) return rank;
+    return b.weight - a.weight;
+  });
+
   return { score, grade, findings };
 }
 
