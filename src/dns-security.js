@@ -31,9 +31,26 @@ function joinTxtRecords(records) {
   });
 }
 
+// SPF, который разрешает отправку всем (+all / ?all) или не содержит
+// механизмов, защитой не является: по RFC 7208 такой домен либо открыт для
+// подделки, либо получает permerror. -all и ~all считаются рабочими.
+function spfIsWeak(record) {
+  const mechanisms = String(record).trim().split(/\s+/).slice(1);
+  if (mechanisms.length === 0) return true;
+
+  for (const mechanism of mechanisms) {
+    if (!/^[+\-~?]?all$/i.test(mechanism)) continue;
+    const qualifier = /^[+\-~?]/.test(mechanism) ? mechanism[0] : "+";
+    return qualifier === "+" || qualifier === "?";
+  }
+
+  return false;
+}
+
 // Ищет SPF-запись среди TXT-рекордов.
 // SPF начинается с "v=spf1" (без учёта регистра), после версии должен быть
 // пробел или конец строки — так "v=spf10" не считается SPF.
+// multiple — несколько SPF-записей: по RFC 7208 это permerror, а не защита.
 function parseSpfTxt(records) {
   const txtRecords = joinTxtRecords(records);
   const spfRecords = txtRecords.filter((txt) =>
@@ -41,24 +58,31 @@ function parseSpfTxt(records) {
   );
 
   if (spfRecords.length === 0) {
-    return { present: false, record: null, multiple: false };
+    return { present: false, record: null, multiple: false, weak: false };
   }
+
+  const record = spfRecords[0];
 
   return {
     present: true,
-    record: spfRecords[0],
+    record,
     multiple: spfRecords.length > 1,
+    weak: spfIsWeak(record),
   };
 }
 
 // Ищет DMARC-запись и разбирает её теги.
 // Теги разделены ';', значения могут содержать пробелы, поэтому ключ и
 // значение обрезаются. Политика p приводится к нижнему регистру.
+// multiple — несколько DMARC-записей: по RFC 7489 они не применяются,
+// поэтому такая запись не должна давать баллов.
 function parseDmarcTxt(records) {
   const txtRecords = joinTxtRecords(records);
-  const record = txtRecords.find((txt) =>
+  const matches = txtRecords.filter((txt) =>
     /^v=DMARC1(?:;|\s|$)/i.test(txt),
   );
+  const multiple = matches.length > 1;
+  const record = matches[0];
 
   if (!record) {
     return {
@@ -67,6 +91,7 @@ function parseDmarcTxt(records) {
       policy: null,
       strict: false,
       weak: false,
+      multiple: false,
       error: null,
     };
   }
@@ -96,26 +121,37 @@ function parseDmarcTxt(records) {
     policy: validPolicy,
     strict: validPolicy === "reject" || validPolicy === "quarantine",
     weak: validPolicy === "none",
+    multiple,
     error: null,
   };
 }
 
 // Приводит ответ dns.resolveCaa к единому виду.
 // Сами CAA-записи (critical/issue/issuewild/iodef) отдаём как есть.
+// restrictive — есть issue/issuewild: только они ограничивают выпуск
+// сертификатов. Запись iodef — это адрес для отчётов, а не ограничение.
 function parseCaaRecords(records) {
   if (!Array.isArray(records)) {
-    return { present: false, records: [], error: null };
+    return { present: false, records: [], restrictive: false, error: null };
   }
+
+  const restrictive = records.some(
+    (record) =>
+      record &&
+      typeof record === "object" &&
+      (record.issue !== undefined || record.issuewild !== undefined),
+  );
 
   return {
     present: records.length > 0,
     records,
+    restrictive,
     error: null,
   };
 }
 
 function emptySpf(error = null) {
-  return { present: false, record: null, multiple: false, error };
+  return { present: false, record: null, multiple: false, weak: false, error };
 }
 
 function emptyDmarc(error = null) {
@@ -125,12 +161,13 @@ function emptyDmarc(error = null) {
     policy: null,
     strict: false,
     weak: false,
+    multiple: false,
     error,
   };
 }
 
 function emptyCaa(error = null) {
-  return { present: false, records: [], error };
+  return { present: false, records: [], restrictive: false, error };
 }
 
 // Для известных DNS-кодов отдаём код, для остальных — текст ошибки.
