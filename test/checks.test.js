@@ -29,11 +29,19 @@ test("checkPort: открытый порт определяется", async () =
 
 const { checkHeaders } = require("../src/checks");
 
-test("checkHeaders: находит заголовки безопасности", async () => {
+test("checkHeaders: находит заголовки, cookie-флаги и CORS", async () => {
   const http = require("http");
   const server = http.createServer((req, res) => {
     res.setHeader("Content-Security-Policy", "default-src 'self'");
     res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("Permissions-Policy", "camera=()");
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Set-Cookie", [
+      "session=abc; Secure; HttpOnly; SameSite=Strict",
+      "theme=dark; SameSite=Lax",
+    ]);
     res.end("ok");
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -43,6 +51,29 @@ test("checkHeaders: находит заголовки безопасности",
   assert.strictEqual(result.csp, true);
   assert.strictEqual(result.xframe, true);
   assert.strictEqual(result.hsts, false); // Не установлен
+  assert.strictEqual(result.referrerPolicy, true);
+  assert.strictEqual(result.permissionsPolicy, true);
+  assert.strictEqual(result.coop, true);
+  assert.strictEqual(result.corsWildcard, true);
+  assert.strictEqual(result.accessControlAllowOrigin, "*");
+
+  assert.strictEqual(result.cookies.length, 2);
+  assert.deepStrictEqual(result.cookies[0], {
+    name: "session",
+    secure: true,
+    httpOnly: true,
+    sameSite: true,
+    sameSiteValue: "strict",
+  });
+  assert.deepStrictEqual(result.cookieSummary, {
+    total: 2,
+    secure: 1,
+    httpOnly: 1,
+    sameSite: 2,
+    missingSecure: 1,
+    missingHttpOnly: 1,
+    missingSameSite: 0,
+  });
 
   await new Promise((resolve) => server.close(resolve));
 });
