@@ -38,6 +38,11 @@ const PUBLIC_ORIGIN = parsedOrigin.origin;
 // должны быть абсолютными, а origin известен только здесь.
 const PUBLIC_DIR = path.join(__dirname, "../public");
 const PAGES = ["index.html", "legal.html", "privacy.html"];
+const CRITICAL_FILE_PATHS = new Set([
+  "/.env",
+  "/.git/config",
+  "/backup.zip",
+]);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const pageCache = new Map();
 
@@ -138,7 +143,7 @@ app.use(cors({ origin: [PUBLIC_ORIGIN], methods: ["POST"], maxAge: 600 }));
 
 // Динамика не кэшируется, статика — наоборот: браузер перепроверяет её
 // по ETag и получает 304 вместо повторной загрузки двух десятков файлов
-// (17 CSS через @import + 3 JS-модуля).
+// (16 CSS через @import + 4 JS-модуля).
 function noStore(req, res, next) {
   res.set("Cache-Control", "no-store");
   next();
@@ -326,43 +331,43 @@ app.post("/api/scan", async (req, res) => {
   );
 
   try {
-    let connectIp;
-    let resolvedIps = []; // <--- ВЫНЕСЕНО НАВЕРХ, ЧТОБЫ БЫЛО ВИДНО В withTimeout
-
-    if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
-      connectIp = hostname;
-      resolvedIps = [hostname]; // <-- Заполняем для демо-режима
-    } else {
-      try {
-        resolvedIps = await resolveWithTimeout(
-          hostname,
-          5000,
-          scanAbortController.signal,
-        );
-      } catch (e) {
-        if (e.message === "SCAN_ABORTED" || scanAbortController.signal.aborted) {
-          return;
-        }
-        if (e.message === "DNS_TIMEOUT") {
-          return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
-        }
-        return res.status(400).json({ error: "Не удалось разрешить адрес" });
-      }
-
-      if (resolvedIps.length === 0) {
-        return res
-          .status(400)
-          .json({ error: "Сканирование внутренних адресов запрещено" });
-      }
-      connectIp = resolvedIps[0];
-    }
-
-    // Ограничиваем весь процесс сканирования 60 секундами: клиент ждёт 65 с,
-    // поэтому 5 с остаются на DNS, сеть и передачу ответа. Один веб-порт
-    // может занять до 31,5 с (TLS 10,5 + заголовки 21), плюс DNS/файлы/
-    // security.txt/fingerprint; три «молчащих» порта по-прежнему обрываются 504.
+    // DNS-разрешение входит в общий 60-секундный бюджет: клиент ждёт 65 с,
+    // поэтому 5 с остаются на сеть и передачу ответа. Один веб-порт может
+    // занять до 34,5 с (TLS 13,5 + заголовки 21), плюс файлы/security.txt/
+    // fingerprint; три «молчащих» порта по-прежнему обрываются 504.
     const scanResult = await withTimeout(
       async (signal) => {
+        let connectIp;
+        let resolvedIps = [];
+
+        if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
+          connectIp = hostname;
+          resolvedIps = [hostname];
+        } else {
+          try {
+            resolvedIps = await resolveWithTimeout(hostname, 5000, signal);
+          } catch (e) {
+            if (e.message === "SCAN_ABORTED" || signal.aborted) {
+              throw new Error("SCAN_TIMEOUT");
+            }
+            if (e.message === "DNS_TIMEOUT") {
+              const err = new Error("DNS_TIMEOUT");
+              err.code = "DNS_TIMEOUT";
+              throw err;
+            }
+            const err = new Error("DNS_RESOLVE_FAILED");
+            err.code = "DNS_RESOLVE_FAILED";
+            throw err;
+          }
+
+          if (resolvedIps.length === 0) {
+            const err = new Error("PRIVATE_ADDRESS");
+            err.code = "PRIVATE_ADDRESS";
+            throw err;
+          }
+          connectIp = resolvedIps[0];
+        }
+
         let connectIpToUse = connectIp;
         let openPorts = [];
         // DNS/email-проверки не зависят от веб-портов и идут параллельно
@@ -469,16 +474,15 @@ app.post("/api/scan", async (req, res) => {
         ]);
         if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
-        // 200 OK на файл утечки — критическая находка Step 1; скоринг её
-        // пока не учитывает, но в отчёте она помечена явно.
+        // 200 OK на файл утечки — критическая находка Step 1. /.DS_Store
+        // остаётся в exposed, но не попадает в critical: это low-риск.
         const filesReport = files
           ? {
               ...files,
               critical: Array.isArray(files.exposed)
-                ? files.exposed.map((path) => ({
-                    path,
-                    severity: "critical",
-                  }))
+                ? files.exposed
+                    .filter((path) => CRITICAL_FILE_PATHS.has(path))
+                    .map((path) => ({ path, severity: "critical" }))
                 : [],
             }
           : files;
@@ -498,6 +502,17 @@ app.post("/api/scan", async (req, res) => {
     res.json(scanResult);
   } catch (e) {
     if (res.writableEnded || scanAbortController.signal.aborted) return;
+    if (e.code === "DNS_TIMEOUT") {
+      return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
+    }
+    if (e.code === "DNS_RESOLVE_FAILED") {
+      return res.status(400).json({ error: "Не удалось разрешить адрес" });
+    }
+    if (e.code === "PRIVATE_ADDRESS") {
+      return res
+        .status(400)
+        .json({ error: "Сканирование внутренних адресов запрещено" });
+    }
     if (e.message === "SCAN_TIMEOUT") {
       console.error("[scan] Превышено время сканирования (60с)");
       return res
@@ -514,14 +529,20 @@ app.post("/api/scan", async (req, res) => {
 });
 
 // 6. Хелпер для сборки ответа
-// extra — данные Step 1 (dns/files/securityTxt/fingerprint); скоринг их пока
-// не использует, он по-прежнему считается только по ports/ssl/headers.
+// extra — данные Step 1 (dns/files/securityTxt/fingerprint). Они входят в
+// calculateScore: иначе карточки показывали бы новые проверки, а оценка
+// считалась бы только по ports/ssl/headers.
 function buildReport(host, ports, ssl, headers, extra = {}) {
+  const { dns, files, securityTxt, fingerprint } = extra;
   const { score, grade, findings } = calculateScore({
     host,
     ports,
     ssl,
     headers,
+    dns,
+    files,
+    securityTxt,
+    fingerprint,
   });
   return { host, ports, ssl, headers, ...extra, score, grade, findings };
 }

@@ -24,6 +24,12 @@ const SEVERITY = {
 const PORT_TONES = { 80: "ok", 443: "ok", 22: "bad", 3306: "bad", 8080: "warn" };
 const PORT_LABELS = { ok: "открыт", bad: "опасный", warn: "риск" };
 
+const CRITICAL_FILE_PATHS = new Set([
+  "/.env",
+  "/.git/config",
+  "/backup.zip",
+]);
+
 const TECH_LABELS = {
   cloudflare: "Cloudflare",
   sucuri: "Sucuri",
@@ -616,11 +622,26 @@ function createTechCard(fingerprint) {
   return createCard("Информация о технологиях", rows, note);
 }
 
-function createFilesCard(files) {
+function securityTxtValue(securityTxt) {
+  if (!securityTxt || typeof securityTxt !== "object") {
+    return createMuted("н/д");
+  }
+  if (securityTxt.present) return createBadge("ok", "есть");
+  if (securityTxt.blocked) return createBadge("warn", "403");
+  if (securityTxt.error) return createMuted("Не удалось проверить");
+  if (securityTxt.status === 404) return createBadge("bad", "нет");
+  return createMuted("н/д");
+}
+
+function createFilesCard(files, securityTxt) {
+  const rows = [
+    { label: "security.txt", value: securityTxtValue(securityTxt) },
+  ];
+
   if (!files || typeof files !== "object") {
     const card = createCard(
       "Открытые файлы",
-      [],
+      rows,
       "Не удалось проверить: данные HEAD-проб не получены.",
     );
     card.classList.add("detail--files");
@@ -634,15 +655,18 @@ function createFilesCard(files) {
       blocked > 0
         ? `Открытых файлов не найдено; ${blocked} путей заблокировано (403/WAF).`
         : "Открытых файлов не найдено.";
-    const card = createCard("Открытые файлы", [], note);
+    const card = createCard("Открытые файлы", rows, note);
     card.classList.add("detail--files");
     return card;
   }
 
+  const hasCritical = exposed.some((path) => CRITICAL_FILE_PATHS.has(path));
   const card = createCard(
     "Открытые файлы",
-    [],
-    "Найдены файлы, доступные без авторизации. Это критично.",
+    rows,
+    hasCritical
+      ? "Найдены файлы, доступные без авторизации. Это критично."
+      : "Найден /.DS_Store: он раскрывает структуру каталогов, но это низкий риск.",
   );
   card.classList.add("detail--files");
 
@@ -651,6 +675,7 @@ function createFilesCard(files) {
   list.setAttribute("role", "list");
 
   for (const path of exposed) {
+    const critical = CRITICAL_FILE_PATHS.has(path);
     const item = document.createElement("li");
     item.className = "detail__file-item";
 
@@ -658,7 +683,12 @@ function createFilesCard(files) {
     pathNode.className = "detail__file-path";
     pathNode.textContent = path;
 
-    item.append(pathNode, createBadge("bad", "Критично"));
+    item.append(
+      pathNode,
+      critical
+        ? createBadge("bad", "Критично")
+        : createBadge("muted", "Низкий риск"),
+    );
     list.append(item);
   }
 
@@ -683,7 +713,7 @@ function createDetails(report) {
     createMailCard(report.dns),
     createCookieCard(report.headers),
     createTechCard(report.fingerprint),
-    createFilesCard(report.files),
+    createFilesCard(report.files, report.securityTxt),
   );
 
   section.append(title, grid);

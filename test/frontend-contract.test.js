@@ -70,6 +70,7 @@ test("render-result.js содержит новые карточки, OWASP-бе�
     "createCookieCard",
     "createTechCard",
     "createFilesCard",
+    "securityTxtValue",
     "finding__owasp",
     "detail__file-item",
     "files.critical",
