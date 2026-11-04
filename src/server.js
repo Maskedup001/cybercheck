@@ -9,10 +9,28 @@ const { checkPort, checkSSL, checkHeaders } = require("./checks");
 const { resolvePublicIps } = require("./net-guard");
 const { checkDnsSecurity } = require("./dns-security");
 const {
+  parseTarget,
+  rateKey,
+  clampTimeout,
+  effectiveHasTls,
+  isHtmlRequestPath,
+} = require("./scan-helpers");
+const {
   checkSensitiveFiles,
   checkSecurityTxt,
   checkFingerprint,
 } = require("./web-probes");
+const { CRITICAL_FILE_PATHS } = require("./file-paths");
+
+// Общий бюджет одного скана. Клиент ждёт 65 с, поэтому 5 с остаются на
+// сеть и передачу ответа.
+const SCAN_BUDGET_MS = 60_000;
+const DNS_BUDGET_MS = 5000;
+const PORT_TIMEOUT_MS = 3000;
+const TLS_TIMEOUT_MS = 5000;
+const HEADERS_TIMEOUT_MS = 5000;
+const DNS_SECURITY_TIMEOUT_MS = 3000;
+const PROBE_TIMEOUT_MS = 2000;
 
 // 1. Строгая проверка PUBLIC_ORIGIN (NEW-02)
 const envOrigin =
@@ -38,11 +56,6 @@ const PUBLIC_ORIGIN = parsedOrigin.origin;
 // должны быть абсолютными, а origin известен только здесь.
 const PUBLIC_DIR = path.join(__dirname, "../public");
 const PAGES = ["index.html", "legal.html", "privacy.html"];
-const CRITICAL_FILE_PATHS = new Set([
-  "/.env",
-  "/.git/config",
-  "/backup.zip",
-]);
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const pageCache = new Map();
 
@@ -65,12 +78,12 @@ if (IS_PRODUCTION) {
   for (const name of PAGES) pageHtml(name);
 }
 
-async function resolveWithTimeout(hostname, ms = 5000, signal) {
+async function resolveWithTimeout(hostname, ms = DNS_BUDGET_MS, signal) {
   let timer;
   let onAbort;
   try {
     const attempts = [
-      resolvePublicIps(hostname),
+      resolvePublicIps(hostname, { timeoutMs: ms }),
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error("DNS_TIMEOUT")), ms);
       }),
@@ -103,10 +116,16 @@ const app = express();
 
 // Trust proxy: только целое 0..10. 0 — не доверять прокси, 1 — Render.
 // Верхняя граница не даёт выставить «доверять всей цепочке» числом вроде 1000.
+// Number(" 1 ") или Number("0x1") давали неожиданный результат, поэтому
+// принимаем только строку из цифр.
 const trustProxyEnv = process.env.TRUST_PROXY;
 let TRUST_PROXY = 0;
 if (trustProxyEnv) {
-  TRUST_PROXY = Number(trustProxyEnv);
+  if (!/^\d+$/.test(trustProxyEnv.trim())) {
+    console.error("ОШИБКА: TRUST_PROXY должен быть целым числом от 0 до 10");
+    process.exit(1);
+  }
+  TRUST_PROXY = Number(trustProxyEnv.trim());
   if (
     !Number.isInteger(TRUST_PROXY) ||
     TRUST_PROXY < 0 ||
@@ -132,6 +151,9 @@ app.use(
         "object-src": ["'none'"],
         "frame-ancestors": ["'none'"],
         "base-uri": ["'self'"],
+        // На dev-стенде по LAN-адресу директива апгрейдит ассеты на HTTPS
+        // и ломает отладку: в продакшене она остаётся.
+        "upgrade-insecure-requests": IS_PRODUCTION ? [] : null,
       },
     },
     xFrameOptions: { action: "deny" },
@@ -171,7 +193,18 @@ app.get("/favicon.ico", (req, res) => res.redirect(301, "/favicon.svg"));
 
 app.use("/api", noStore);
 
-app.use(express.static(path.join(__dirname, "../public")));
+// Статика не должна отдавать HTML-шаблоны: /%69ndex.html и /./index.html не
+// совпадают с точными роутами выше, но express.static нормализует путь и
+// отдал бы сырой файл с незаполненным __BASE_URL__ (сломанные canonical/
+// og:url). HTML отдаётся только через pageHtml.
+app.use((req, res, next) => {
+  if (!isHtmlRequestPath(req.path)) return next();
+  res.status(404);
+  if (req.path.startsWith("/api/")) return res.json({ error: "Не найдено" });
+  return res.type("text").send("Не найдено");
+});
+
+app.use(express.static(path.join(__dirname, "../public"), { index: false }));
 
 // 2. Rate Limit с LRU-вытеснением (NEW-04)
 const lastScan = new Map();
@@ -184,18 +217,11 @@ const MAX_KEYS = 10_000;
 const MAX_CONCURRENT_SCANS = 25;
 let activeScans = 0;
 
-function rateKey(ip) {
-  if (!ip) return "unknown";
-  const v4 = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (v4) return v4[1];
-  if (net.isIPv4(ip)) return ip;
-  if (net.isIPv6(ip)) {
-    const [head] = ip.split("::");
-    const parts = head.split(":").slice(0, 4);
-    return parts.join(":") + "::/64";
-  }
-  return "unknown"; // NEW-01: невалидный IP не создаёт свой бакет
-}
+// Сколько сканов одновременно идёт с одного ключа: 60-секундный скан,
+// запускаемый каждые 10 секунд, иначе копил бы до шести параллельных
+// соединений с одного адреса.
+const MAX_CONCURRENT_PER_KEY = 1;
+const activeByKey = new Map();
 
 function remember(key, now) {
   if (lastScan.has(key)) {
@@ -206,13 +232,14 @@ function remember(key, now) {
   lastScan.set(key, now);
 }
 
+// Кулдаун считается от завершения предыдущего скана: иначе он тикал, пока
+// скан ещё шёл, и один IP мог держать несколько параллельных проверок.
 function checkCooldown(key) {
   const now = Date.now();
   const last = lastScan.get(key) || 0;
   if (now - last < COOLDOWN_MS) {
     return Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
   }
-  remember(key, now);
   return 0;
 }
 
@@ -247,8 +274,10 @@ function withTimeout(factory, ms, externalSignal) {
 app.post("/api/scan", async (req, res) => {
   const ip = req.ip;
 
-  // 3. Сначала валидация (NEW-03), чтобы мусорные запросы не жгли лимит
-  const { url, consent, consentTimestamp } = req.body;
+  // 3. Сначала валидация (NEW-03), чтобы мусорные запросы не жгли лимит.
+  // req.body может быть undefined (не-JSON Content-Type): destructuring
+  // упал бы 500 вместо понятного 400.
+  const { url, consent, consentTimestamp } = req.body || {};
 
   if (typeof url !== "string" || url.length === 0 || url.length > 2048) {
     return res.status(400).json({ error: "Некорректный адрес" });
@@ -269,16 +298,17 @@ app.post("/api/scan", async (req, res) => {
       .json({ error: "Подтверждение устарело, обнови страницу" });
   }
 
-  let parsed;
-  try {
-    parsed = new URL(url.includes("://") ? url : `http://${url}`);
-  } catch {
+  // Схема определяется по началу строки: поиск "://" где угодно ломал
+  // валидный ввод вида "example.com/?next=https://x".
+  const parsed = parseTarget(url);
+  if (!parsed) {
+    const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(url.trim());
+    if (scheme && !/^https?$/i.test(scheme[1])) {
+      return res
+        .status(400)
+        .json({ error: "Поддерживаются только http и https" });
+    }
     return res.status(400).json({ error: "Некорректный адрес" });
-  }
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    return res
-      .status(400)
-      .json({ error: "Поддерживаются только http и https" });
   }
 
   const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
@@ -304,7 +334,8 @@ app.post("/api/scan", async (req, res) => {
   }
 
   // 4. Лимит частоты срабатывает ТОЛЬКО для валидных запросов
-  const wait = checkCooldown(rateKey(ip));
+  const key = rateKey(ip);
+  const wait = checkCooldown(key);
   if (wait > 0) {
     res.set("Retry-After", String(wait));
     return res
@@ -312,7 +343,15 @@ app.post("/api/scan", async (req, res) => {
       .json({ error: `Подожди ${wait} сек. перед следующим сканом` });
   }
 
+  if ((activeByKey.get(key) || 0) >= MAX_CONCURRENT_PER_KEY) {
+    res.set("Retry-After", "10");
+    return res.status(429).json({
+      error: "С этого адреса уже идёт сканирование, дождись результата",
+    });
+  }
+
   activeScans += 1;
+  activeByKey.set(key, (activeByKey.get(key) || 0) + 1);
 
   // Обрабатываем обрыв соединения клиентом:
   // если клиент ушёл, прерываем скан, чтобы не держать сокеты.
@@ -331,21 +370,30 @@ app.post("/api/scan", async (req, res) => {
   );
 
   try {
-    // DNS-разрешение входит в общий 60-секундный бюджет: клиент ждёт 65 с,
-    // поэтому 5 с остаются на сеть и передачу ответа. Один веб-порт может
-    // занять до 34,5 с (TLS 13,5 + заголовки 21), плюс файлы/security.txt/
-    // fingerprint; три «молчащих» порта по-прежнему обрываются 504.
+    // Один дедлайн на весь скан: каждый этап получает только остаток
+    // бюджета. Иначе сумма независимых таймаутов (DNS 5 + порты 19,5 +
+    // TLS 13,5 + заголовки 21 + пробы) превышала 60 с, и валидная медленная
+    // цель обрывалась 504, не отдав результат.
+    const deadline = Date.now() + SCAN_BUDGET_MS;
+    const budget = (ms) => clampTimeout(ms, deadline);
+
     const scanResult = await withTimeout(
       async (signal) => {
         let connectIp;
         let resolvedIps = [];
 
         if (DEMO_MODE && (hostname === "localhost" || hostname === "127.0.0.1")) {
-          connectIp = hostname;
-          resolvedIps = [hostname];
+          // connectIp должен быть литеральным IP: request() fail-closed
+          // отказывается работать с именем хоста (SSRF-инвариант).
+          connectIp = "127.0.0.1";
+          resolvedIps = [connectIp];
         } else {
           try {
-            resolvedIps = await resolveWithTimeout(hostname, 5000, signal);
+            resolvedIps = await resolveWithTimeout(
+              hostname,
+              budget(DNS_BUDGET_MS),
+              signal,
+            );
           } catch (e) {
             if (e.message === "SCAN_ABORTED" || signal.aborted) {
               throw new Error("SCAN_TIMEOUT");
@@ -373,13 +421,16 @@ app.post("/api/scan", async (req, res) => {
         // DNS/email-проверки не зависят от веб-портов и идут параллельно
         // с перебором адресов/портов. Для IP и localhost модуль вернёт
         // applicable:false, не обращаясь к резолверу.
-        const dnsPromise = checkDnsSecurity(hostname, { signal });
+        const dnsPromise = checkDnsSecurity(hostname, {
+          signal,
+          timeoutMs: budget(DNS_SECURITY_TIMEOUT_MS),
+        });
 
         // Перебираем IP, пока не найдем тот, у которого есть открытые порты (максимум 3)
         for (const ip of resolvedIps.slice(0, 3)) {
           const ports = await Promise.all(
             [80, 443, 22, 3306, 8080].map((p) =>
-              checkPort(ip, p, 3000, 1, signal),
+              checkPort(ip, p, budget(PORT_TIMEOUT_MS), 1, signal),
             ),
           );
           if (signal.aborted) throw new Error("SCAN_TIMEOUT");
@@ -398,7 +449,10 @@ app.post("/api/scan", async (req, res) => {
           return buildReport(
             hostname,
             [],
-            { hasSSL: false },
+            // NO_WEB_PORT: TLS не проверялся. Отдавать {hasSSL:false} без
+            // ошибки нельзя — scoring делал бы вывод «SSL не настроен» и
+            // потолок 30 у хоста, который просто не отвечает.
+            { hasSSL: false, error: "NO_WEB_PORT" },
             { error: true },
             { dns, files: null, securityTxt: null, fingerprint: null },
           );
@@ -413,7 +467,7 @@ app.post("/api/scan", async (req, res) => {
           return buildReport(
             hostname,
             openPorts,
-            { hasSSL: false },
+            { hasSSL: false, error: "NO_WEB_PORT" },
             { error: true },
             { dns, files: null, securityTxt: null, fingerprint: null },
           );
@@ -431,7 +485,14 @@ app.post("/api/scan", async (req, res) => {
           let ssl =
             wp === 80
               ? { hasSSL: false }
-              : await checkSSL(connectIpToUse, wp, hostname, signal);
+              : await checkSSL(
+                  connectIpToUse,
+                  wp,
+                  hostname,
+                  signal,
+                  1,
+                  budget(TLS_TIMEOUT_MS),
+                );
           if (wp === 8080 && ssl.error) ssl = { hasSSL: false };
           if (wp === bestPort) bestPortTls = Boolean(ssl.hasSSL);
           if (signal.aborted) throw new Error("SCAN_TIMEOUT");
@@ -443,6 +504,7 @@ app.post("/api/scan", async (req, res) => {
             1,
             signal,
             Boolean(ssl.hasSSL),
+            budget(HEADERS_TIMEOUT_MS),
           );
 
           if (!headers.error) {
@@ -456,10 +518,32 @@ app.post("/api/scan", async (req, res) => {
           }
         }
 
+        // Источник истины для TLS — протокол фактически полученных заголовков:
+        // на 443 checkHeaders пробует HTTPS даже при упавшем checkSSL, и без
+        // этого отчёт расходился (headers HTTPS + ssl.error/no-ssl), а пробы
+        // уходили по HTTP на порт с рабочим TLS.
+        const hasTls = effectiveHasTls({
+          headers: bestHeaders,
+          port: bestPort,
+          portTls: bestPortTls,
+        });
+
+        // Заголовки сняты по HTTPS, но checkSSL не успел: перепроверяем,
+        // чтобы отчёт содержал сертификат, а не ложную ошибку TLS.
+        if (hasTls && !bestSsl.hasSSL) {
+          const rechecked = await checkSSL(
+            connectIpToUse,
+            bestPort,
+            hostname,
+            signal,
+            1,
+            budget(TLS_TIMEOUT_MS),
+          );
+          if (rechecked && rechecked.hasSSL) bestSsl = rechecked;
+        }
+
         // Все пробы идут на проверенный connectIp; hostname — только Host/SNI.
-        // TLS берём именно у bestPort: bestSsl может остаться от 443, пока
-        // заголовки успешно сняты с 80/8080.
-        const hasTls = bestPort !== 80 && bestPortTls;
+        const probeTimeout = budget(PROBE_TIMEOUT_MS);
         const [dns, files, securityTxt, fingerprint] = await Promise.all([
           dnsPromise,
           checkSensitiveFiles(
@@ -468,21 +552,38 @@ app.post("/api/scan", async (req, res) => {
             hostname,
             hasTls,
             signal,
+            probeTimeout,
           ),
-          checkSecurityTxt(connectIpToUse, bestPort, hostname, hasTls, signal),
-          checkFingerprint(connectIpToUse, bestPort, hostname, hasTls, signal),
+          checkSecurityTxt(
+            connectIpToUse,
+            bestPort,
+            hostname,
+            hasTls,
+            signal,
+            probeTimeout,
+          ),
+          checkFingerprint(
+            connectIpToUse,
+            bestPort,
+            hostname,
+            hasTls,
+            signal,
+            probeTimeout,
+          ),
         ]);
         if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
         // 200 OK на файл утечки — критическая находка Step 1. /.DS_Store
         // остаётся в exposed, но не попадает в critical: это low-риск.
+        // severity "high" — словарь находок (high/medium/low); отдельного
+        // уровня "critical" в контракте нет.
         const filesReport = files
           ? {
               ...files,
               critical: Array.isArray(files.exposed)
                 ? files.exposed
                     .filter((path) => CRITICAL_FILE_PATHS.has(path))
-                    .map((path) => ({ path, severity: "critical" }))
+                    .map((path) => ({ path, severity: "high" }))
                 : [],
             }
           : files;
@@ -494,7 +595,7 @@ app.post("/api/scan", async (req, res) => {
           fingerprint,
         });
       },
-      60000,
+      SCAN_BUDGET_MS,
       scanAbortController.signal,
     );
 
@@ -502,16 +603,15 @@ app.post("/api/scan", async (req, res) => {
     res.json(scanResult);
   } catch (e) {
     if (res.writableEnded || scanAbortController.signal.aborted) return;
-    if (e.code === "DNS_TIMEOUT") {
-      return res.status(504).json({ error: "DNS не ответил за 5 секунд" });
-    }
-    if (e.code === "DNS_RESOLVE_FAILED") {
-      return res.status(400).json({ error: "Не удалось разрешить адрес" });
-    }
-    if (e.code === "PRIVATE_ADDRESS") {
-      return res
-        .status(400)
-        .json({ error: "Сканирование внутренних адресов запрещено" });
+    // DNS-таймаут, ошибка резолва и приватный адрес отвечают одинаково:
+    // разный текст позволял проверять, существует ли внутреннее имя в сети
+    // сканера (split-horizon/metadata.internal).
+    if (
+      e.code === "DNS_TIMEOUT" ||
+      e.code === "DNS_RESOLVE_FAILED" ||
+      e.code === "PRIVATE_ADDRESS"
+    ) {
+      return res.status(400).json({ error: "Не удалось проверить адрес" });
     }
     if (e.message === "SCAN_TIMEOUT") {
       console.error("[scan] Превышено время сканирования (60с)");
@@ -524,6 +624,14 @@ app.post("/api/scan", async (req, res) => {
   } finally {
     // Декремент семафора гарантированно срабатывает на любом исходе
     activeScans -= 1;
+    // Кулдаун отсчитывается от завершения, поэтому 60-секундный скан не
+    // позволяет запускать следующий сразу после старта предыдущего.
+    remember(key, Date.now());
+
+    const perKey = (activeByKey.get(key) || 1) - 1;
+    if (perKey > 0) activeByKey.set(key, perKey);
+    else activeByKey.delete(key);
+
     res.off("close", onClose);
   }
 });
@@ -570,13 +678,15 @@ app.use((err, req, res, next) => {
   const message =
     status === 413
       ? "Слишком большой запрос"
-      : status === 400
-        ? "Некорректный запрос"
-        : status === 429
-          ? "Слишком много запросов"
-          : status === 503
-            ? "Сервис занят, попробуй через минуту"
-            : "Внутренняя ошибка сервера";
+      : status === 415
+        ? "Поддерживается только JSON"
+        : status === 400
+          ? "Некорректный запрос"
+          : status === 429
+            ? "Слишком много запросов"
+            : status === 503
+              ? "Сервис занят, попробуй через минуту"
+              : "Внутренняя ошибка сервера";
 
   res.status(status).json({ error: message });
 });
@@ -595,6 +705,15 @@ const server = app.listen(PORT, () => {
   console.log(`[CORS] разрешён origin: ${PUBLIC_ORIGIN}`);
   if (DEMO_MODE) console.log("[DEMO_MODE] localhost разрешён");
 });
+
+// Явные таймауты сокетов: без них медленный клиент (slowloris) держит
+// соединение и тело запроса сколько угодно, а на starter-плане это
+// исчерпывает лимит соединений.
+server.headersTimeout = 10_000;
+server.requestTimeout = 15_000;
+server.keepAliveTimeout = 5_000;
+server.maxConnections = 500;
+server.maxRequestsPerSocket = 100;
 
 // Graceful shutdown (корректное завершение при SIGTERM/SIGINT)
 for (const sig of ["SIGTERM", "SIGINT"]) {
