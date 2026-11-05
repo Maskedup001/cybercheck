@@ -7,6 +7,10 @@ import {
   getExposedFiles,
   filesNote,
   tlsNotice,
+  caaState,
+  secureContextState,
+  reportTitleFor,
+  plural,
 } from "./report-model.js";
 
 const PAGE_TITLE = document.title;
@@ -42,15 +46,16 @@ const TECH_LABELS = {
   bitrix: "Bitrix",
 };
 
-function plural(count, forms) {
-  const abs = Math.abs(count) % 100;
-  const last = abs % 10;
-
-  if (abs > 10 && abs < 20) return forms[2];
-  if (last > 1 && last < 5) return forms[1];
-  if (last === 1) return forms[0];
-  return forms[2];
-}
+// HSTS и Secure имеют смысл только при подтверждённом HTTPS с валидным
+// сертификатом. При невалидном сертификате scoring их не штрафует, значит
+// и карточка не должна рисовать красное «нет» — иначе пользователь идёт
+// чинить HSTS, хотя проблема в сертификате.
+const SECURE_CONTEXT_NOTES = {
+  "no-https": "н/д (нет HTTPS)",
+  "invalid-cert": "н/д (сертификат невалиден)",
+  unverified: "н/д (сертификат не прочитан)",
+  unknown: "н/д (TLS не проверен)",
+};
 
 function toneForGrade(grade) {
   if (grade === "A" || grade === "B") return "good";
@@ -437,7 +442,7 @@ function createHeadersCard(headers, ssl) {
     );
   }
 
-  const secureContext = Boolean(ssl && ssl.hasSSL);
+  const context = secureContextState(ssl);
 
   // Состояние заголовка: ok / weak (есть, но выключен) / missing.
   // Scoring считает так же, поэтому «есть» и «небезопасно» не расходятся.
@@ -460,12 +465,11 @@ function createHeadersCard(headers, ssl) {
         : createMuted("н/д");
 
   // Без HTTPS HSTS неприменим: scoring его не штрафует, значит и карточка
-  // не должна рисовать красное «нет».
-  const hstsValue = secureContext
-    ? stateFlag(headers.hstsState, headers.hsts)
-    : createMuted(
-        ssl && ssl.error ? "н/д (TLS не проверен)" : "н/д (нет HTTPS)",
-      );
+  // не должна рисовать красное «нет». Невалидный сертификат — тот же случай.
+  const hstsValue =
+    context === "ok"
+      ? stateFlag(headers.hstsState, headers.hsts)
+      : createMuted(SECURE_CONTEXT_NOTES[context] ?? "н/д");
 
   const rows = [
     {
@@ -553,11 +557,17 @@ function createMailCard(dns) {
   }
 
   const caa = dns.caa;
-  const caaValue = dnsSectionUnavailable(caa)
-    ? createMuted("Не удалось проверить")
-    : caa.present
+  const caaStateValue = caaState(caa);
+  const caaValue =
+    caaStateValue === "ok"
       ? createBadge("ok", "есть")
-      : createBadge("warn", "нет");
+      : caaStateValue === "weak"
+        ? // Запись только с iodef выпуск сертификатов не ограничивает:
+          // зелёное «есть» противоречило бы находке «CAA не ограничивает».
+          createBadge("warn", "не ограничивает")
+        : caaStateValue === "missing"
+          ? createBadge("warn", "нет")
+          : createMuted("Не удалось проверить");
 
   const rows = [
     { label: "SPF", value: spfValue },
@@ -565,9 +575,13 @@ function createMailCard(dns) {
     { label: "CAA", value: caaValue },
   ];
 
-  const unavailable = ["spf", "dmarc", "caa"].filter((key) =>
-    dnsSectionUnavailable(dns[key]),
-  ).length;
+  // CAA оценивается тем же правилом, что и бейдж: ENOTFOUND для apex — сбой,
+  // а не «записи нет», поэтому в счётчик недоступных он тоже входит.
+  const unavailable = [
+    dnsSectionUnavailable(dns.spf),
+    dnsSectionUnavailable(dns.dmarc),
+    caaStateValue === "unknown",
+  ].filter(Boolean).length;
 
   return createCard(
     "Почтовая безопасность",
@@ -602,14 +616,12 @@ function createCookieCard(headers, ssl) {
 
   // Secure имеет смысл только на HTTPS. Scoring без HTTPS его не штрафует —
   // значит, и карточка не должна показывать красное «0/1».
-  const secureContext = Boolean(ssl && ssl.hasSSL);
-  const tlsKnown = Boolean(ssl) && !ssl.error && ssl.hasSSL !== undefined;
+  const context = secureContextState(ssl);
 
-  const secureValue = secureContext
-    ? cookieFlagBadge(summary, "missingSecure", "bad", "Secure")
-    : createMuted(
-        tlsKnown ? "н/д (нет HTTPS)" : "н/д (TLS не проверен)",
-      );
+  const secureValue =
+    context === "ok"
+      ? cookieFlagBadge(summary, "missingSecure", "bad", "Secure")
+      : createMuted(SECURE_CONTEXT_NOTES[context] ?? "н/д");
 
   const rows = [
     { label: "Secure", value: secureValue },
@@ -624,7 +636,7 @@ function createCookieCard(headers, ssl) {
   ];
 
   let note = `Всего cookie: ${summary.total}.`;
-  if (secureContext && summary.insecureNone > 0) {
+  if (context === "ok" && summary.insecureNone > 0) {
     note += " Часть cookie с SameSite=None без Secure — браузеры их отвергают.";
   }
 
@@ -808,13 +820,8 @@ export function renderResult(container, body, report) {
   const host = typeof report.host === "string" ? report.host : "";
   const shortHost = sanitizeText(host, 60);
 
-  if (shortHost && shortHost !== "—") {
-    reportTitle = `CyberCheck_${shortHost}_${localDate}`;
-    document.title = reportTitle;
-  } else {
-    reportTitle = "";
-    document.title = PAGE_TITLE;
-  }
+  reportTitle = reportTitleFor(shortHost, localDate);
+  document.title = reportTitle || PAGE_TITLE;
 
   const dateText = now.toLocaleString("ru-RU", {
     dateStyle: "short",
@@ -889,8 +896,7 @@ export function resetReportTitle() {
 
 window.addEventListener("beforeprint", () => {
   // Печать может быть повторной: заголовок нужен для имени PDF каждый раз.
-  if (reportTitle) document.title = reportTitle;
-  else document.title = PAGE_TITLE;
+  document.title = reportTitle || PAGE_TITLE;
 
   // И кольцо должно попасть на бумагу в конечном положении,
   // даже если печать нажали в середине анимации.
@@ -898,5 +904,7 @@ window.addEventListener("beforeprint", () => {
 });
 
 window.addEventListener("afterprint", () => {
-  document.title = PAGE_TITLE;
+  // Отчёт остался на экране — вкладка должна называться по нему. Сброс в
+  // PAGE_TITLE делают только там, где отчёт убран (resetReportTitle).
+  document.title = reportTitle || PAGE_TITLE;
 });

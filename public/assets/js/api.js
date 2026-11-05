@@ -33,12 +33,32 @@ export async function scanTarget({ url, consent }) {
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const res = await fetch(`${API_URL}/scan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, consent, consentTimestamp: Date.now() }),
-      signal: controller.signal,
-    });
+    // Только сетевой вызов: TypeError от fetch означает «запрос не ушёл»
+    // (нет сети, DNS, обрыв, CORS). Ловить TypeError вокруг всей функции
+    // нельзя — тогда любая ошибка нормализации выглядела бы как «нет связи».
+    let res;
+    try {
+      res = await fetch(`${API_URL}/scan`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, consent, consentTimestamp: Date.now() }),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        throw new Error(
+          "Превышено время ожидания (65 сек). Попробуйте другой адрес.",
+        );
+      }
+      if (error && error.name === "TypeError") {
+        // Браузерный текст («Failed to fetch») английский и ничего не
+        // подсказывает, поэтому заменяем его своим.
+        throw new Error(
+          "Не удалось связаться с сервером. Проверьте соединение и повторите.",
+        );
+      }
+      throw error;
+    }
 
     const data = await res.json().catch(() => null);
 
@@ -85,13 +105,6 @@ export async function scanTarget({ url, consent }) {
         : [],
     };
     return normalized;
-  } catch (error) {
-    if (error.name === "AbortError") {
-      throw new Error(
-        "Превышено время ожидания (65 сек). Попробуйте другой адрес.",
-      );
-    }
-    throw error;
   } finally {
     clearTimeout(timeoutId);
   }

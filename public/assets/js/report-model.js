@@ -4,6 +4,24 @@
 
 const MAX_TEXT = 120;
 
+// DNS-код, который означает «записи нет», а не «не удалось проверить».
+// Для CAA набор строже, чем для остальных секций: apex-домен, который уже
+// разрешился, не может внезапно получить ENOTFOUND, поэтому такой ответ —
+// сбой резолвера, а не отсутствие записи. Ровно так же его трактует scoring
+// (APEX_MISSING_ERRORS).
+const CAA_MISSING_ERRORS = new Set(["ENODATA"]);
+
+// Русское склонение по числу: 1 путь, 2 пути, 5 путей, 11 путей, 21 путь.
+export function plural(count, forms) {
+  const abs = Math.abs(count) % 100;
+  const last = abs % 10;
+
+  if (abs > 10 && abs < 20) return forms[2];
+  if (last > 1 && last < 5) return forms[1];
+  if (last === 1) return forms[0];
+  return forms[2];
+}
+
 // Убирает управляющие символы и bidi-переопределения: XSS при textContent
 // невозможен, но визуально подменить текст карточки/PDF недоверенный Server
 // или issuer сертификата могли бы.
@@ -101,12 +119,21 @@ export function filesNote(files) {
   }
 
   if (total > 0 && failed >= total) {
-    return `Не удалось проверить ни один из ${total} путей (WAF или таймаут). Что файлов нет — не подтверждено.`;
+    const pathsForm = plural(total, ["пути", "путей", "путей"]);
+    return `Не удалось проверить ни один из ${total} ${pathsForm} (WAF или таймаут). Что файлов нет — не подтверждено.`;
   }
 
   const parts = ["Открытых файлов не найдено."];
   if (failed > 0) parts.push(`Не удалось проверить ${failed} из ${total}.`);
-  if (blocked > 0) parts.push(`${blocked} путей заблокировано (403/WAF).`);
+  if (blocked > 0) {
+    const verb = plural(blocked, [
+      "заблокирован",
+      "заблокированы",
+      "заблокировано",
+    ]);
+    const paths = plural(blocked, ["путь", "пути", "путей"]);
+    parts.push(`${verb} ${blocked} ${paths} (403/WAF).`);
+  }
 
   return parts.join(" ");
 }
@@ -121,9 +148,50 @@ export function tlsNotice(ssl, ports) {
     return "TLS не проверялся: у сайта не открыт ни один веб-порт (80, 443, 8080).";
   }
 
+  // HTTPS подтверждён ответом сервера, но сертификат прочитать не удалось:
+  // «SSL не настроен» здесь так же неверно, как и «TLS не проверялся».
+  if (ssl.tlsConfirmed === true) {
+    return "HTTPS работает (подтверждено ответом сервера), но сертификат не удалось прочитать. Срок и цепочку проверьте вручную.";
+  }
+
   if (!ssl.hasSSL && !ssl.error && list.length === 0) {
     return "TLS не проверялся: у сайта не открыт ни один веб-порт (80, 443, 8080).";
   }
 
   return null;
+}
+
+// Состояние CAA для карточки: present сам по себе ничего не значит, если
+// записи только служебные (iodef) и выпуск сертификатов не ограничивают.
+export function caaState(caa) {
+  if (!caa || typeof caa !== "object") return "unknown";
+  if (caa.error && !CAA_MISSING_ERRORS.has(caa.error)) return "unknown";
+  if (!caa.present) return "missing";
+
+  // Старый контракт без restrictive считаем ограничивающим — так же, как
+  // scoring: иначе UI и оценка разойдутся на старых отчётах.
+  return caa.restrictive === false ? "weak" : "ok";
+}
+
+// Контекст, в котором HSTS и флаг Secure вообще имеют смысл: только
+// подтверждённый HTTPS с валидным сертификатом. При невалидном сертификате
+// их отсутствие — следствие уже наказанной ошибки TLS, а не отдельная
+// проблема, поэтому карточка показывает «н/д», а не красное «нет».
+export function secureContextState(ssl) {
+  if (!ssl || typeof ssl !== "object") return "unknown";
+  // HTTPS подтверждён заголовками, но сертификат не прочитан: это не «TLS не
+  // проверен» — карточка TLS в этом же отчёте говорит, что HTTPS работает.
+  if (ssl.tlsConfirmed === true) return "unverified";
+  if (ssl.error) return "unknown";
+  if (ssl.hasSSL !== true) return "no-https";
+  if (ssl.valid === false) return "invalid-cert";
+  return "ok";
+}
+
+// Имя отчёта: используется и в заголовке вкладки, и в имени PDF. host "—" —
+// заглушка нормализации, а не домен.
+export function reportTitleFor(host, date) {
+  const safeHost = sanitizeText(host, 60);
+  if (!safeHost || safeHost === "—") return "";
+  return `CyberCheck_${safeHost}_${date}`;
 }
