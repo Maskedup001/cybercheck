@@ -1,4 +1,3 @@
-const { calculateScore } = require("./scoring");
 const path = require("path");
 const fs = require("node:fs");
 const net = require("node:net");
@@ -8,19 +7,22 @@ const helmet = require("helmet");
 const { checkPort, checkSSL, checkHeaders } = require("./checks");
 const { resolvePublicIps } = require("./net-guard");
 const { checkDnsSecurity } = require("./dns-security");
+const { ScanLimiter } = require("./rate-limit");
 const {
   parseTarget,
   rateKey,
+  budgetLeft,
   clampTimeout,
   effectiveHasTls,
   isHtmlRequestPath,
+  selectWebPorts,
+  buildReport,
 } = require("./scan-helpers");
 const {
   checkSensitiveFiles,
   checkSecurityTxt,
   checkFingerprint,
 } = require("./web-probes");
-const { CRITICAL_FILE_PATHS } = require("./file-paths");
 
 // Общий бюджет одного скана. Клиент ждёт 65 с, поэтому 5 с остаются на
 // сеть и передачу ответа.
@@ -32,7 +34,7 @@ const HEADERS_TIMEOUT_MS = 5000;
 const DNS_SECURITY_TIMEOUT_MS = 3000;
 const PROBE_TIMEOUT_MS = 2000;
 
-// 1. Строгая проверка PUBLIC_ORIGIN (NEW-02)
+// 1. Строгая проверка PUBLIC_ORIGIN при старте
 const envOrigin =
   process.env.PUBLIC_ORIGIN || process.env.RENDER_EXTERNAL_URL || "";
 let parsedOrigin;
@@ -176,6 +178,20 @@ function revalidate(req, res, next) {
   next();
 }
 
+app.use("/api", noStore);
+
+// Тело POST /api/scan обязано быть JSON. express.json молча пропускает
+// запрос с другим Content-Type, и клиент получал бы 400 «Некорректный
+// адрес» вместо честного 415 про формат — то есть шёл бы чинить URL.
+// Проверка стоит до парсера и не даёт ему сработать на чужом типе.
+function requireJsonBody(req, res, next) {
+  if (req.method !== "POST") return next();
+  if (req.is("application/json")) return next();
+  return res.status(415).json({ error: "Поддерживается только JSON" });
+}
+
+app.use("/api/scan", requireJsonBody);
+
 app.use(express.json({ limit: "8kb" }));
 
 // Отдаём страницы с подставленным BASE_URL
@@ -191,8 +207,6 @@ app.get("/privacy.html", revalidate, (req, res) => {
 app.get("/index.html", (req, res) => res.redirect("/"));
 app.get("/favicon.ico", (req, res) => res.redirect(301, "/favicon.svg"));
 
-app.use("/api", noStore);
-
 // Статика не должна отдавать HTML-шаблоны: /%69ndex.html и /./index.html не
 // совпадают с точными роутами выше, но express.static нормализует путь и
 // отдал бы сырой файл с незаполненным __BASE_URL__ (сломанные canonical/
@@ -206,49 +220,22 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, "../public"), { index: false }));
 
-// 2. Rate Limit с LRU-вытеснением (NEW-04)
-const lastScan = new Map();
-const COOLDOWN_MS = 10_000;
-const MAX_KEYS = 10_000;
-
-// Потолок одновременных сканов: без него поток запросов с разных IP
-// держит открытыми сотни исходящих сокетов к целям. Лимит на IP
-// от этого не защищает — обходится сменой адреса.
-const MAX_CONCURRENT_SCANS = 25;
-let activeScans = 0;
-
-// Сколько сканов одновременно идёт с одного ключа: 60-секундный скан,
-// запускаемый каждые 10 секунд, иначе копил бы до шести параллельных
-// соединений с одного адреса.
-const MAX_CONCURRENT_PER_KEY = 1;
-const activeByKey = new Map();
-
-function remember(key, now) {
-  if (lastScan.has(key)) {
-    lastScan.delete(key); // NEW-04: переносим в конец (свежий)
-  } else if (lastScan.size >= MAX_KEYS) {
-    lastScan.delete(lastScan.keys().next().value);
-  }
-  lastScan.set(key, now);
-}
-
-// Кулдаун считается от завершения предыдущего скана: иначе он тикал, пока
-// скан ещё шёл, и один IP мог держать несколько параллельных проверок.
-function checkCooldown(key) {
-  const now = Date.now();
-  const last = lastScan.get(key) || 0;
-  if (now - last < COOLDOWN_MS) {
-    return Math.ceil((COOLDOWN_MS - (now - last)) / 1000);
-  }
-  return 0;
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, time] of lastScan.entries()) {
-    if (now - time > COOLDOWN_MS) lastScan.delete(key);
-  }
-}, 30_000).unref();
+// 2. Лимиты сканирования. Логика живёт в rate-limit.js: её надо проверять
+// без Express, сети и реального времени (часы подставляются в тестах).
+// Кулдаун, потолок одновременных сканов и лимит на ключ — один объект,
+// чтобы «пропустить» и «отпустить» нельзя было рассинхронизировать.
+const limiter = new ScanLimiter({
+  // Потолок одновременных сканов: без него поток запросов с разных IP
+  // держит открытыми сотни исходящих сокетов к целям. Лимит на IP
+  // от этого не защищает — обходится сменой адреса.
+  maxConcurrent: 25,
+  // 60-секундный скан, запускаемый каждые 10 секунд, иначе копил бы до
+  // шести параллельных соединений с одного адреса.
+  maxPerKey: 1,
+  cooldownMs: 10_000,
+  maxKeys: 10_000,
+});
+limiter.startSweeper(30_000);
 
 // Хелпер для ограничения времени выполнения скана.
 // Поддерживает внешний сигнал отмены (если клиент оборвал соединение).
@@ -274,7 +261,7 @@ function withTimeout(factory, ms, externalSignal) {
 app.post("/api/scan", async (req, res) => {
   const ip = req.ip;
 
-  // 3. Сначала валидация (NEW-03), чтобы мусорные запросы не жгли лимит.
+  // 3. Сначала валидация, чтобы мусорные запросы не жгли лимит.
   // req.body может быть undefined (не-JSON Content-Type): destructuring
   // упал бы 500 вместо понятного 400.
   const { url, consent, consentTimestamp } = req.body || {};
@@ -324,34 +311,17 @@ app.post("/api/scan", async (req, res) => {
     return res.status(400).json({ error: "Некорректный адрес" });
   }
 
-  // Проверяем потолок одновременных сканов до списания cooldown,
-  // чтобы ответ 503 не блокировал клиента на 10 секунд.
-  if (activeScans >= MAX_CONCURRENT_SCANS) {
-    res.set("Retry-After", "60");
-    return res
-      .status(503)
-      .json({ error: "Сервис занят, попробуй через минуту" });
-  }
-
-  // 4. Лимит частоты срабатывает ТОЛЬКО для валидных запросов
+  // 4. Лимит частоты срабатывает ТОЛЬКО для валидных запросов: проверка
+  // адреса выше отсекает мусор до счётчиков. attempt() проверяет потолок
+  // одновременных сканов раньше кулдауна, чтобы 503 не блокировал клиента
+  // на 10 секунд. Ключ считается по IP, а не по цели: иначе лимит обходился
+  // бы сменой домена.
   const key = rateKey(ip);
-  const wait = checkCooldown(key);
-  if (wait > 0) {
-    res.set("Retry-After", String(wait));
-    return res
-      .status(429)
-      .json({ error: `Подожди ${wait} сек. перед следующим сканом` });
+  const denial = limiter.attempt(key);
+  if (denial) {
+    res.set("Retry-After", String(denial.retryAfter));
+    return res.status(denial.status).json({ error: denial.error });
   }
-
-  if ((activeByKey.get(key) || 0) >= MAX_CONCURRENT_PER_KEY) {
-    res.set("Retry-After", "10");
-    return res.status(429).json({
-      error: "С этого адреса уже идёт сканирование, дождись результата",
-    });
-  }
-
-  activeScans += 1;
-  activeByKey.set(key, (activeByKey.get(key) || 0) + 1);
 
   // Обрабатываем обрыв соединения клиентом:
   // если клиент ушёл, прерываем скан, чтобы не держать сокеты.
@@ -359,23 +329,29 @@ app.post("/api/scan", async (req, res) => {
   const onClose = () => {
     if (!res.writableEnded) scanAbortController.abort();
   };
-  res.on("close", onClose);
-
-  // 5. Логируем ПОСЛЕ валидации (защита от log injection).
-  // req.ip — недоверенное значение: при TRUST_PROXY>0 оно приходит
-  // из X-Forwarded-For, поэтому в лог попадает только валидный адрес.
-  const loggedIp = net.isIP(ip) ? ip : "unknown";
-  console.log(
-    `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${loggedIp}`,
-  );
 
   try {
-    // Один дедлайн на весь скан: каждый этап получает только остаток
-    // бюджета. Иначе сумма независимых таймаутов (DNS 5 + порты 19,5 +
-    // TLS 13,5 + заголовки 21 + пробы) превышала 60 с, и валидная медленная
-    // цель обрывалась 504, не отдав результат.
+    // Подписка и лог — внутри try: если что-то из этого упадёт, finally всё
+    // равно отпустит семафор и поставит кулдаун, и лимит не «потечёт».
+    res.on("close", onClose);
+
+    // 5. Логируем ПОСЛЕ валидации (защита от log injection).
+    // req.ip — недоверенное значение: при TRUST_PROXY>0 оно приходит
+    // из X-Forwarded-For, поэтому в лог попадает только валидный адрес.
+    const loggedIp = net.isIP(ip) ? ip : "unknown";
+    console.log(
+      `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${loggedIp}`,
+    );
+
+    // Один дедлайн на весь скан. budget() отдаёт остаток этапу, а сами
+    // проверки получают ещё и deadline: внутри этапа его делят все попытки,
+    // ретраи и проверка старых TLS, иначе одна медленная цель снова
+    // складывала бы несколько полных таймаутов и обрывалась 504.
     const deadline = Date.now() + SCAN_BUDGET_MS;
     const budget = (ms) => clampTimeout(ms, deadline);
+    const ensureBudget = () => {
+      if (budgetLeft(deadline) <= 0) throw new Error("SCAN_TIMEOUT");
+    };
 
     const scanResult = await withTimeout(
       async (signal) => {
@@ -428,9 +404,10 @@ app.post("/api/scan", async (req, res) => {
 
         // Перебираем IP, пока не найдем тот, у которого есть открытые порты (максимум 3)
         for (const ip of resolvedIps.slice(0, 3)) {
+          ensureBudget();
           const ports = await Promise.all(
             [80, 443, 22, 3306, 8080].map((p) =>
-              checkPort(ip, p, budget(PORT_TIMEOUT_MS), 1, signal),
+              checkPort(ip, p, budget(PORT_TIMEOUT_MS), 1, signal, deadline),
             ),
           );
           if (signal.aborted) throw new Error("SCAN_TIMEOUT");
@@ -458,9 +435,7 @@ app.post("/api/scan", async (req, res) => {
           );
         }
 
-        const availableWebPorts = [443, 80, 8080].filter((p) =>
-          openPorts.some((op) => op.port === p),
-        );
+        const availableWebPorts = selectWebPorts(openPorts);
 
         if (availableWebPorts.length === 0) {
           const dns = await dnsPromise;
@@ -480,6 +455,7 @@ app.post("/api/scan", async (req, res) => {
         let bestPortTls = false;
 
         for (const wp of availableWebPorts) {
+          ensureBudget();
           // На 80 порту TLS не бывает, не тратим время и не пугаем клиента.
           // 8080 по умолчанию тоже HTTP: провал TLS там не означает ошибку.
           let ssl =
@@ -492,6 +468,7 @@ app.post("/api/scan", async (req, res) => {
                   signal,
                   1,
                   budget(TLS_TIMEOUT_MS),
+                  deadline,
                 );
           if (wp === 8080 && ssl.error) ssl = { hasSSL: false };
           if (wp === bestPort) bestPortTls = Boolean(ssl.hasSSL);
@@ -505,6 +482,7 @@ app.post("/api/scan", async (req, res) => {
             signal,
             Boolean(ssl.hasSSL),
             budget(HEADERS_TIMEOUT_MS),
+            deadline,
           );
 
           if (!headers.error) {
@@ -531,6 +509,7 @@ app.post("/api/scan", async (req, res) => {
         // Заголовки сняты по HTTPS, но checkSSL не успел: перепроверяем,
         // чтобы отчёт содержал сертификат, а не ложную ошибку TLS.
         if (hasTls && !bestSsl.hasSSL) {
+          ensureBudget();
           const rechecked = await checkSSL(
             connectIpToUse,
             bestPort,
@@ -538,11 +517,21 @@ app.post("/api/scan", async (req, res) => {
             signal,
             1,
             budget(TLS_TIMEOUT_MS),
+            deadline,
           );
-          if (rechecked && rechecked.hasSSL) bestSsl = rechecked;
+          if (rechecked && rechecked.hasSSL) {
+            bestSsl = rechecked;
+          } else {
+            // HTTPS подтверждён ответом сервера, а сертификат прочитать не
+            // удалось. Это не «SSL не настроен» и не повод резать оценку
+            // потолком 60: помечаем факт, scoring покажет отдельную находку
+            // и не применит жёсткий потолок ошибки TLS.
+            bestSsl = { ...bestSsl, hasSSL: false, tlsConfirmed: true };
+          }
         }
 
         // Все пробы идут на проверенный connectIp; hostname — только Host/SNI.
+        ensureBudget();
         const probeTimeout = budget(PROBE_TIMEOUT_MS);
         const [dns, files, securityTxt, fingerprint] = await Promise.all([
           dnsPromise,
@@ -573,24 +562,12 @@ app.post("/api/scan", async (req, res) => {
         ]);
         if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
-        // 200 OK на файл утечки — критическая находка Step 1. /.DS_Store
-        // остаётся в exposed, но не попадает в critical: это low-риск.
-        // severity "high" — словарь находок (high/medium/low); отдельного
-        // уровня "critical" в контракте нет.
-        const filesReport = files
-          ? {
-              ...files,
-              critical: Array.isArray(files.exposed)
-                ? files.exposed
-                    .filter((path) => CRITICAL_FILE_PATHS.has(path))
-                    .map((path) => ({ path, severity: "high" }))
-                : [],
-            }
-          : files;
-
+        // 200 OK на файл утечки — критическая находка Step 1. Что считать
+        // критичным, решает buildReport (scan-helpers), чтобы сервер и тесты
+        // пользовались одним правилом, а не дублировали список путей.
         return buildReport(hostname, openPorts, bestSsl, bestHeaders, {
           dns,
-          files: filesReport,
+          files,
           securityTxt,
           fingerprint,
         });
@@ -622,45 +599,21 @@ app.post("/api/scan", async (req, res) => {
     console.error("[scan] проверка не удалась:", e);
     res.status(500).json({ error: "Ошибка сканирования" });
   } finally {
-    // Декремент семафора гарантированно срабатывает на любом исходе
-    activeScans -= 1;
-    // Кулдаун отсчитывается от завершения, поэтому 60-секундный скан не
-    // позволяет запускать следующий сразу после старта предыдущего.
-    remember(key, Date.now());
-
-    const perKey = (activeByKey.get(key) || 1) - 1;
-    if (perKey > 0) activeByKey.set(key, perKey);
-    else activeByKey.delete(key);
+    // Отпускаем лимит на любом исходе: семафор не должен «течь», если скан
+    // упал или клиент оборвал соединение. finish() же ставит кулдаун —
+    // осознанно и для неуспешных сканов (см. комментарий в rate-limit.js).
+    limiter.finish(key);
 
     res.off("close", onClose);
   }
 });
-
-// 6. Хелпер для сборки ответа
-// extra — данные Step 1 (dns/files/securityTxt/fingerprint). Они входят в
-// calculateScore: иначе карточки показывали бы новые проверки, а оценка
-// считалась бы только по ports/ssl/headers.
-function buildReport(host, ports, ssl, headers, extra = {}) {
-  const { dns, files, securityTxt, fingerprint } = extra;
-  const { score, grade, findings } = calculateScore({
-    host,
-    ports,
-    ssl,
-    headers,
-    dns,
-    files,
-    securityTxt,
-    fingerprint,
-  });
-  return { host, ports, ssl, headers, ...extra, score, grade, findings };
-}
 
 // Healthcheck для хостингов (Render, Railway и т.д.)
 app.get("/healthz", noStore, (req, res) =>
   res.json({ ok: true, uptime: process.uptime() }),
 );
 
-// 404 для API (F-19)
+// 404 для API: любой неизвестный путь под /api отвечает JSON, а не HTML.
 app.use((req, res) => {
   res.status(404).json({ error: "Не найдено" });
 });

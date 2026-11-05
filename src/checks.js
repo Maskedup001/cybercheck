@@ -10,28 +10,79 @@ const {
   analyzeSecurityHeaders,
   sanitizeHeaderText,
 } = require("./header-analysis");
+const {
+  isLiteralIp,
+  stageDeadline,
+  timeoutFor,
+  hasBudget,
+} = require("./scan-helpers");
+
+// Паузы между попытками. Они входят в бюджет этапа, а не добавляются к нему.
+const RETRY_DELAY_MS = 500;
+const HEADERS_RETRY_DELAY_MS = 1000;
+
+// Проверка старых TLS — отдельное соединение. Если на неё осталось меньше
+// секунды, результат всё равно недостоверен, а бюджет этапа будет съеден.
+const OLD_TLS_TIMEOUT_MS = 3000;
+const OLD_TLS_MIN_MS = 1000;
+
+// Попытка короче 50 мс не успевает даже на TCP-хендшейк: считаем, что
+// времени не осталось, и не открываем сокет.
+const MIN_ATTEMPT_MS = 50;
 
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
-// Если соединение установилось — порт открыт. Таймаут или ошибка — порт закрыт.
-function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
-  // socket.setTimeout(0) отключает таймаут, а не делает его мгновенным:
-  // нулевой остаток бюджета должен означать «проверять некогда».
-  const socketTimeout = Number.isFinite(timeout) && timeout > 0 ? timeout : 1;
+// timeoutMs — бюджет всего этапа (все попытки вместе), deadline — дедлайн
+// скана. Если соединение установилось — порт открыт. Таймаут или ошибка —
+// порт закрыт.
+function checkPort(
+  connectIp,
+  port,
+  timeoutMs = 3000,
+  retries = 1,
+  signal,
+  deadline = null,
+) {
+  if (!isLiteralIp(connectIp)) {
+    return Promise.resolve({ port, status: "closed" });
+  }
+
+  const stage = stageDeadline(timeoutMs, deadline);
 
   return new Promise((resolve) => {
+    // Таймер ретрая храним, чтобы снять его при завершении: иначе после
+    // отмены или дедлайна он мог бы запустить лишнюю попытку и подержать
+    // процесс.
+    let retryTimer = null;
+    const settle = (result) => {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      resolve(result);
+    };
+
     const attempt = (attemptsLeft) => {
-      if (signal?.aborted) return resolve({ port, status: "closed" });
+      if (signal?.aborted) return settle({ port, status: "closed" });
+
+      // Остаток бюджета этапа считаем перед каждой попыткой: ретрай не
+      // должен получать свежие 3 секунды после того, как первая попытка
+      // уже израсходовала бюджет.
+      const attemptTimeout = timeoutFor(timeoutMs, stage);
+      if (attemptTimeout < MIN_ATTEMPT_MS) {
+        return settle({ port, status: "closed" });
+      }
+
       const socket = new net.Socket();
       let status = "closed";
 
       const onAbort = () => {
         socket.destroy();
-        resolve({ port, status: "closed" });
+        settle({ port, status: "closed" });
       };
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
-      socket.setTimeout(socketTimeout);
+      socket.setTimeout(attemptTimeout);
       socket.on("connect", () => {
         status = "open";
         socket.destroy();
@@ -44,11 +95,20 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
       socket.on("close", () => {
         if (signal) signal.removeEventListener("abort", onAbort);
         if (signal?.aborted) return;
-        if (status === "closed" && attemptsLeft > 0) {
-          // Если закрыт и есть попытки — пробуем еще раз через 500мс
-          setTimeout(() => attempt(attemptsLeft - 1), 500);
+
+        // Ретрай имеет смысл только для быстрого сбоя (отказ, сброс) и
+        // только если на него вместе с паузой остался бюджет.
+        const retryFits = hasBudget(
+          stage,
+          RETRY_DELAY_MS + MIN_ATTEMPT_MS,
+        );
+        if (status === "closed" && attemptsLeft > 0 && retryFits) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            attempt(attemptsLeft - 1);
+          }, RETRY_DELAY_MS);
         } else {
-          resolve({ port, status });
+          settle({ port, status });
         }
       });
       socket.connect(port, connectIp);
@@ -57,10 +117,16 @@ function checkPort(connectIp, port, timeout = 3000, retries = 1, signal) {
   });
 }
 
-// Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1)
-function checkOldTls(connectIp, port, hostname, signal) {
+// Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1).
+// timeoutMs — остаток бюджета этапа TLS, а не фиксированные 3 секунды.
+function checkOldTls(connectIp, port, hostname, signal, timeoutMs) {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve(false);
+
+    // timeoutMs уже ограничен остатком бюджета этапа TLS.
+    const budget = Number.isFinite(timeoutMs) ? timeoutMs : OLD_TLS_TIMEOUT_MS;
+    if (budget < MIN_ATTEMPT_MS) return resolve(false);
+
     const servername = net.isIP(hostname) ? undefined : hostname;
     const socket = tls.connect(
       {
@@ -79,7 +145,7 @@ function checkOldTls(connectIp, port, hostname, signal) {
       },
     );
     socket.on("error", () => resolve(false));
-    socket.setTimeout(3000, () => {
+    socket.setTimeout(budget, () => {
       socket.destroy();
       resolve(false);
     });
@@ -97,28 +163,58 @@ async function checkSSL(
   signal,
   retries = 1,
   timeoutMs = 5000,
+  deadline = null,
 ) {
   if (!port) return { hasSSL: false };
+  if (!isLiteralIp(connectIp)) {
+    return { hasSSL: false, error: "INVALID_CONNECT_IP" };
+  }
 
-  const handshakeTimeout =
-    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1;
+  const stage = stageDeadline(timeoutMs, deadline);
 
   return new Promise((resolve) => {
+    let retryTimer = null;
+    const settle = (data) => {
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      resolve(data);
+    };
+
     const attempt = (attemptsLeft) => {
+      const attemptTimeout = timeoutFor(timeoutMs, stage);
+      if (attemptTimeout < MIN_ATTEMPT_MS) {
+        return settle({ hasSSL: false, error: "HANDSHAKE_FAILED" });
+      }
+
       let settled = false;
       let mainSucceeded = false;
+      let attemptFailed = false;
       const finish = (data) => {
         if (settled) return;
         settled = true;
-        resolve(data);
+        settle(data);
       };
       const onError = () => {
-        if (!mainSucceeded) {
-          if (attemptsLeft > 0) {
-            setTimeout(() => attempt(attemptsLeft - 1), 500);
-          } else {
-            finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
-          }
+        if (mainSucceeded || attemptFailed) return;
+        attemptFailed = true;
+
+        if (signal?.aborted) {
+          return finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
+        }
+
+        const retryFits = hasBudget(
+          stage,
+          RETRY_DELAY_MS + MIN_ATTEMPT_MS,
+        );
+        if (attemptsLeft > 0 && retryFits) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            attempt(attemptsLeft - 1);
+          }, RETRY_DELAY_MS);
+        } else {
+          finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
         }
       };
 
@@ -156,15 +252,20 @@ async function checkSSL(
             const tlsVersion = socket.getProtocol();
             socket.end();
 
+            // Старые протоколы проверяются только на остаток бюджета этапа:
+            // иначе успешный хендшейк добавлял к этапу фиксированные 3 с.
             let supportsOldTls = false;
-            try {
-              supportsOldTls = await checkOldTls(
-                connectIp,
-                port,
-                hostname,
-                signal,
-              );
-            } catch (e) {}
+            if (hasBudget(stage, OLD_TLS_MIN_MS)) {
+              try {
+                supportsOldTls = await checkOldTls(
+                  connectIp,
+                  port,
+                  hostname,
+                  signal,
+                  timeoutFor(OLD_TLS_TIMEOUT_MS, stage),
+                );
+              } catch (e) {}
+            }
 
             finish({
               hasSSL: true,
@@ -189,7 +290,7 @@ async function checkSSL(
       );
 
       socket.on("error", onError);
-      socket.setTimeout(handshakeTimeout, () => {
+      socket.setTimeout(attemptTimeout, () => {
         socket.destroy();
         onError();
       });
@@ -202,6 +303,7 @@ async function checkSSL(
 // hasTls — результат checkSSL по этому же порту: если TLS не поднялся,
 // HTTPS-попытка заведомо провалится и только съест таймаут.
 // connectIp — IP для подключения, hostname — для SNI и Host-заголовка.
+// timeoutMs — бюджет всего этапа, deadline — дедлайн скана.
 function checkHeaders(
   connectIp,
   port,
@@ -210,13 +312,17 @@ function checkHeaders(
   signal,
   hasTls = true,
   timeoutMs = 5000,
+  deadline = null,
 ) {
+  if (!isLiteralIp(connectIp)) {
+    return Promise.resolve({ error: true });
+  }
+
+  const stage = stageDeadline(timeoutMs, deadline);
+
   return new Promise((resolve) => {
     if (!port) return resolve({ error: true });
     if (signal?.aborted) return resolve({ error: true });
-
-    const requestTimeout =
-      Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1;
 
     const servername = net.isIP(hostname) ? undefined : hostname;
     // Добавляем порт в Host для нестандартных портов (например, 8080)
@@ -224,27 +330,51 @@ function checkHeaders(
       port === 80 || port === 443 ? hostname : `${hostname}:${port}`;
 
     let settled = false;
+    let retryTimer = null;
     const resolveOnce = (data) => {
       if (settled) return;
       settled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       resolve(data);
     };
 
     const attempt = (attemptsLeft) => {
+      if (timeoutFor(timeoutMs, stage) < MIN_ATTEMPT_MS) {
+        return resolveOnce({ error: true });
+      }
+
       let failing = false;
+      let retried = false;
 
       const retryOrFail = () => {
-        if (settled) return;
+        if (settled || retried) return;
+        retried = true;
         if (signal?.aborted) return resolveOnce({ error: true });
-        if (attemptsLeft > 0) {
-          // Ждем 1 секунду и пробуем снова
-          setTimeout(() => attempt(attemptsLeft - 1), 1000);
+
+        const retryFits = hasBudget(
+          stage,
+          HEADERS_RETRY_DELAY_MS + MIN_ATTEMPT_MS,
+        );
+        if (attemptsLeft > 0 && retryFits) {
+          // Пауза перед повтором входит в тот же бюджет этапа.
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            attempt(attemptsLeft - 1);
+          }, HEADERS_RETRY_DELAY_MS);
         } else {
           resolveOnce({ error: true });
         }
       };
 
       const tryHttp = () => {
+        // Таймаут считается перед каждым запросом: fallback с HTTPS на HTTP
+        // не должен получать полный бюджет этапа второй раз.
+        const requestTimeout = timeoutFor(timeoutMs, stage);
+        if (requestTimeout < MIN_ATTEMPT_MS) return retryOrFail();
+
         const req = http.get(
           {
             host: connectIp,
@@ -273,6 +403,9 @@ function checkHeaders(
       };
 
       const tryHttps = () => {
+        const requestTimeout = timeoutFor(timeoutMs, stage);
+        if (requestTimeout < MIN_ATTEMPT_MS) return retryOrFail();
+
         const req = https.get(
           {
             host: connectIp,
