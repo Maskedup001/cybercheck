@@ -45,7 +45,7 @@ function results(items) {
   }));
 }
 
-// --- FE-12: недоверенный текст -------------------------------------------
+// --- Недоверенный текст -------------------------------------------
 
 test("sanitizeText: убирает управляющие и bidi-символы", () => {
   assert.strictEqual(
@@ -62,7 +62,7 @@ test("sanitizeText: ограничивает длину", () => {
   assert.strictEqual(model.sanitizeText("x".repeat(500), 10).length, 10);
 });
 
-// --- FE-05: критичность путей только из files.critical --------------------
+// --- Критичность путей только из files.critical --------------------
 
 test("getCriticalPaths: строки и объекты {path}", () => {
   const paths = model.getCriticalPaths({
@@ -116,7 +116,7 @@ test("getProbeStats: считает ошибки, блокировки и отк
   });
 });
 
-// --- FE-03 / PS-06: «не найдено» только когда всё проверено ---------------
+// --- «Не найдено» только когда всё проверено ---------------
 
 test("filesNote: все пробы упали — «не подтверждено», а не «не найдено»", () => {
   const note = model.filesNote({
@@ -178,7 +178,7 @@ test("filesNote: files === null — честное «не удалось про�
   assert.match(model.filesNote(null), /Не удалось проверить/);
 });
 
-// --- FE-01: TLS без веб-порта --------------------------------------------
+// --- TLS без веб-порта --------------------------------------------
 
 test("tlsNotice: нет веб-порта — «TLS не проверялся»", () => {
   const text = model.tlsNotice({ hasSSL: false, error: "NO_WEB_PORT" }, []);
