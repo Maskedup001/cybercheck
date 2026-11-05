@@ -50,9 +50,45 @@ function hstsMaxAge(value) {
   return match ? Number(match[1]) : null;
 }
 
-// CSP считается рабочей, если она ограничивает default-src или script-src
-// чем-то кроме "*" / "'unsafe-inline'": пустая или wildcard-политика не
-// защищает от XSS и баллов не даёт.
+// Источники, которые не ограничивают, откуда берётся скрипт: wildcard,
+// inline/eval и схемы без хоста (data:, blob:, http:, https: — последние
+// разрешают любой сайт по этой схеме).
+const PERMISSIVE_CSP_SOURCES = new Set([
+  "*",
+  "'unsafe-inline'",
+  "'unsafe-eval'",
+  "data:",
+  "blob:",
+  "http:",
+  "https:",
+]);
+
+// nonce/hash отключает 'unsafe-inline' по CSP3: браузер игнорирует его,
+// если в директиве есть nonce или hash. Поэтому такая политика — рабочая,
+// а не «слабая из-за unsafe-inline».
+const NONCE_OR_HASH_RE = /^'(?:nonce|sha256|sha384|sha512)-/i;
+
+// Какая директива реально управляет скриптами. script-src-elem перекрывает
+// script-src, а script-src перекрывает default-src; проверять «любую
+// хорошую» директиву нельзя: default-src 'self' + script-src * означает
+// «скрипты откуда угодно».
+const SCRIPT_DIRECTIVES = ["script-src-elem", "script-src", "default-src"];
+
+// Первая (по CSP применяется первая) директива с таким именем.
+function directiveSources(directives, name) {
+  for (const directive of directives) {
+    const parts = directive.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) continue;
+    if (parts[0].toLowerCase() !== name) continue;
+    return parts.slice(1).map((source) => source.toLowerCase());
+  }
+  return null;
+}
+
+// CSP считается рабочей, если эффективная директива ограничивает источники
+// скриптов и не разрешает inline/eval. `script-src 'self' 'unsafe-inline'`
+// защитой не считается: inline-скрипт — основной вектор XSS. Исключение —
+// nonce/hash рядом с 'unsafe-inline': браузер его игнорирует.
 function cspIsRestrictive(value) {
   if (typeof value !== "string" || value.trim() === "") return false;
 
@@ -61,17 +97,47 @@ function cspIsRestrictive(value) {
     .map((directive) => directive.trim())
     .filter(Boolean);
 
-  const relevant = directives.filter((directive) =>
-    /^(default-src|script-src)\b/i.test(directive),
+  let sources = null;
+  for (const name of SCRIPT_DIRECTIVES) {
+    sources = directiveSources(directives, name);
+    if (sources !== null) break;
+  }
+  if (sources === null || sources.length === 0) return false;
+
+  // 'none' работает только в одиночку: по CSP3 рядом с другими источниками он
+  // игнорируется, поэтому `script-src 'none' https:` разрешает любой https.
+  const meaningful = sources.filter((source) => source !== "'none'");
+  if (meaningful.length === 0) return true;
+
+  const hasNonceOrHash = meaningful.some((source) =>
+    NONCE_OR_HASH_RE.test(source),
   );
-  if (relevant.length === 0) return false;
+  const restrictsInline =
+    hasNonceOrHash || !meaningful.includes("'unsafe-inline'");
+  if (!restrictsInline) return false;
 
-  const weakSources = new Set(["*", "'unsafe-inline'", "'unsafe-eval'"]);
+  // Хотя бы один источник должен быть ограничивающим: 'self', конкретный
+  // хост, nonce/hash.
+  return meaningful.some((source) => !PERMISSIVE_CSP_SOURCES.has(source));
+}
 
-  return relevant.some((directive) => {
-    const sources = directive.split(/\s+/).slice(1).filter(Boolean);
-    if (sources.length === 0) return false;
-    return sources.some((source) => !weakSources.has(source.toLowerCase()));
+// Permissions-Policy защищает, только если значение реально ограничивает
+// API. `camera=*` и директива без значения разрешают всё, `camera=()` —
+// запрещает, `camera=(self)` — сужает до своего origin.
+function permissionsPolicyIsRestrictive(value) {
+  if (typeof value !== "string" || value.trim() === "") return false;
+
+  const directives = value
+    .split(",")
+    .map((directive) => directive.trim())
+    .filter(Boolean);
+  if (directives.length === 0) return false;
+
+  return directives.some((directive) => {
+    const separator = directive.indexOf("=");
+    if (separator === -1) return false; // без allowlist — как "*"
+    const allowlist = directive.slice(separator + 1).trim();
+    return allowlist.startsWith("(") && allowlist.endsWith(")");
   });
 }
 
@@ -294,11 +360,20 @@ function analyzeSecurityHeaders(headers) {
     coopState = SAFE_COOP.has(firstToken(coopValue)) ? "ok" : "weak";
   }
 
-  // Permissions-Policy: безопасного «значения по умолчанию» нет — пустой
-  // заголовок бесполезен, любой непустой ограничивает API.
+  // Permissions-Policy: пустой заголовок бесполезен, но и непустой не
+  // всегда защищает — `camera=*` разрешает API всем.
   const permissionsValue = headerValue(headers, "permissions-policy");
-  const permissionsPolicyState =
-    permissionsValue === null ? "missing" : "ok";
+  let permissionsPolicyState = "missing";
+  if (permissionsValue !== null) {
+    permissionsPolicyState = permissionsPolicyIsRestrictive(permissionsValue)
+      ? "ok"
+      : "weak";
+  }
+
+  // ACAO — недоверенная строка, как Server: управляющие и bidi-символы
+  // вырезаем до отдачи в API. corsWildcard считается по исходному значению,
+  // поэтому "*" остаётся "*".
+  const corsWildcard = accessControlAllowOrigin === "*";
 
   return {
     hsts: hstsState === "ok",
@@ -315,8 +390,8 @@ function analyzeSecurityHeaders(headers) {
     permissionsPolicyState,
     coop: coopState === "ok",
     coopState,
-    corsWildcard: accessControlAllowOrigin === "*",
-    accessControlAllowOrigin,
+    corsWildcard,
+    accessControlAllowOrigin: sanitizeHeaderText(accessControlAllowOrigin),
   };
 }
 

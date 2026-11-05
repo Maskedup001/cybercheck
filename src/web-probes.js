@@ -143,7 +143,7 @@ function request(options = {}) {
     }
 
     // Заголовки и тело, уже полученные до таймаута: если страница ответила
-    // медленно, статус и cf-ray всё равно нужны отчёту (PS-11).
+    // медленно, статус и cf-ray всё равно нужны отчёту.
     let partialStatus = null;
     let partialHeaders = {};
     let bodyChunks = [];

@@ -224,6 +224,21 @@ function calculateScore(report) {
   // --- TLS / сертификат -----------------------------------------------------
   if (hasSSL) {
     score += WEIGHTS.ssl;
+  } else if (ssl.tlsConfirmed === true) {
+    // Заголовки пришли по HTTPS, но сертификат прочитать не удалось: это не
+    // «SSL не настроен» и не ошибка проверки в обычном смысле. Баллы за TLS
+    // не начисляются (валидность неизвестна), но и потолок 60 не ставится:
+    // сайт реально работает по HTTPS.
+    add({
+      id: "ssl-unverified",
+      title: "Сертификат не проверен",
+      desc: "Сервер ответил по HTTPS, но сертификат прочитать не удалось: срок действия и цепочка не проверены.",
+      severity: "medium",
+      weight: WEIGHTS.ssl,
+      recommendation:
+        "Проверьте сертификат вручную (срок, цепочку, соответствие домену).",
+      owasp: OWASP.crypto,
+    });
   } else if (ssl.error === "NO_WEB_PORT") {
     // Ни один веб-порт не открыт: TLS не проверялся. Утверждать «SSL нет» и
     // ставить потолок 30 здесь нельзя — это ложный вывод о недоступном хосте.
@@ -485,8 +500,13 @@ function calculateScore(report) {
           recommendation: "Добавьте флаг Secure всем cookie на HTTPS-сайте.",
           owasp: OWASP.crypto,
         });
-      } else if (ssl.error || (ssl.hasSSL && !ssl.valid)) {
-        // Отдельный штраф не начисляем: причина уже в ssl-error/bad-ssl.
+      } else if (
+        ssl.error ||
+        ssl.tlsConfirmed === true ||
+        (ssl.hasSSL && !ssl.valid)
+      ) {
+        // Отдельный штраф не начисляем: причина уже в ssl-error/ssl-unverified/
+        // bad-ssl. Флаг Secure без подтверждённого сертификата не проверить.
       } else {
         score += WEIGHTS.cookieSecure;
       }
@@ -616,7 +636,7 @@ function calculateScore(report) {
       score += WEIGHTS.dmarc;
     } else if (dmarc.multiple) {
       add({
-        id: "dmarc-invalid",
+        id: "dmarc-multiple",
         title: "Несколько DMARC-записей",
         desc: "В _dmarc опубликовано больше одной v=DMARC1. По RFC 7489 такие записи не применяются: политика не действует.",
         severity: "medium",
@@ -674,13 +694,22 @@ function calculateScore(report) {
     if (caaRestrictive) {
       score += WEIGHTS.caa;
     } else if (!isDnsUnavailable(caa, APEX_MISSING_ERRORS)) {
+      // Два разных случая: записи нет вовсе и запись есть, но не ограничивает
+      // выпуск (только iodef). Один текст «Нет CAA» на оба — ложь во втором
+      // случае и расходится с карточкой UI.
+      const hasRecords = Boolean(caa && caa.present === true);
+
       add({
-        id: "caa-missing",
-        title: "Нет CAA",
-        desc: "CAA-записи не ограничивают, какие удостоверяющие центры могут выпускать сертификаты.",
+        id: hasRecords ? "caa-not-restrictive" : "caa-missing",
+        title: hasRecords ? "CAA не ограничивает выпуск" : "Нет CAA",
+        desc: hasRecords
+          ? "Опубликованы только служебные CAA-записи (например, iodef): они не указывают, какие удостоверяющие центры могут выпускать сертификаты."
+          : "CAA-записи не ограничивают, какие удостоверяющие центры могут выпускать сертификаты.",
         severity: "low",
         weight: WEIGHTS.caa,
-        recommendation: "Добавьте CAA-запись issue с вашим удостоверяющим центром.",
+        recommendation: hasRecords
+          ? "Добавьте CAA-запись issue с вашим удостоверяющим центром (iodef её не заменяет)."
+          : "Добавьте CAA-запись issue с вашим удостоверяющим центром.",
         owasp: OWASP.misconfig,
       });
     } else {
@@ -778,9 +807,14 @@ function calculateScore(report) {
   let cap = 100;
 
   if (h.error) cap = Math.min(cap, 60);
-  if (ssl.error) cap = Math.min(cap, 60);
-  if (!ssl.hasSSL && !ssl.error) cap = Math.min(cap, 30);
-  else if (ssl.hasSSL && !ssl.valid) cap = Math.min(cap, 40);
+  // Тот же принцип: ошибка TLS режет оценку до 60 только когда HTTPS не
+  // подтверждён. Если заголовки пришли по HTTPS, потолок 60 — ложный.
+  if (ssl.error && ssl.tlsConfirmed !== true) cap = Math.min(cap, 60);
+  if (!ssl.hasSSL && !ssl.error && ssl.tlsConfirmed !== true) {
+    cap = Math.min(cap, 30);
+  } else if (ssl.hasSSL && !ssl.valid) {
+    cap = Math.min(cap, 40);
+  }
   if (has3306) cap = Math.min(cap, 70);
   if (ssl.supportsOldTls) cap = Math.min(cap, 85);
   if (hasSSL && daysLeft !== null && daysLeft <= 7) cap = Math.min(cap, 90);
