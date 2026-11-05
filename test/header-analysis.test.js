@@ -91,7 +91,7 @@ test("parseSetCookie: мусорные записи не роняют разбо
     "",
     "   ",
     "=orphan; Secure",
-    // Запись без "=" — не cookie: токен не должен попасть в name (PS-07).
+    // Запись без "=" — не cookie: токен не должен попасть в name.
     "nameonly",
     "good=1; Secure",
     42,
@@ -258,6 +258,106 @@ test("analyzeSecurityHeaders: небезопасные значения дают
       .coopState,
     "ok",
   );
+});
+
+test("analyzeSecurityHeaders: CSP оценивается по эффективной директиве", () => {
+  // script-src перекрывает default-src: политика «default-src 'self'»
+  // бессмысленна, если ниже разрешены любые скрипты.
+  const weakOverride = analyzeSecurityHeaders({
+    "content-security-policy": "default-src 'self'; script-src *",
+  });
+  assert.strictEqual(weakOverride.cspState, "weak");
+  assert.strictEqual(weakOverride.csp, false);
+
+  // Обратный случай: строгий script-src при слабом default-src — защита есть.
+  const strongOverride = analyzeSecurityHeaders({
+    "content-security-policy": "default-src *; script-src 'self'",
+  });
+  assert.strictEqual(strongOverride.cspState, "ok");
+
+  // inline-скрипты без nonce/hash — основной вектор XSS.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src 'self' 'unsafe-inline'",
+    }).cspState,
+    "weak",
+  );
+
+  // nonce рядом с unsafe-inline: браузер игнорирует unsafe-inline, политика рабочая.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src 'nonce-abc123' 'unsafe-inline'",
+    }).cspState,
+    "ok",
+  );
+
+  // script-src-elem перекрывает script-src для <script>.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src 'self'; script-src-elem *",
+    }).cspState,
+    "weak",
+  );
+
+  // Схема без хоста разрешает любой сайт по этой схеме.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src https:",
+    }).cspState,
+    "weak",
+  );
+
+  // Явный запрет скриптов — ограничение.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src 'none'",
+    }).cspState,
+    "ok",
+  );
+
+  // 'none' рядом с другими источниками браузер игнорирует — политика слабая.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src 'none' https:",
+    }).cspState,
+    "weak",
+  );
+});
+
+test("analyzeSecurityHeaders: Permissions-Policy без ограничений не защищает", () => {
+  const cases = [
+    ["camera=*", "weak"],
+    ["camera", "weak"],
+    ["camera=()", "ok"],
+    ["camera=(self)", "ok"],
+    ["geolocation=*, microphone=()", "ok"],
+  ];
+
+  for (const [value, expected] of cases) {
+    const result = analyzeSecurityHeaders({ "permissions-policy": value });
+    assert.strictEqual(result.permissionsPolicyState, expected, value);
+    assert.strictEqual(result.permissionsPolicy, expected === "ok", value);
+  }
+});
+
+test("analyzeSecurityHeaders: ACAO очищается от управляющих и bidi-символов", () => {
+  const cleaned = analyzeSecurityHeaders({
+    "access-control-allow-origin": "https://x\u202e.com\u0000",
+  });
+  assert.strictEqual(cleaned.accessControlAllowOrigin, "https://x.com");
+  assert.strictEqual(cleaned.corsWildcard, false);
+
+  const long = analyzeSecurityHeaders({
+    "access-control-allow-origin": `https://example.com/${"a".repeat(200)}`,
+  });
+  assert.strictEqual(long.accessControlAllowOrigin.length, 120);
+
+  // Санитизация не должна ломать распознавание wildcard.
+  const wildcard = analyzeSecurityHeaders({
+    "access-control-allow-origin": "  *  ",
+  });
+  assert.strictEqual(wildcard.corsWildcard, true);
+  assert.strictEqual(wildcard.accessControlAllowOrigin, "*");
 });
 
 test("analyzeSecurityHeaders: ACAO со звёздочкой и конкретный origin", () => {

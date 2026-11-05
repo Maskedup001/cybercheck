@@ -54,7 +54,7 @@ test("Fail-closed: невалидный ввод блокируется", () => 
   }
 });
 
-// --- BE-04: резолв через c-ares (resolve4/resolve6), с инъекцией ----------
+// --- Резолв через c-ares (resolve4/resolve6), с инъекцией -------------
 
 function fakeResolver({ a = [], aaaa = [], aError = null, aaaaError = null } = {}) {
   return {

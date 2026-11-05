@@ -34,6 +34,38 @@ function loadApiNormalizer() {
   return loadModule(API_PATH, ["normalizeFinding"]);
 }
 
+// render-result.js — ES-модуль с DOM. Для проверки экспортов достаточно
+// заглушек document/window: на загрузке модуль только читает document.title
+// и подписывается на beforeprint/afterprint, а рендер вызывается из тестов
+// отдельно (DOM-тестов в проекте нет).
+function loadRenderModule() {
+  const source = fs
+    .readFileSync(RENDER_PATH, "utf8")
+    .replace(/^import\b[\s\S]*?from\s+["'][^"']+["'];?/m, "")
+    .replace(/^export\s+/gm, "");
+
+  const context = {
+    document: { title: "CyberCheck" },
+    window: { addEventListener() {} },
+    console,
+  };
+  vm.createContext(context);
+  vm.runInContext(
+    `${source}
+     globalThis.__render = {
+       renderResult,
+       resetReportTitle,
+       createMailCard,
+       createHeadersCard,
+       createTlsCard,
+       createCookieCard,
+     };`,
+    context,
+  );
+
+  return context.__render;
+}
+
 // Ответ сервера подменяем: сеть в тестах не нужна.
 function loadApiWithResponse(payload) {
   const fakeFetch = async () => ({
@@ -81,7 +113,7 @@ test("api.js нормализует OWASP и не теряет новые пол
   }
 });
 
-test("api.js: мусорные score/grade/ports не попадают в рендер (FE-08, FE-09)", async () => {
+test("api.js: мусорные score/grade/ports не попадают в рендер", async () => {
   const { scanTarget } = loadApiWithResponse({
     host: 42,
     ports: [
@@ -126,29 +158,83 @@ test("api.js: корректные score/grade проходят как есть"
   assert.strictEqual(data.findings[0].owasp, "");
 });
 
-test("render-result.js содержит новые карточки, OWASP-бейдж и безопасный DOM", () => {
+test("api.js: сетевой сбой и таймаут — понятный русский текст", async () => {
+  const failingFetch = loadModule(API_PATH, ["scanTarget"], {
+    fetch: async () => {
+      throw new TypeError("Failed to fetch");
+    },
+  });
+
+  await assert.rejects(
+    () => failingFetch.scanTarget({ url: "example.com", consent: true }),
+    /Не удалось связаться с сервером/,
+  );
+
+  const hungFetch = loadModule(API_PATH, ["scanTarget"], {
+    fetch: async () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    },
+  });
+
+  await assert.rejects(
+    () => hungFetch.scanTarget({ url: "example.com", consent: true }),
+    /Превышено время ожидания/,
+  );
+});
+
+test("render-result.js: экспортируемые функции и безопасный DOM", () => {
+  const render = loadRenderModule();
   const source = fs.readFileSync(RENDER_PATH, "utf8");
 
-  for (const token of [
+  // Загрузчик снимает import/export, поэтому одного typeof мало: без
+  // `export` модуль исполнится, а app.js упадёт на линковке. Проверяем оба
+  // факта — объявление export и то, что функция реально загрузилась.
+  for (const name of ["renderResult", "resetReportTitle"]) {
+    assert.match(
+      source,
+      new RegExp(`^export function ${name}\\b`, "m"),
+      `${name} должен быть экспортирован`,
+    );
+    assert.strictEqual(typeof render[name], "function", `${name} не загрузилась`);
+  }
+
+  // Карточки — внутренние функции: экспорт им не нужен, важно, что объявлены.
+  for (const name of [
     "createMailCard",
+    "createHeadersCard",
+    "createTlsCard",
     "createCookieCard",
-    "createTechCard",
-    "createFilesCard",
-    "securityTxtValue",
-    "finding__owasp",
-    "detail__file-item--critical",
-    "detail__file-item--low",
-    "resetReportTitle",
-    "./report-model.js",
   ]) {
-    assert.ok(source.includes(token), `render-result.js должен содержать ${token}`);
+    assert.strictEqual(
+      typeof render[name],
+      "function",
+      `${name} не объявлена в модуле`,
+    );
   }
 
   // Пути и тексты карточек больше не дублируются в рендере.
   assert.strictEqual(source.includes("files.critical"), false);
-
   assert.strictEqual(source.includes(".innerHTML"), false);
   assert.strictEqual(source.includes("insertAdjacentHTML"), false);
+
+  // Решения о CAA и контексте HSTS/Secure живут в report-model.
+  assert.ok(source.includes("caaState("));
+  assert.ok(source.includes("secureContextState("));
+
+  // Заголовок вкладки сбрасывается только когда отчёт убран; после печати
+  // вкладка остаётся с именем отчёта.
+  const pageTitleAssignments = source.match(/document\.title\s*=\s*PAGE_TITLE\b/g) || [];
+  assert.strictEqual(
+    pageTitleAssignments.length,
+    1,
+    "PAGE_TITLE должен ставиться только в resetReportTitle",
+  );
+  assert.match(
+    source,
+    /addEventListener\("afterprint"[\s\S]*?document\.title = reportTitle \|\| PAGE_TITLE/,
+  );
 
   const model = fs.readFileSync(MODEL_PATH, "utf8");
   assert.ok(model.includes("files.critical"), "report-model.js читает files.critical");

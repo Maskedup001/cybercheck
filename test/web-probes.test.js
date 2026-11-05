@@ -350,7 +350,9 @@ test("request: таймаут возвращает ошибку, не броса
       port: server.port,
       hostname: "localhost",
       hasTls: false,
-      timeoutMs: 100,
+      // Не 100 мс: на загруженном CI короткий таймаут срабатывал раньше,
+      // чем сервер успевал принять соединение, и тест флейкал.
+      timeoutMs: 400,
     });
   });
 
@@ -430,7 +432,7 @@ test("request: таймаут тела сохраняет статус и заг
     hostname: "localhost",
     hasTls: false,
     readBody: true,
-    timeoutMs: 100,
+    timeoutMs: 400,
   });
 
   assert.equal(result.status, 200);

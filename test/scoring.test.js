@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const { calculateScore, WEIGHTS } = require("../src/scoring");
+const { analyzeSecurityHeaders } = require("../src/header-analysis");
 
 const okSSL = { hasSSL: true, valid: true, daysLeft: 200 };
 
@@ -217,6 +218,46 @@ test("ошибка TLS → ssl-error и ≤ 60, без no-ssl", () => {
   assert.ok(r.score <= 60);
   assert.ok(r.findings.some((f) => f.id === "ssl-error"));
   assert.ok(!r.findings.some((f) => f.id === "no-ssl"));
+});
+
+test("ошибка TLS при подтверждённом HTTPS не ставит потолок 60", () => {
+  const r = calculateScore(
+    report({
+      ssl: { hasSSL: false, error: "HANDSHAKE_FAILED", tlsConfirmed: true },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "ssl-error"));
+  assert.ok(!r.findings.some((f) => f.id === "no-ssl"));
+
+  const finding = r.findings.find((f) => f.id === "ssl-unverified");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "medium");
+  assert.match(finding.title, /Сертификат не проверен/);
+
+  // Баллы за TLS (12), HSTS (8) и срок сертификата (3) не начисляются:
+  // валидность TLS неизвестна. Но жёсткого потолка 60 нет — сайт реально
+  // ответил по HTTPS, поэтому 100 - 23 = 77, а не 60.
+  assert.strictEqual(r.score, 77);
+  assert.ok(r.score > 60);
+});
+
+test("CSP с wildcard в script-src не даёт 10 баллов", () => {
+  // Проверка идёт через реальный разбор заголовка: scoring должен получать
+  // csp=false и weak-находку, а не верить факту присутствия заголовка.
+  const analyzed = analyzeSecurityHeaders({
+    "content-security-policy": "default-src 'self'; script-src *",
+  });
+
+  const r = calculateScore(
+    report({
+      headers: { ...okHeaders, csp: analyzed.csp, cspState: analyzed.cspState },
+    }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "weak-csp"));
+  assert.ok(!r.findings.some((f) => f.id === "no-csp"));
+  assert.strictEqual(r.score, 90);
 });
 
 test("сертификат через 7 дней → 90/B", () => {
@@ -564,7 +605,7 @@ test("SPF +all → spf-weak и 0 баллов", () => {
   assert.strictEqual(r.score, 90);
 });
 
-test("две DMARC-записи → dmarc-invalid и 0 баллов", () => {
+test("две DMARC-записи → dmarc-multiple и 0 баллов", () => {
   const r = calculateScore(
     report({
       dns: {
@@ -582,12 +623,13 @@ test("две DMARC-записи → dmarc-invalid и 0 баллов", () => {
     }),
   );
 
-  assert.ok(r.findings.some((f) => f.id === "dmarc-invalid"));
+  assert.ok(r.findings.some((f) => f.id === "dmarc-multiple"));
+  assert.ok(!r.findings.some((f) => f.id === "dmarc-invalid"));
   // 100 - 3 = 97, потолок для medium-находки — 90.
   assert.strictEqual(r.score, 90);
 });
 
-test("CAA только с iodef не даёт баллов", () => {
+test("CAA только с iodef → «не ограничивает», а не «нет CAA»", () => {
   const r = calculateScore(
     report({
       dns: {
@@ -602,7 +644,25 @@ test("CAA только с iodef не даёт баллов", () => {
     }),
   );
 
+  const finding = r.findings.find((f) => f.id === "caa-not-restrictive");
+  assert.ok(finding);
+  assert.match(finding.title, /не ограничивает/);
+  assert.ok(!r.findings.some((f) => f.id === "caa-missing"));
+  assert.strictEqual(r.score, 98);
+});
+
+test("CAA нет вовсе → caa-missing", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        caa: { present: false, records: [], restrictive: false, error: "ENODATA" },
+      },
+    }),
+  );
+
   assert.ok(r.findings.some((f) => f.id === "caa-missing"));
+  assert.ok(!r.findings.some((f) => f.id === "caa-not-restrictive"));
   assert.strictEqual(r.score, 98);
 });
 

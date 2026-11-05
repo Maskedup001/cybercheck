@@ -5,8 +5,16 @@ const {
   parseTarget,
   rateKey,
   clampTimeout,
+  budgetLeft,
+  timeoutFor,
+  hasBudget,
+  stageDeadline,
   effectiveHasTls,
+  selectWebPorts,
+  withCriticalFiles,
+  buildReport,
   isHtmlRequestPath,
+  isLiteralIp,
 } = require("../src/scan-helpers");
 
 // --- Схема определяется в начале адреса ----------------------------
@@ -72,6 +80,151 @@ test("clampTimeout: остаток бюджета ограничивает эт�
   assert.strictEqual(clampTimeout(5000, deadline, 11_000), 0);
 });
 
+test("budgetLeft: без дедлайна время не ограничено", () => {
+  assert.strictEqual(budgetLeft(null, 1000), Infinity);
+  assert.strictEqual(budgetLeft(undefined, 1000), Infinity);
+  assert.strictEqual(budgetLeft(10_000, 9000), 1000);
+  // Просроченный дедлайн — ровно ноль, а не отрицательное число.
+  assert.strictEqual(budgetLeft(10_000, 11_000), 0);
+});
+
+test("timeoutFor: таймаут попытки не больше остатка", () => {
+  assert.strictEqual(timeoutFor(5000, 20_000, 10_000), 5000);
+  assert.strictEqual(timeoutFor(5000, 12_000, 10_000), 2000);
+  assert.strictEqual(timeoutFor(5000, 10_000, 11_000), 0);
+  // Мусорный таймаут не превращается в бесконечность.
+  assert.strictEqual(timeoutFor(Number.NaN, 20_000, 10_000), 0);
+  assert.strictEqual(timeoutFor(-1, 20_000, 10_000), 0);
+  assert.strictEqual(timeoutFor(5000, null, 10_000), 5000);
+});
+
+test("hasBudget: остатка должно хватать на действие целиком", () => {
+  assert.strictEqual(hasBudget(10_000, 1000, 8500), true);
+  assert.strictEqual(hasBudget(10_000, 1000, 9500), false);
+  assert.strictEqual(hasBudget(null, 1000, 9500), true);
+});
+
+test("stageDeadline: этап не выходит ни за свой таймаут, ни за дедлайн", () => {
+  // Свободный дедлайн: этап получает свой таймаут.
+  assert.strictEqual(stageDeadline(5000, 20_000, 10_000), 15_000);
+  // Дедлайн скана ближе: побеждает он.
+  assert.strictEqual(stageDeadline(5000, 12_000, 10_000), 12_000);
+  // Дедлайна нет: только таймаут этапа.
+  assert.strictEqual(stageDeadline(5000, null, 10_000), 15_000);
+  // Нулевой таймаут не превращается в вечность.
+  assert.strictEqual(stageDeadline(0, null, 10_000), 10_001);
+});
+
+// --- Выбор веб-портов ---------------------------------------------
+
+test("selectWebPorts: только открытые веб-порты в порядке приоритета", () => {
+  assert.deepStrictEqual(
+    selectWebPorts([
+      { port: 8080, status: "open" },
+      { port: 443, status: "open" },
+      { port: 80, status: "closed" },
+      { port: 22, status: "open" },
+    ]),
+    [443, 8080],
+  );
+
+  assert.deepStrictEqual(selectWebPorts([]), []);
+  assert.deepStrictEqual(selectWebPorts(null), []);
+  assert.deepStrictEqual(
+    selectWebPorts([{ port: 80, status: "open" }, { port: 443, status: "closed" }]),
+    [80],
+  );
+});
+
+// --- Критические файлы и сборка отчёта ----------------------------
+
+test("withCriticalFiles: critical только для реально критичных путей", () => {
+  const files = {
+    exposed: ["/.env", "/.DS_Store", "/.git/config"],
+    results: [],
+  };
+
+  assert.deepStrictEqual(withCriticalFiles(files).critical, [
+    { path: "/.env", severity: "high" },
+    { path: "/.git/config", severity: "high" },
+  ]);
+
+  // .DS_Store остаётся в exposed, но критичным не считается.
+  assert.ok(withCriticalFiles(files).exposed.includes("/.DS_Store"));
+
+  assert.strictEqual(withCriticalFiles(null), null);
+  assert.strictEqual(withCriticalFiles(undefined), undefined);
+  assert.deepStrictEqual(withCriticalFiles({ exposed: [] }).critical, []);
+});
+
+test("buildReport: считает оценку, размечает файлы и отдаёт все секции", () => {
+  const headers = {
+    hsts: true,
+    csp: true,
+    xframe: true,
+    xcontent: true,
+    server: "",
+    referrerPolicy: true,
+    permissionsPolicy: true,
+    coop: true,
+    corsWildcard: false,
+    cookies: [],
+    cookieSummary: {
+      total: 0,
+      secure: 0,
+      httpOnly: 0,
+      sameSite: 0,
+      missingSecure: 0,
+      missingHttpOnly: 0,
+      missingSameSite: 0,
+    },
+  };
+
+  const report = buildReport(
+    "example.com",
+    [{ port: 443, status: "open" }],
+    { hasSSL: true, valid: true, daysLeft: 200 },
+    headers,
+    {
+      dns: {
+        applicable: true,
+        spf: { present: true },
+        dmarc: { present: true, policy: "reject" },
+        caa: { present: true, restrictive: true },
+      },
+      files: { exposed: ["/.env", "/.DS_Store"], results: [] },
+      securityTxt: { present: true, status: 200 },
+      fingerprint: null,
+    },
+  );
+
+  assert.strictEqual(report.host, "example.com");
+  assert.strictEqual(report.score, 40); // потолок из-за открытого /.env
+  assert.strictEqual(report.grade, "D");
+  assert.deepStrictEqual(report.files.critical, [
+    { path: "/.env", severity: "high" },
+  ]);
+  assert.ok(report.findings.some((finding) => finding.id === "exposed-env"));
+  assert.deepStrictEqual(report.ports, [{ port: 443, status: "open" }]);
+});
+
+test("buildReport: без данных Step 1 отчёт всё равно собирается", () => {
+  const report = buildReport(
+    "example.com",
+    [],
+    { hasSSL: false, error: "NO_WEB_PORT" },
+    { error: true },
+    {},
+  );
+
+  assert.strictEqual(report.dns, null);
+  assert.strictEqual(report.files, null);
+  assert.strictEqual(report.securityTxt, null);
+  assert.strictEqual(report.fingerprint, null);
+  assert.ok(report.findings.some((finding) => finding.id === "tls-not-checked"));
+  assert.strictEqual(typeof report.score, "number");
+});
+
 // --- Источник истины для TLS --------------------------------------
 
 test("effectiveHasTls: протокол заголовков важнее checkSSL", () => {
@@ -110,7 +263,7 @@ test("effectiveHasTls: протокол заголовков важнее checkS
   );
 });
 
-// --- TML не отдаётся статикой ------------------------------------
+// --- HTML не отдаётся статикой ------------------------------------
 
 test("isHtmlRequestPath: ловит .html и его encoded-варианты", () => {
   for (const path of [
@@ -127,4 +280,16 @@ test("isHtmlRequestPath: ловит .html и его encoded-варианты", (
   for (const path of ["/", "/app.js", "/assets/css/main.css", "/api/scan"]) {
     assert.strictEqual(isHtmlRequestPath(path), false, path);
   }
+});
+
+// --- Литеральный IP ------------------------------------------------
+
+test("isLiteralIp: принимает только IPv4/IPv6-литералы", () => {
+  assert.strictEqual(isLiteralIp("127.0.0.1"), true);
+  assert.strictEqual(isLiteralIp("::1"), true);
+  assert.strictEqual(isLiteralIp("example.com"), false);
+  assert.strictEqual(isLiteralIp("localhost"), false);
+  assert.strictEqual(isLiteralIp(""), false);
+  assert.strictEqual(isLiteralIp(undefined), false);
+  assert.strictEqual(isLiteralIp(null), false);
 });

@@ -3,53 +3,53 @@ const assert = require("node:assert");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
-test("TRUST_PROXY=0 не роняет сервер", async () => {
-  return new Promise((resolve, reject) => {
-    const serverPath = path.join(__dirname, "../src/server.js");
-    const child = spawn(process.execPath, [serverPath], {
-      env: {
-        ...process.env,
-        TRUST_PROXY: "0",
-        PUBLIC_ORIGIN: "http://localhost:3000",
-        PORT: "0", // <--- Чтобы не конфликтовать с портом 3000
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+test("TRUST_PROXY=0 не роняет сервер", async (t) => {
+  const child = spawn(process.execPath, [path.join(__dirname, "../src/server.js")], {
+    env: {
+      ...process.env,
+      TRUST_PROXY: "0",
+      PUBLIC_ORIGIN: "http://localhost:3000",
+      PORT: "0", // не конфликтуем с портом 3000
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 
-    let stdout = "";
-    let stderr = "";
-    let resolved = false;
+  t.after(() => child.kill());
 
-    child.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    child.stderr.on("data", (d) => {
-      stderr += d.toString();
-    });
+  let stdout = "";
+  let stderr = "";
 
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  // Ждём именно строку запуска: раньше тест всегда висел 5 секунд, даже
+  // когда сервер поднимался за двести миллисекунд.
+  await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      child.kill(); // <--- Убиваем процесс, чтобы не висел
-      if (stderr.includes("ОШИБКА")) {
-        reject(new Error(`Сервер выдал ошибку: ${stderr}`));
-      } else if (!stdout.includes("Сканер запущен")) {
-        reject(
-          new Error(`Сервер не запустился: stdout=${stdout}, stderr=${stderr}`),
-        );
-      } else {
-        child.kill();
-        resolve();
-      }
-    }, 5000);
+      reject(
+        new Error(`Сервер не запустился за 10 с: stdout=${stdout}, stderr=${stderr}`),
+      );
+    }, 10_000);
+
+    const finish = (error) => {
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.includes("Сканер запущен")) finish();
+    });
 
     child.on("exit", (code) => {
-      if (resolved) return;
-      clearTimeout(timer);
       if (code === 1) {
-        resolved = true;
-        reject(new Error(`Сервер упал с кодом 1: ${stderr}`));
+        finish(new Error(`Сервер упал с кодом 1: ${stderr}`));
       }
     });
   });
+
+  assert.match(stdout, /Сканер запущен/);
+  assert.strictEqual(stderr.includes("ОШИБКА"), false, stderr);
 });

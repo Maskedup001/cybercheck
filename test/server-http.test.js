@@ -6,6 +6,11 @@ const path = require("node:path");
 
 // HTTP-слой проверяется на живом процессе: приложение поднимается на
 // случайном порту, тесты ходят в него через fetch (Node 22).
+//
+// 503 (потолок одновременных сканов) и 504 (таймаут скана) здесь не
+// проверяются: чтобы получить их, нужны 25 параллельных сканов или
+// зависший TLS-сервер, то есть подмена внутренних проверок. Это отдельная
+// задача с внедрением зависимостей, а не HTTP-контракт.
 const SERVER_PATH = path.join(__dirname, "../src/server.js");
 
 let child = null;
@@ -35,7 +40,10 @@ function startServer() {
       reject(new Error(`${message}\nstderr=${stderr}`));
     };
 
-    const timer = setTimeout(() => fail("сервер не запустился за 10 с"), 10_000);
+    const timer = setTimeout(
+      () => fail("сервер не запустился за 10 с"),
+      10_000,
+    );
 
     proc.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -119,7 +127,10 @@ test("GET / отдаёт HTML с подставленным BASE_URL и security
   assert.strictEqual(res.headers.get("cache-control"), "no-store");
   assert.strictEqual(res.headers.get("x-frame-options"), "DENY");
   assert.strictEqual(res.headers.get("x-content-type-options"), "nosniff");
-  assert.match(res.headers.get("content-security-policy") || "", /script-src 'self'/);
+  assert.match(
+    res.headers.get("content-security-policy") || "",
+    /script-src 'self'/,
+  );
   assert.strictEqual(res.headers.get("x-powered-by"), null);
 
   const html = await res.text();
@@ -148,11 +159,11 @@ test("/index.html редиректит на /", async () => {
 test("POST /api/scan: невалидные запросы — 400 JSON", async () => {
   const cases = [
     [{ url: "example.com" }, /право на проверку/],
-    [{ url: "    ", consent: true, consentTimestamp: Date.now() }, /Некорректный адрес/],
     [
-      { url: "example.com", consent: true, consentTimestamp: 1 },
-      /устарело/,
+      { url: "    ", consent: true, consentTimestamp: Date.now() },
+      /Некорректный адрес/,
     ],
+    [{ url: "example.com", consent: true, consentTimestamp: 1 }, /устарело/],
     [
       { url: "ftp://example.com", consent: true, consentTimestamp: Date.now() },
       /только http и https/,
@@ -198,6 +209,96 @@ test("POST /api/scan: экранированный query с :// не ломае�
   assert.strictEqual(res.status, 400);
   const body = await res.json();
   assert.match(body.error, /Не удалось проверить адрес/);
+});
+
+test("POST /api/scan: после неудачной попытки включается кулдаун", async (t) => {
+  // Отдельный процесс: кулдаун живёт в памяти сервера, и проверка не должна
+  // зависеть от того, что успели сделать предыдущие тесты.
+  const started = await startServer();
+  t.after(() => started.proc.kill());
+
+  const scan = (url) =>
+    fetch(`${started.url}/api/scan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        consent: true,
+        consentTimestamp: Date.now(),
+      }),
+    });
+
+  // Приватный адрес — валидный запрос, который дошёл до резолва и получил 400.
+  const first = await scan("http://127.0.0.1/");
+  assert.strictEqual(first.status, 400);
+  assert.match((await first.json()).error, /Не удалось проверить адрес/);
+
+  // Кулдаун ставится и после ошибки: такие ответы — оракул для перебора
+  // внутренних имён, поэтому 10 секунд действуют на любой исход скана.
+  const second = await scan("http://127.0.0.1/");
+  assert.strictEqual(second.status, 429);
+
+  const retryAfter = second.headers.get("retry-after");
+  assert.match(retryAfter || "", /^[1-9]\d*$/);
+  assert.ok(Number(retryAfter) <= 10);
+  assert.match((await second.json()).error, /Подожди \d+ сек/);
+
+  // Валидация выполняется раньше лимита: мусорный запрос получает свой 400,
+  // а не 429, и кулдаун не продлевает.
+  const invalid = await scan("    ");
+  assert.strictEqual(invalid.status, 400);
+});
+
+test("POST /api/scan: не-JSON Content-Type — 415", async () => {
+  const res = await fetch(`${baseUrl}/api/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: JSON.stringify({
+      url: "example.com",
+      consent: true,
+      consentTimestamp: Date.now(),
+    }),
+  });
+
+  assert.strictEqual(res.status, 415);
+  assert.match((await res.json()).error, /Поддерживается только JSON/);
+});
+
+test("POST /api/scan: тело больше 8 КБ — 413", async () => {
+  const res = await fetch(`${baseUrl}/api/scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: "example.com",
+      consent: true,
+      consentTimestamp: Date.now(),
+      padding: "x".repeat(9000),
+    }),
+  });
+
+  assert.strictEqual(res.status, 413);
+  assert.match((await res.json()).error, /Слишком большой запрос/);
+});
+
+test("CORS: свой origin разрешён, чужой — нет", async () => {
+  const preflight = (origin) =>
+    fetch(`${baseUrl}/api/scan`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: origin,
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+
+  const allowed = await preflight("http://localhost:3000");
+  assert.strictEqual(allowed.status, 204);
+  assert.strictEqual(
+    allowed.headers.get("access-control-allow-origin"),
+    "http://localhost:3000",
+  );
+
+  const foreign = await preflight("https://evil.example");
+  assert.strictEqual(foreign.headers.get("access-control-allow-origin"), null);
 });
 
 test("неизвестный путь — JSON 404", async () => {
