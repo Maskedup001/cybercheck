@@ -4,7 +4,9 @@ const net = require("node:net");
 const http = require("node:http");
 const https = require("node:https");
 
-const { checkPort, checkSSL, checkHeaders } = require("../src/checks");
+const { checkPort } = require("../src/probes/ports");
+const { checkSSL } = require("../src/probes/tls");
+const { checkHeaders } = require("../src/probes/http-headers");
 const { selfSignedCertificate } = require("./fixtures/tls/self-signed");
 
 // Локальный сервер на случайном порту: тесты не должны зависеть от внешней

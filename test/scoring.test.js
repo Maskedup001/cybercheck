@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const { calculateScore, WEIGHTS } = require("../src/scoring");
-const { analyzeSecurityHeaders } = require("../src/header-analysis");
+const { analyzeSecurityHeaders } = require("../src/probes/header-analysis");
 
 const okSSL = { hasSSL: true, valid: true, daysLeft: 200 };
 

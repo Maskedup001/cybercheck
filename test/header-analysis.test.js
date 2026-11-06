@@ -6,7 +6,7 @@ const {
   analyzeSecurityHeaders,
   detectWaf,
   detectCms,
-} = require("../src/header-analysis");
+} = require("../src/probes/header-analysis");
 
 test("parseSetCookie: undefined возвращает пустой массив", () => {
   assert.deepStrictEqual(parseSetCookie(undefined), []);

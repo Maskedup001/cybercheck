@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { CooldownGate, ScanLimiter } = require("../src/rate-limit");
+const { CooldownGate, ScanLimiter } = require("../src/utils/rate-limit");
 
 // Часы подменяются: кулдаун 10 секунд проверяется мгновенно, без sleep и
 // без флейков на медленном CI.

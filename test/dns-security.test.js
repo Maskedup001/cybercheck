@@ -6,7 +6,7 @@ const {
   parseDmarcTxt,
   parseCaaRecords,
   checkDnsSecurity,
-} = require("../src/dns-security");
+} = require("../src/probes/dns-security");
 
 // Фейковый резолвер: никаких реальных DNS-запросов.
 // txt/caa — объекты вида { "имя": records } или { "имя": Error }.

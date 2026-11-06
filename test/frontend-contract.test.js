@@ -5,9 +5,9 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const ROOT = path.join(__dirname, "..");
-const API_PATH = path.join(ROOT, "public/assets/js/api.js");
-const RENDER_PATH = path.join(ROOT, "public/assets/js/render-result.js");
-const MODEL_PATH = path.join(ROOT, "public/assets/js/report-model.js");
+const API_PATH = path.join(ROOT, "public/assets/js/api/client.js");
+const RENDER_PATH = path.join(ROOT, "public/assets/js/ui/render-result.js");
+const MODEL_PATH = path.join(ROOT, "public/assets/js/ui/report-model.js");
 
 // ES-модули без DOM: снимаем export и забираем нужные функции из контекста.
 function loadModule(filePath, names, extraContext = {}) {

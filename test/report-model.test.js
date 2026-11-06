@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-const MODEL_PATH = path.join(__dirname, "../public/assets/js/report-model.js");
+const MODEL_PATH = path.join(__dirname, "../public/assets/js/ui/report-model.js");
 
 // report-model.js — ES-модуль без DOM: снимаем export и забираем функции.
 function loadModel() {

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { isPublicIp, resolvePublicIps } = require("../src/net-guard");
+const { isPublicIp, resolvePublicIps } = require("../src/core/net-guard");
 
 const blocked = [
   "0.0.0.0",

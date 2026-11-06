@@ -15,7 +15,7 @@ const {
   buildReport,
   isHtmlRequestPath,
   isLiteralIp,
-} = require("../src/scan-helpers");
+} = require("../src/utils/scan-helpers");
 
 // --- Схема определяется в начале адреса ----------------------------
 
@@ -208,7 +208,7 @@ test("buildReport: считает оценку, размечает файлы и
   assert.deepStrictEqual(report.ports, [{ port: 443, status: "open" }]);
 });
 
-test("buildReport: без данных Step 1 отчёт всё равно собирается", () => {
+test("buildReport: без данных новых проверок отчёт всё равно собирается", () => {
   const report = buildReport(
     "example.com",
     [],

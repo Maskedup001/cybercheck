@@ -7,7 +7,7 @@ const {
   checkSensitiveFiles,
   checkSecurityTxt,
   checkFingerprint,
-} = require("../src/web-probes");
+} = require("../src/probes/web-probes");
 
 // Локальный сервер только на 127.0.0.1; порт всегда случайный.
 // Уничтожаем открытые сокеты перед close(), иначе keep-alive/зависшие
