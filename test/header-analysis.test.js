@@ -307,6 +307,27 @@ test("analyzeSecurityHeaders: CSP оценивается по эффективн
     "weak",
   );
 
+  // Один permissive-источник в объединении перекрывает строгий 'self'.
+  for (const value of [
+    "script-src 'self' https:",
+    "script-src 'self' data:",
+    "script-src 'self' https://*",
+  ]) {
+    assert.strictEqual(
+      analyzeSecurityHeaders({ "content-security-policy": value }).cspState,
+      "weak",
+      value,
+    );
+  }
+
+  // nonce/hash и конкретный хост остаются строгими.
+  assert.strictEqual(
+    analyzeSecurityHeaders({
+      "content-security-policy": "script-src 'self' 'nonce-abc123'",
+    }).cspState,
+    "ok",
+  );
+
   // Явный запрет скриптов — ограничение.
   assert.strictEqual(
     analyzeSecurityHeaders({
@@ -330,6 +351,8 @@ test("analyzeSecurityHeaders: Permissions-Policy без ограничений �
     ["camera", "weak"],
     ["camera=()", "ok"],
     ["camera=(self)", "ok"],
+    ["camera=(*)", "weak"],
+    ["camera=(\"*\")", "weak"],
     ["geolocation=*, microphone=()", "ok"],
   ];
 

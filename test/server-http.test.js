@@ -25,6 +25,7 @@ function startServer() {
         PUBLIC_ORIGIN: "http://localhost:3000",
         PORT: "0",
         NODE_ENV: "test",
+        DEMO_MODE: "false",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -137,6 +138,7 @@ test("GET / отдаёт HTML с подставленным BASE_URL и security
   assert.match(html, /CyberCheck/);
   assert.strictEqual(html.includes("__BASE_URL__"), false);
   assert.match(html, /maxlength="2048"/);
+  assert.match(html, /id="url"[^>]*aria-describedby="form-hint"/);
 });
 
 test("encoded и ./ варианты index.html не отдают шаблон из статики", async () => {
@@ -262,6 +264,17 @@ test("POST /api/scan: не-JSON Content-Type — 415", async () => {
 
   assert.strictEqual(res.status, 415);
   assert.match((await res.json()).error, /Поддерживается только JSON/);
+});
+
+test("POST /api/scan/unknown: 404, а не 415 про формат тела", async () => {
+  const res = await fetch(`${baseUrl}/api/scan/unknown`, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: "не json",
+  });
+
+  assert.strictEqual(res.status, 404);
+  assert.deepStrictEqual(await res.json(), { error: "Не найдено" });
 });
 
 test("POST /api/scan: тело больше 8 КБ — 413", async () => {

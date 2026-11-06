@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { calculateScore, WEIGHTS } = require("../src/scoring");
+const { calculateScore, WEIGHTS, FILE_CHECKS } = require("../src/scoring");
+const { SENSITIVE_FILE_PATHS } = require("../src/core/file-paths");
 const { analyzeSecurityHeaders } = require("../src/probes/header-analysis");
 
 const okSSL = { hasSSL: true, valid: true, daysLeft: 200 };
@@ -62,6 +63,15 @@ function report(overrides = {}) {
 test("сумма положительных весов ровно 100", () => {
   const sum = Object.values(WEIGHTS).reduce((total, value) => total + value, 0);
   assert.strictEqual(sum, 100);
+});
+
+test("FILE_CHECKS покрывает ровно те пути, которые проверяет HEAD-проба", () => {
+  // Единый источник путей — core/file-paths.js. Если добавить путь только
+  // туда, сканер начнёт его проверять, а scoring молча не создаст находку.
+  assert.deepStrictEqual(
+    FILE_CHECKS.map((check) => check.path).sort(),
+    [...SENSITIVE_FILE_PATHS].sort(),
+  );
 });
 
 test("всё хорошо → 100/A без находок", () => {
@@ -415,6 +425,19 @@ test("нет security.txt → 98/A + low", () => {
   assert.strictEqual(r.score, 98);
   assert.strictEqual(r.grade, "A");
   const finding = r.findings.find((f) => f.id === "security-txt-missing");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "low");
+  assert.strictEqual(finding.weight, 2);
+});
+
+test("некорректный security.txt (200 без Contact) → 98/A + low", () => {
+  const r = calculateScore(
+    report({ securityTxt: { present: false, status: 200, error: null } }),
+  );
+
+  assert.strictEqual(r.score, 98);
+  assert.strictEqual(r.grade, "A");
+  const finding = r.findings.find((f) => f.id === "security-txt-invalid");
   assert.ok(finding);
   assert.strictEqual(finding.severity, "low");
   assert.strictEqual(finding.weight, 2);

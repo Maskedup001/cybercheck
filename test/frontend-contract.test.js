@@ -45,7 +45,25 @@ function loadRenderModule() {
     .replace(/^export\s+/gm, "");
 
   const context = {
-    document: { title: "CyberCheck" },
+    document: {
+      title: "CyberCheck",
+      // Минимальный SVG-DOM: createInfoIcon вызывается только из нового теста,
+      // но модуль не должен зависеть от браузера при загрузке.
+      createElementNS(namespace, tag) {
+        return {
+          namespace,
+          tag,
+          attrs: {},
+          children: [],
+          setAttribute(name, value) {
+            this.attrs[name] = String(value);
+          },
+          append(...children) {
+            this.children.push(...children);
+          },
+        };
+      },
+    },
     window: { addEventListener() {} },
     console,
   };
@@ -59,6 +77,8 @@ function loadRenderModule() {
        createHeadersCard,
        createTlsCard,
        createCookieCard,
+       createInfoIcon,
+       dnsSectionUnavailable,
      };`,
     context,
   );
@@ -182,6 +202,70 @@ test("api.js: сетевой сбой и таймаут — понятный р�
     () => hungFetch.scanTarget({ url: "example.com", consent: true }),
     /Превышено время ожидания/,
   );
+});
+
+test("render-result.js: подсказка — SVG-иконка, а не текстовый символ", () => {
+  const render = loadRenderModule();
+  const icon = render.createInfoIcon();
+
+  assert.strictEqual(icon.tag, "svg");
+  assert.strictEqual(icon.namespace, "http://www.w3.org/2000/svg");
+  assert.strictEqual(icon.attrs.class, "tooltip-icon");
+  assert.strictEqual(icon.attrs["aria-hidden"], "true");
+  assert.strictEqual(icon.attrs.width, "14");
+  assert.strictEqual(icon.attrs.height, "14");
+  assert.deepStrictEqual(
+    Array.from(icon.children, (child) => child.tag),
+    ["circle", "line", "line"],
+  );
+  assert.strictEqual(icon.children[0].attrs.r, "10");
+
+  // Текстовый символ не должен вернуться: он зависит от шрифта и выглядит
+  // по-разному на Windows/macOS/Android.
+  const source = fs.readFileSync(RENDER_PATH, "utf8");
+  assert.strictEqual(source.includes("ⓘ"), false);
+  assert.match(source, /term\.append\(createInfoIcon\(\)\)/);
+
+  const details = fs.readFileSync(
+    path.join(ROOT, "public/assets/css/components/details.css"),
+    "utf8",
+  );
+  assert.match(details, /\.tooltip-icon\s*\{[^}]*margin-left:\s*4px/s);
+  assert.match(details, /\.tooltip-icon\s*\{[^}]*vertical-align:\s*middle/s);
+  assert.match(details, /\.tooltip-icon\s*\{[^}]*color:\s*var\(--color-text-muted\)/s);
+  assert.doesNotMatch(details, /\.detail__label--hint/);
+
+  const print = fs.readFileSync(
+    path.join(ROOT, "public/assets/css/print.css"),
+    "utf8",
+  );
+  assert.match(print, /\.tooltip-icon\s*\{\s*display:\s*none !important/s);
+});
+
+test("render-result.js: ENOTFOUND для SPF не выдаётся за отсутствие записи", () => {
+  const render = loadRenderModule();
+
+  // SPF: только ENODATA — доказательство отсутствия. ENOTFOUND у apex —
+  // сбой/рассинхрон резолвера, поэтому карточка должна писать «не удалось».
+  assert.strictEqual(
+    render.dnsSectionUnavailable({ present: false, error: "ENOTFOUND" }, [
+      "ENODATA",
+    ]),
+    true,
+  );
+  assert.strictEqual(
+    render.dnsSectionUnavailable({ present: false, error: "ENODATA" }, [
+      "ENODATA",
+    ]),
+    false,
+  );
+
+  // DMARC: ENOTFOUND — штатное отсутствие поддоменной записи.
+  assert.strictEqual(
+    render.dnsSectionUnavailable({ present: false, error: "ENOTFOUND" }),
+    false,
+  );
+  assert.strictEqual(render.dnsSectionUnavailable(null), true);
 });
 
 test("render-result.js: экспортируемые функции и безопасный DOM", () => {

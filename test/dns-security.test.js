@@ -128,6 +128,19 @@ test("parseSpfTxt: +all, ?all и пустой SPF помечаются weak", ()
   }
 });
 
+test("parseSpfTxt: без all действует неявный ?all — это weak", () => {
+  // RFC 7208: если механизма all нет, действует ?all (neutral). Домен не
+  // говорит получателю, что делать с письмами от чужих серверов.
+  for (const record of [
+    "v=spf1 include:_spf.example.com",
+    "v=spf1 ip4:192.0.2.0/24",
+  ]) {
+    const result = parseSpfTxt([[record]]);
+    assert.strictEqual(result.present, true, record);
+    assert.strictEqual(result.weak, true, record);
+  }
+});
+
 // --- DMARC ----------------------------------------------------------------
 
 test("parseDmarcTxt: p=reject считается strict", () => {

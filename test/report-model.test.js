@@ -26,6 +26,7 @@ function loadModel() {
        caaState,
        secureContextState,
        reportTitleFor,
+       buildShareText,
      };`,
     context,
   );
@@ -199,6 +200,15 @@ test("filesNote: files === null — честное «не удалось про�
   assert.match(model.filesNote(null), /Не удалось проверить/);
 });
 
+test("filesNote: пустой объект и пустые results — «проверка не выполнялась»", () => {
+  assert.match(model.filesNote({}), /не выполнялись/);
+  assert.match(
+    model.filesNote({ exposed: [], critical: [], results: [] }),
+    /не выполнялись/,
+  );
+  assert.doesNotMatch(model.filesNote({}), /Открытых файлов не найдено/);
+});
+
 // --- TLS без веб-порта --------------------------------------------
 
 test("tlsNotice: нет веб-порта — «TLS не проверялся»", () => {
@@ -240,6 +250,99 @@ test("plural: 1 путь, 2 пути, 5 путей", () => {
   assert.strictEqual(model.plural(21, forms), "путь");
   assert.strictEqual(model.plural(22, forms), "пути");
   assert.strictEqual(model.plural(111, forms), "путей");
+});
+
+// --- Текст для буфера обмена ---------------------------------------
+
+test("buildShareText: топ-5 находок, без WAF/CMS и с рекомендациями", () => {
+  const report = {
+    host: "example.com",
+    score: 72.4,
+    grade: "B",
+    findings: [
+      {
+        id: "no-csp",
+        title: "Нет CSP",
+        severity: "high",
+        recommendation: "Добавьте Content-Security-Policy.",
+      },
+      {
+        id: "waf-detected",
+        title: "Обнаружен WAF",
+        severity: "low",
+        recommendation: "Это не проблема.",
+      },
+      {
+        id: "no-hsts",
+        title: "Нет HSTS",
+        severity: "medium",
+        recommendation: "Добавьте Strict-Transport-Security.",
+      },
+      {
+        id: "no-xframe",
+        title: "Нет X-Frame-Options",
+        severity: "medium",
+        recommendation: "Добавьте X-Frame-Options: DENY.",
+      },
+      {
+        id: "no-xcontent",
+        title: "Нет X-Content-Type-Options",
+        severity: "low",
+        recommendation: "Добавьте nosniff.",
+      },
+      {
+        id: "cookie-no-secure",
+        title: "Cookie без Secure",
+        severity: "high",
+        recommendation: "Поставьте Secure.",
+      },
+      {
+        id: "cms-detected",
+        title: "WordPress",
+        severity: "low",
+        recommendation: "Обновляйте CMS.",
+      },
+      {
+        id: "no-referrer-policy",
+        title: "Нет Referrer-Policy",
+        severity: "low",
+        recommendation: "Добавьте заголовок.",
+      },
+    ],
+  };
+
+  const text = model.buildShareText(report);
+
+  assert.match(text, /example\.com/);
+  assert.match(text, /72\/100 \(B\)/);
+  assert.match(text, /\[Критично\] Нет CSP/);
+  assert.match(text, /\[Важно\] Нет HSTS/);
+  assert.match(text, /Добавьте Content-Security-Policy/);
+  assert.doesNotMatch(text, /Обнаружен WAF/);
+  assert.doesNotMatch(text, /WordPress/);
+
+  // Ровно пять пунктов: 1..5 и никакого шестого.
+  assert.match(text, /^5\. /m);
+  assert.doesNotMatch(text, /^6\. /m);
+  // Обрезанная часть не теряется молча.
+  assert.match(text, /ещё 1 замечание/);
+});
+
+test("buildShareText: пустой отчёт и отсутствие рекомендации не ломают текст", () => {
+  assert.strictEqual(model.buildShareText(null), "");
+  assert.strictEqual(model.buildShareText("garbage"), "");
+
+  const text = model.buildShareText({
+    host: "",
+    score: Number.NaN,
+    grade: "?",
+    findings: [{ title: "  ", severity: "unknown" }],
+  });
+
+  assert.match(text, /отчёт для сайта/);
+  assert.match(text, /0\/100 \(\?\)/);
+  assert.match(text, /\[Замечание\] Замечание/);
+  assert.doesNotMatch(text, /undefined/);
 });
 
 // --- CAA: present ещё не значит «ограничивает» ---------------------

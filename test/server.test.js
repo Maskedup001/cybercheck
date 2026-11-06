@@ -10,6 +10,8 @@ test("TRUST_PROXY=0 не роняет сервер", async (t) => {
       TRUST_PROXY: "0",
       PUBLIC_ORIGIN: "http://localhost:3000",
       PORT: "0", // не конфликтуем с портом 3000
+      NODE_ENV: "test",
+      DEMO_MODE: "false",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

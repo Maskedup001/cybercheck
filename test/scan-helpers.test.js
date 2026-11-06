@@ -3,6 +3,8 @@ const assert = require("node:assert");
 
 const {
   parseTarget,
+  normalizeHostname,
+  hostHeaderFor,
   rateKey,
   clampTimeout,
   budgetLeft,
@@ -40,6 +42,27 @@ test("parseTarget: неподдерживаемая схема и мусор", (
 
   assert.strictEqual(parseTarget(null), null);
   assert.strictEqual(parseTarget(42), null);
+});
+
+// --- IPv6: скобки только в Host, в отчёте — голый адрес -------------
+
+test("normalizeHostname: снимает скобки IPv6 и точку в конце домена", () => {
+  assert.strictEqual(normalizeHostname("[2001:db8::1]"), "2001:db8::1");
+  assert.strictEqual(normalizeHostname("[::1]"), "::1");
+  assert.strictEqual(normalizeHostname("  Example.COM.  "), "example.com");
+  assert.strictEqual(normalizeHostname(""), "");
+  assert.strictEqual(normalizeHostname(null), "");
+});
+
+test("hostHeaderFor: IPv6 в скобках, нестандартный порт — с суффиксом", () => {
+  assert.strictEqual(hostHeaderFor("example.com", 80), "example.com");
+  assert.strictEqual(hostHeaderFor("example.com", 443), "example.com");
+  assert.strictEqual(hostHeaderFor("example.com", 8080), "example.com:8080");
+  assert.strictEqual(hostHeaderFor("2001:db8::1", 443), "[2001:db8::1]");
+  assert.strictEqual(
+    hostHeaderFor("2001:db8::1", 8080),
+    "[2001:db8::1]:8080",
+  );
 });
 
 // --- Канонический ключ rate-limit ---------------------------------

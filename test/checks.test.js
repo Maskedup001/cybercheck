@@ -126,6 +126,30 @@ test("checkHeaders: небезопасные значения заголовко
   await closeServer(server);
 });
 
+test("checkHeaders: IPv6 в Host-заголовке заключён в скобки", async () => {
+  let seenHost = "";
+  const server = http.createServer((req, res) => {
+    seenHost = req.headers.host;
+    res.end("ok");
+  });
+  const port = await listen(server);
+
+  const result = await checkHeaders(
+    "127.0.0.1",
+    port,
+    "2001:db8::1",
+    0,
+    undefined,
+    false,
+    1000,
+  );
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(seenHost, `[2001:db8::1]:${port}`);
+
+  await closeServer(server);
+});
+
 // --- TLS: успешный хендшейк ---------------------------------------
 
 test("checkSSL: самоподписанный сертификат читается, но помечается невалидным", async (t) => {
