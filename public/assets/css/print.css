@@ -74,13 +74,69 @@
   }
 
   /* Фильтр — экранная функция: на бумагу попадает полный список находок,
-     даже если на экране была выбрана одна категория. */
+     даже если на экране была выбрана одна категория. display: grid, а не
+     block — чтобы и скрытые на экране строки получили ту же двухколоночную
+     раскладку, что и видимые. */
   .findings__list > li[hidden] {
-    display: block !important;
+    display: grid !important;
   }
 
   .finding {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.6fr);
+    column-gap: 5mm;
+    align-items: start;
     background: transparent !important;
+  }
+
+  .finding__head {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-self: start;
+    min-width: 0;
+    margin-bottom: 0;
+  }
+
+  .finding__desc {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .finding__fix {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    margin-top: 0;
+  }
+
+  /* Тени, свечения и градиенты — экранная роскошь: на бумаге они дают
+     грязные серые полосы и лишний расход тонера. */
+  .result,
+  .finding,
+  .detail {
+    box-shadow: none !important;
+  }
+
+  .detail {
+    background: transparent !important;
+  }
+
+  .detail::before,
+  .detail__title::before {
+    display: none !important;
+  }
+
+  /* Легенда объясняет цветные точки, а сами точки в PDF скрыты:
+     на бумаге она была бы расшифровкой того, чего не видно. */
+  .details__legend {
+    display: none !important;
+  }
+
+  .detail__row,
+  .detail__note,
+  .detail__file-item {
+    border-color: #d1d5db;
   }
 
   .container {
@@ -97,6 +153,7 @@
   }
 
   .result {
+    max-width: none;
     padding: 0;
     border: 0;
     background: transparent;
@@ -155,28 +212,67 @@
     color: var(--color-success) !important;
   }
 
-  /* Три карточки в две колонки: последняя занимает всю ширину,
-     иначе в нижнем ряду остаётся пустая клетка. */
+  /* Одна колонка полноширинных карточек; внутри — таблицы там, где
+     это уместно: заголовки в две колонки, технологии в три. */
   .details__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .detail:last-child {
-    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 6mm;
   }
 
   .detail {
+    margin: 0;
     border: 0.5pt solid #ccc;
+  }
+
+  .detail--headers {
+    padding-top: 4mm;
+    border-top: 0.5pt solid #d1d5db;
+  }
+
+  /* На A4 две колонки задаём явно, не полагаясь на media-запрос:
+     десять строк в один столбец занимали бы почти страницу. */
+  .detail--headers .detail__rows {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(5, auto);
+    grid-auto-flow: row;
+    column-gap: 6mm;
+  }
+
+  .details__head,
+  .detail__title {
+    border-bottom-color: #d1d5db;
+  }
+
+  .detail--tech:has(.detail__row:nth-child(3)) .detail__rows {
+    display: grid;
+    grid-template-columns:
+      minmax(0, 0.9fr) minmax(0, 0.9fr)
+      minmax(0, 1.2fr);
+    column-gap: 4mm;
+  }
+
+  .detail--tech:has(.detail__row:nth-child(3)) .detail__row {
+    /* padding-block и у последней колонки: иначе её разделитель короче. */
+    padding-block: 0.55rem;
+    border-bottom: 0;
+  }
+
+  .detail--tech:has(.detail__row:nth-child(3)) .detail__row + .detail__row {
+    padding-left: 4mm;
+    border-left: 0.5pt solid #d1d5db;
+  }
+
+  .detail--headers .detail__row:nth-last-child(-n + 2) {
+    padding-bottom: 0;
+    border-bottom: 0;
   }
 }
 
 @media print {
-  /* Убираем подчеркивание тултипов при печати */
-  [title],
-  .has-tooltip,
-  .tooltip-term,
-  .tooltip {
-    border-bottom: none !important;
-    text-decoration: none !important;
+  /* Иконка-подсказка — экранный элемент: в PDF она только шумит. */
+  .tooltip-icon {
+    display: none !important;
   }
 }

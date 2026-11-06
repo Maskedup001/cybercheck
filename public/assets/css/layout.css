@@ -4,6 +4,8 @@
   margin-inline: auto;
 }
 .site-header {
+  max-width: 48rem;
+  margin-inline: auto;
   margin-bottom: var(--space-10);
   text-align: center;
 }

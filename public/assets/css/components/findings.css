@@ -1,12 +1,49 @@
 .findings {
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-8);
 }
 
+/* Одна колонка карточек: фильтр только скрывает элементы и никогда не
+   меняет раскладку, поэтому пустых ячеек и «широких последних» карточек
+   здесь быть не может. */
 .findings__list {
   list-style: none;
   display: grid;
-  gap: var(--space-3);
-  margin-top: var(--space-3);
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+/* На широком экране каждая находка — полноширинная строка с двумя
+   внутренними колонками: слева бейджи и заголовок, справа описание и
+   рецепт. Это не сетка карточек, поэтому чётность/нечётность не важна. */
+@media (min-width: 60em) {
+  .finding {
+    display: grid;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.6fr);
+    column-gap: var(--space-6);
+    align-items: start;
+  }
+
+  .finding__head {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    align-self: start;
+    min-width: 0;
+    margin-bottom: 0;
+  }
+
+  .finding__desc {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .finding__fix {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+    margin-top: 0;
+  }
 }
 
 /* Фильтр над находками: кнопки-табы с количеством. aria-pressed — не
@@ -15,7 +52,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+  /* Заголовок уже даёт margin-bottom; второй полный отступ раздувал
+     зазор между заголовком и фильтром. */
+  margin-top: var(--space-2);
 }
 
 .findings__filter {
@@ -43,10 +82,24 @@
   transform: translateY(-1px);
 }
 
+/* Активный таб должен читаться сразу: заливка акцентом, тёмный текст
+   и мягкое свечение. aria-pressed остаётся страховкой для состояний,
+   отрисованных без класса. */
+.findings__filter.is-active,
+.filter-tab.is-active,
 .findings__filter[aria-pressed="true"] {
-  background: var(--color-accent-soft);
-  border-color: var(--color-accent-line);
-  color: var(--color-accent);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+  box-shadow: 0 4px 14px var(--color-accent-soft);
+}
+
+.findings__filter.is-active:hover,
+.filter-tab.is-active:hover,
+.findings__filter[aria-pressed="true"]:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+  color: var(--color-on-accent);
 }
 
 .findings__filter:focus-visible {
@@ -61,19 +114,23 @@
 }
 
 .finding {
-  padding: var(--space-4);
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  padding: clamp(var(--space-4), 2vw, var(--space-5));
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.025), transparent 40%),
+    var(--color-surface-raised);
+  border: 1px solid rgb(148 163 184 / 0.16);
   border-left: 3px solid var(--color-border-control);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 6px 18px rgb(2 6 23 / 0.12);
   animation: finding-enter var(--duration-base) var(--easing-standard) both;
 }
 
-/* Критическая находка сразу читается как проблема: красный фон и рамка,
-   а не только полоска слева. */
+/* Критическая находка: обычный фон карточки и красный рельс слева.
+   Красный бейдж в заголовке уже несёт семантику, поэтому заливать
+   всю карточку тревожным цветом не нужно. */
 .finding--bad {
-  background: var(--color-danger-surface);
-  border-color: var(--color-danger-border);
   border-left-color: var(--color-danger);
 }
 
@@ -149,10 +206,15 @@
 .finding__desc {
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+  line-height: var(--leading-normal);
   margin-bottom: var(--space-3);
 }
 
 .finding__fix {
+  /* Рецепт всегда стоит на нижней кромке карточки: в паре карточек
+     разной высоты строки «Как исправить» оказываются на одной линии,
+     а нижний край ряда остаётся ровным. */
+  margin-top: auto;
   font-size: var(--font-size-sm);
   color: var(--color-text);
 }

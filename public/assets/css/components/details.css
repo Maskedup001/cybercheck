@@ -1,129 +1,320 @@
+/* «Детали проверки» — одна колонка полноширинных карточек. Так у
+   карточек разной высоты не бывает дыр и пустых ячеек. Двух- и
+   трёхколоночные таблицы остаются только внутри карточек, где они
+   не ломают раскладку. */
+
 .details {
-  margin-bottom: var(--space-6);
+  margin-bottom: var(--space-8);
 }
 
-/* Сетка карточек: одна колонка на телефоне, две в середине (последняя
-   карточка — «Открытые файлы» — на всю ширину), три на десктопе. */
 .details__grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-3);
-  margin-top: var(--space-4);
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+  /* Верхний отступ уже даёт .details__head: второй margin-top удваивал
+     бы зазор и отрывал сетку от заголовка. */
+  margin-top: 0;
 }
 
-@media (min-width: 40em) {
-  .details__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .detail:last-child {
-    grid-column: 1 / -1;
-  }
+/* Шапка секции: заголовок слева, расшифровка цветных точек справа.
+   Общая линия под ними шире, чем линия только под заголовком. */
+.details__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid rgb(148 163 184 / 0.16);
 }
 
-@media (min-width: 56em) {
-  .details__grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .detail:last-child {
-    grid-column: auto;
-  }
+.details__head .result__section-title {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
+.details__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--leading-normal);
+}
+
+.details__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.details__legend-dot {
+  flex: none;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.details__legend-dot--bad {
+  background: var(--color-danger);
+}
+
+.details__legend-dot--warn {
+  background: var(--color-warning);
+}
+
+.details__legend-dot--ok {
+  background: var(--color-success);
+}
+
+.details__legend-dot--muted {
+  background: var(--color-border-control);
+}
+
+.details__legend-dot--info {
+  background: var(--color-accent);
+}
+
+/* Карточка: поверхность на ступень выше отчёта, тонкая рамка и мягкая
+   тень. Высоту задаёт содержимое — растягивать под соседа не нужно.
+   --detail-tone — цвет статусной точки в заголовке: по умолчанию
+   нейтральный акцент, ниже он меняется на худший статус в карточке. */
 .detail {
+  --detail-tone: var(--color-accent);
+  --detail-glow: var(--color-accent-line);
+
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
   padding: var(--space-4);
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  animation: detail-enter var(--duration-base) var(--easing-standard) both;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  transition:
+    border-color var(--duration-base) var(--easing-standard),
+    box-shadow var(--duration-base) var(--easing-standard),
+    transform var(--duration-base) var(--easing-standard);
 }
 
-@keyframes detail-enter {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
+@media (hover: hover) and (pointer: fine) {
+  .detail:hover {
+    transform: translateY(-2px);
+    border-color: var(--color-accent-line);
+    box-shadow: var(--shadow-card-hover);
   }
-
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
-.detail:nth-child(2) {
-  animation-delay: 40ms;
+.detail:focus-within {
+  border-color: var(--color-accent-line);
 }
 
-.detail:nth-child(3) {
-  animation-delay: 80ms;
+/* Статус карточки читается по точке ещё до чтения строк: красный —
+   есть критичное, жёлтый — риск, зелёный — всё настроено, серый —
+   данных нет. Это чистое оформление: текст внутри карточки не меняется. */
+.detail:has(.badge--bad) {
+  --detail-tone: var(--color-danger);
+  --detail-glow: var(--color-danger-bg);
 }
 
-.detail:nth-child(4) {
-  animation-delay: 120ms;
+.detail:has(.badge--warn):not(:has(.badge--bad)) {
+  --detail-tone: var(--color-warning);
+  --detail-glow: var(--color-warning-bg);
 }
 
-.detail:nth-child(5) {
-  animation-delay: 160ms;
+.detail:has(.badge--ok):not(:has(.badge--warn)):not(:has(.badge--bad)) {
+  --detail-tone: var(--color-success);
+  --detail-glow: var(--color-success-bg);
 }
 
-.detail:nth-child(6) {
-  animation-delay: 200ms;
-}
-
-.detail:nth-child(7) {
-  animation-delay: 240ms;
+.detail:has(.detail__muted):not(:has(.badge)),
+.detail--empty {
+  --detail-tone: var(--color-border-control);
+  --detail-glow: transparent;
 }
 
 .detail__title {
-  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid rgb(148 163 184 / 0.12);
+  color: var(--color-text);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
   text-transform: uppercase;
-  margin-bottom: var(--space-3);
+}
+
+.detail__title::before {
+  content: "";
+  flex: none;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: var(--detail-tone);
+  box-shadow: 0 0 0.75rem var(--detail-glow);
+}
+
+/* Счётчик строк в шапке карточки: заполняет правый край и подсказывает,
+   сколько параметров проверено. На узком экране он только мешает. */
+.detail__meta {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 39.99em) {
+  .detail__meta {
+    display: none;
+  }
 }
 
 .detail__rows {
-  display: grid;
-  gap: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
 }
 
+/* Строка «метка — значение»: название слева, бейдж справа. Baseline
+   выравнивает текст и бейдж по одной линии, поэтому строки не прыгают. */
 .detail__row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-3);
+  min-width: 0;
+  padding-block: 0.55rem;
+  border-bottom: 1px solid rgb(148 163 184 / 0.12);
   font-size: var(--font-size-sm);
+}
+
+.detail__row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .detail__label {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
-  min-width: 0;
+  line-height: 1.4;
 }
 
-/* Термин с подсказкой: пунктир говорит «здесь можно навести курсор».
-   Сама подсказка — нативный title, поэтому CSP не нарушается. */
-.detail__label--hint {
-  border-bottom: 1px dotted var(--color-border-control);
+/* Длинное имя не выдавливает бейдж: текст обрезается многоточием, а
+   иконка-подсказка остаётся прижатой к последнему слову. */
+.detail__label-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Термин с подсказкой: вместо пунктира — маленькая SVG-иконка.
+   Сама подсказка остаётся нативным title, поэтому CSP не нарушается. */
+.tooltip-icon {
+  display: inline-block;
+  flex: none;
+  margin-left: 4px;
+  color: var(--color-text-muted);
+  opacity: 0.5;
+  vertical-align: middle;
   cursor: help;
+  transition:
+    color var(--duration-fast) var(--easing-standard),
+    opacity var(--duration-fast) var(--easing-standard);
 }
 
-.detail__label--hint:hover {
-  color: var(--color-text);
-  border-bottom-color: var(--color-accent);
+.detail__label:hover .tooltip-icon,
+.detail__label:focus-visible .tooltip-icon,
+.tooltip-icon:focus-visible {
+  color: var(--color-accent);
+  opacity: 1;
 }
 
+.tooltip-icon:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
+/* Значение — правая колонка строки. flex: 0 0 auto не даёт бейджу
+   сжиматься и переноситься; длинный текст делится по словам. */
 .detail__value {
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 62%;
   text-align: right;
   overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail__value .badge {
+  flex: 0 0 auto;
 }
 
 .detail__note {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid rgb(148 163 184 / 0.12);
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+  line-height: var(--leading-normal);
+}
+
+/* В «Открытых файлах» note стоит сразу под заголовком: его верхняя
+   линия дублировала бы линию заголовка. */
+.detail--files:not(.detail--empty) .detail__note {
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* Пустое состояние — компактная карточка: высоту задают только заголовок
+   и сообщение, без искусственной минимальной высоты. */
+.detail--empty {
+  text-align: center;
+}
+
+.detail--empty .detail__title {
+  justify-content: center;
+  margin-bottom: var(--space-2);
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.detail--empty .detail__note {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+  font-size: var(--font-size-xs);
+}
+
+/* Пустые «Открытые файлы» и «Заголовки» читаются как статусная строка,
+   а не как центрированная плашка. */
+.detail--files.detail--empty,
+.detail--headers.detail--empty {
+  text-align: left;
+}
+
+.detail--files.detail--empty .detail__title,
+.detail--headers.detail--empty .detail__title {
+  justify-content: flex-start;
 }
 
 .detail__muted {
@@ -146,9 +337,10 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
+  border: 1px solid rgb(148 163 184 / 0.14);
   border-left: 3px solid var(--color-border-control);
   border-radius: var(--radius-sm);
 }
@@ -175,14 +367,75 @@
   flex: 0 0 auto;
 }
 
-@media (min-width: 56em) {
-  .details__grid .detail--files {
-    grid-column: 1 / -1;
+/* «Технологии» — полноширинная карточка: WAF, CMS и security.txt в три
+   колонки. Если данных фингерпринта нет, остаётся одна строка — без
+   пустых колонок. */
+@media (min-width: 40em) {
+  .detail--tech:has(.detail__row:nth-child(3)) .detail__rows {
+    display: grid;
+    /* security.txt длиннее WAF/CMS — третьей колонке нужно больше места,
+       иначе длинная метка с иконкой начинает обрезаться уже на планшете. */
+    grid-template-columns:
+      minmax(0, 0.9fr) minmax(0, 0.9fr)
+      minmax(0, 1.2fr);
+    column-gap: var(--space-4);
+  }
+
+  .detail--tech:has(.detail__row:nth-child(3)) .detail__row {
+    /* Тот же вертикальный ритм, что у обычной строки, но без нижней
+       линии. padding-block нужен и последней колонке, иначе её
+       вертикальный разделитель короче соседних. */
+    padding-block: 0.55rem;
+    border-bottom: 0;
+  }
+
+  .detail--tech:has(.detail__row:nth-child(3)) .detail__row + .detail__row {
+    padding-left: var(--space-4);
+    border-left: 1px solid rgb(148 163 184 / 0.12);
+  }
+}
+
+@media (min-width: 40em) {
+  /* Длинные пути в широкой карточке раскладываются в две колонки,
+     чтобы файл-лист не превращался в длинную вертикальную ленту. */
+  .detail--files .detail__file-list {
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  }
+
+  /* Десять строк заголовков — в две колонки попарно: Server | Protocol,
+     CSP | X-Frame-Options и так далее. Grid-row держит разделители на
+     одной линии, а вертикальный желоб отделяет пары. */
+  .detail--headers .detail__rows {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(5, auto);
+    grid-auto-flow: row;
+    column-gap: clamp(var(--space-4), 2.5vw, var(--space-6));
+    background-image: linear-gradient(
+      to right,
+      transparent calc(50% - 0.5px),
+      rgb(148 163 184 / 0.16) calc(50% - 0.5px),
+      rgb(148 163 184 / 0.16) calc(50% + 0.5px),
+      transparent calc(50% + 0.5px)
+    );
+  }
+
+  .detail--headers .detail__row {
+    min-width: 0;
+  }
+
+  .detail--headers .detail__row:nth-last-child(-n + 2) {
+    padding-bottom: 0;
+    border-bottom: 0;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .detail {
-    animation: none;
+    transition: none;
+  }
+
+  .detail:hover {
+    transform: none;
   }
 }
