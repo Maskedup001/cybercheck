@@ -12,6 +12,7 @@ const { checkDnsSecurity } = require("../probes/dns-security");
 const { ScanLimiter } = require("../utils/rate-limit");
 const {
   parseTarget,
+  normalizeHostname,
   rateKey,
   budgetLeft,
   clampTimeout,
@@ -84,9 +85,11 @@ function withTimeout(factory, ms, externalSignal) {
     }, ms);
   });
 
-  return Promise.race([factory(signal), timeout]).finally(() => {
-    clearTimeout(timer);
-  });
+  return Promise.race([Promise.resolve().then(() => factory(signal)), timeout]).finally(
+    () => {
+      clearTimeout(timer);
+    },
+  );
 }
 
 // Собирает Express-приложение и лимитер, но ничего не слушает: так HTTP-слой
@@ -169,12 +172,16 @@ function createApp(config) {
 
   app.use("/api", noStore);
 
-  // Тело POST /api/scan обязано быть JSON. express.json молча пропускает
-  // запрос с другим Content-Type, и клиент получал бы 400 «Некорректный
-  // адрес» вместо честного 415 про формат — то есть шёл бы чинить URL.
-  // Проверка стоит до парсера и не даёт ему сработать на чужом типе.
+  // Тело POST /api/scan обязано быть JSON: express.json молча пропускает
+  // request с другим Content-Type, и клиент получал бы 400 «Некорректный
+  // адрес» вместо честного 415 про формат. req.originalUrl не переписывается
+  // монтированием, поэтому проверяем именно /api/scan: неизвестный
+  // /api/scan/foo должен получить 404, а не 415.
   function requireJsonBody(req, res, next) {
     if (req.method !== "POST") return next();
+
+    const pathname = req.originalUrl.split("?")[0];
+    if (pathname !== "/api/scan" && pathname !== "/api/scan/") return next();
     if (req.is("application/json")) return next();
     return res.status(415).json({ error: "Поддерживается только JSON" });
   }
@@ -275,7 +282,7 @@ function createApp(config) {
       return res.status(400).json({ error: "Некорректный адрес" });
     }
 
-    const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
+    const hostname = normalizeHostname(parsed.hostname);
 
     if (hostname.length === 0 || hostname.length > 253) {
       return res.status(400).json({ error: "Некорректный адрес" });
@@ -335,10 +342,15 @@ function createApp(config) {
           let connectIp;
           let resolvedIps = [];
 
-          if (demoMode && (hostname === "localhost" || hostname === "127.0.0.1")) {
+          if (
+            demoMode &&
+            (hostname === "localhost" ||
+              hostname === "127.0.0.1" ||
+              hostname === "::1")
+          ) {
             // connectIp должен быть литеральным IP: request() fail-closed
             // отказывается работать с именем хоста (SSRF-инвариант).
-            connectIp = "127.0.0.1";
+            connectIp = hostname === "::1" ? "::1" : "127.0.0.1";
             resolvedIps = [connectIp];
           } else {
             try {
@@ -377,10 +389,24 @@ function createApp(config) {
           const dnsPromise = checkDnsSecurity(hostname, {
             signal,
             timeoutMs: budget(DNS_SECURITY_TIMEOUT_MS),
+          }).catch((error) => {
+            // checkDnsSecurity ловит штатные сбои сама. Сюда попадает только
+            // неожиданное исключение: не роняем весь скан и не оставляем
+            // необработанный rejection, но и не выдаём проверку за успешную.
+            console.error("[scan] DNS-проверки не удались:", error);
+            return {
+              applicable: true,
+              spf: { present: false, error: "INTERNAL" },
+              dmarc: { present: false, error: "INTERNAL" },
+              caa: { present: false, error: "INTERNAL" },
+            };
           });
 
           // Перебираем IP, пока не найдем тот, у которого есть открытые
-          // порты (максимум 3).
+          // порты (максимум 3). Открытые порты разных A/AAAA-адресов
+          // объединяем: иначе 22 на первом IP терялась бы, если на втором
+          // открыт только 443, и находка/штраф зависели бы от порядка DNS.
+          const openByPort = new Map();
           for (const ip of resolvedIps.slice(0, 3)) {
             ensureBudget();
             const ports = await Promise.all(
@@ -392,10 +418,19 @@ function createApp(config) {
 
             const currentOpen = ports.filter((p) => p.status === "open");
             if (currentOpen.length > 0) {
-              connectIpToUse = ip;
-              openPorts = currentOpen;
-              if (currentOpen.some((p) => [443, 80, 8080].includes(p.port)))
+              for (const result of currentOpen) {
+                if (!openByPort.has(result.port)) {
+                  openByPort.set(result.port, result);
+                }
+              }
+              openPorts = SCAN_PORTS.filter((port) => openByPort.has(port)).map(
+                (port) => openByPort.get(port),
+              );
+
+              if (currentOpen.some((p) => [443, 80, 8080].includes(p.port))) {
+                connectIpToUse = ip;
                 break;
+              }
             }
           }
 
@@ -633,6 +668,13 @@ function startServer(config) {
     console.log(`Сканер запущен: http://localhost:${actualPort}`);
     console.log(`[CORS] разрешён origin: ${config.publicOrigin}`);
     if (config.demoMode) console.log("[DEMO_MODE] localhost разрешён");
+  });
+
+  // EADDRINUSE/EACCES не должны уходить в uncaughtException с сырым стеком:
+  // это штатная ошибка запуска, и сообщение должно быть понятным.
+  server.on("error", (error) => {
+    console.error(`Не удалось запустить сервер: ${error.message}`);
+    process.exit(1);
   });
 
   // Явные таймауты сокетов: без них медленный клиент (slowloris) держит

@@ -181,10 +181,18 @@ function exposedPaths(files) {
     }
   }
 
-  // Совместимость: если exposed не передан, но есть results — берём только 200.
+  // Совместимость: если exposed не передан, но есть results — берём только
+  // подтверждённые 200. Явный exposed:false или ошибка пробы (например,
+  // HTML-заглушка SPA) экспозицией не считаются.
   if (result.size === 0 && Array.isArray(files.results)) {
     for (const item of files.results) {
-      if (item && item.status === 200 && typeof item.path === "string") {
+      if (
+        item &&
+        item.status === 200 &&
+        item.exposed !== false &&
+        !item.error &&
+        typeof item.path === "string"
+      ) {
         result.add(item.path);
       }
     }
@@ -727,12 +735,30 @@ function calculateScore(report) {
   } else {
     const exposed = exposedPaths(files);
 
-    // HEAD-проба, которая упала (WAF/таймаут), ничего не доказывает:
-    // за такой путь баллы не начисляем, но и находку не создаём.
+    // HEAD-проба, которая упала, была заблокирована (WAF/403) или вернула
+    // редирект/5xx, ничего не доказывает: за такой путь баллы не начисляем,
+    // но и находку не создаём. Только 404/410 доказывают отсутствие файла.
     const failedProbes = new Set();
+    if (Array.isArray(files.blocked)) {
+      for (const path of files.blocked) {
+        if (typeof path === "string") failedProbes.add(path);
+      }
+    }
     if (Array.isArray(files.results)) {
       for (const item of files.results) {
-        if (item && item.error && typeof item.path === "string") {
+        if (!item || typeof item.path !== "string") continue;
+
+        const status = item.status;
+        const unknownStatus =
+          status !== 200 && status !== 404 && status !== 410;
+        const explicitlyNotExposed = status === 200 && item.exposed === false;
+
+        if (
+          item.error ||
+          item.blocked ||
+          unknownStatus ||
+          explicitlyNotExposed
+        ) {
           failedProbes.add(item.path);
         }
       }
@@ -762,9 +788,9 @@ function calculateScore(report) {
 
   // --- security.txt --------------------------------------------------------
   const securityTxt = input.securityTxt;
-  if (!securityTxt || securityTxt.present || securityTxt.status !== 404) {
+  if (!securityTxt || securityTxt.present) {
     score += WEIGHTS.securityTxt;
-  } else {
+  } else if (securityTxt.status === 404) {
     add({
       id: "security-txt-missing",
       title: "Нет security.txt",
@@ -774,6 +800,23 @@ function calculateScore(report) {
       recommendation: "Опубликуйте security.txt с контактом и сроком ответа.",
       owasp: OWASP.misconfig,
     });
+  } else if (securityTxt.status === 200 && !securityTxt.error) {
+    // Файл отдаётся, но не прошёл проверку RFC 9116 (нет Contact или это не
+    // text/plain). UI уже называет его «некорректным» — оценка не должна
+    // молча начислять за него баллы.
+    add({
+      id: "security-txt-invalid",
+      title: "security.txt некорректен",
+      desc: "Файл отдаётся с кодом 200, но не содержит Contact в text/plain — контакт для исследователей не опубликован.",
+      severity: "low",
+      weight: WEIGHTS.securityTxt,
+      recommendation:
+        "Опубликуйте файл по RFC 9116: text/plain, строки Contact и Expires.",
+      owasp: OWASP.misconfig,
+    });
+  } else {
+    // Сеть/сервер не ответили: отсутствие файла не доказано, баллы не снимаем.
+    score += WEIGHTS.securityTxt;
   }
 
   // --- Fingerprint (информационно, без баллов) -----------------------------
@@ -845,4 +888,4 @@ function calculateScore(report) {
   return { score, grade, findings };
 }
 
-module.exports = { calculateScore, WEIGHTS };
+module.exports = { calculateScore, WEIGHTS, FILE_CHECKS };
