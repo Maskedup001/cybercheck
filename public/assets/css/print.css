@@ -64,11 +64,23 @@
   .scan-form,
   .consent,
   .scan-status,
-  .result__download,
+  .result__actions,
+  .findings__filters,
+  .findings__empty,
   .legal__topbar,
   .legal__toc,
   .skip-link {
     display: none !important;
+  }
+
+  /* Фильтр — экранная функция: на бумагу попадает полный список находок,
+     даже если на экране была выбрана одна категория. */
+  .findings__list > li[hidden] {
+    display: block !important;
+  }
+
+  .finding {
+    background: transparent !important;
   }
 
   .container {
@@ -95,6 +107,16 @@
     color: #111827 !important;
     border-color: #d1d5db;
     break-after: avoid;
+  }
+
+  /* Анимации появления на бумаге не нужны: карточка должна быть видна
+     целиком, даже если печать нажали сразу после скана. */
+  .result__body > *,
+  .finding,
+  .detail {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 
   /* Не разрывать смысловые блоки между страницами */
@@ -145,5 +167,16 @@
 
   .detail {
     border: 0.5pt solid #ccc;
+  }
+}
+
+@media print {
+  /* Убираем подчеркивание тултипов при печати */
+  [title],
+  .has-tooltip,
+  .tooltip-term,
+  .tooltip {
+    border-bottom: none !important;
+    text-decoration: none !important;
   }
 }

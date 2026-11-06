@@ -19,6 +19,8 @@
   --color-warning-bg: rgb(251 191 36 / 0.12);
   --color-danger: #f87171;
   --color-danger-bg: rgb(248 113 113 / 0.12);
+  --color-danger-surface: rgb(248 113 113 / 0.1);
+  --color-danger-border: rgb(248 113 113 / 0.35);
   --color-neutral: #94a3b8;
   --color-neutral-bg: rgb(148 163 184 / 0.12);
   --color-gauge-track: #263449;

@@ -6,15 +6,19 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<meta name="theme-color" content="#0f172a">
 	<title>Политика конфиденциальности — CyberCheck</title>
-	<meta name="description" content="Политика конфиденциальности сервиса CyberCheck.">
+	<meta name="description" content="Политика конфиденциальности сервиса CyberCheck: какие данные обрабатываются, кто является обработчиком и сколько они хранятся.">
 	<meta property="og:title" content="Политика конфиденциальности — CyberCheck">
 	<meta property="og:description" content="Какие данные обрабатывает CyberCheck, как они используются и как удаляются.">
 	<meta property="og:type" content="website">
 	<meta property="og:url" content="__BASE_URL__/privacy.html">
 	<meta property="og:image" content="__BASE_URL__/assets/screenshots/og-cover.png">
+	<meta property="og:image:type" content="image/jpeg">
+	<meta property="og:image:alt" content="CyberCheck — экспресс-проверка безопасности сайтов">
 	<meta property="og:image:width" content="1200">
 	<meta property="og:image:height" content="630">
+	<meta property="og:site_name" content="CyberCheck">
 	<meta name="twitter:card" content="summary_large_image">
+	<meta name="twitter:image" content="__BASE_URL__/assets/screenshots/og-cover.png">
 	<link rel="canonical" href="__BASE_URL__/privacy.html">
 	<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 	<link rel="stylesheet" href="/assets/css/main.css">
@@ -30,7 +34,7 @@
 
 		<header class="legal__header">
 			<h1 class="legal__title">Политика конфиденциальности</h1>
-			<p class="legal__subtitle">Последнее обновление: 31 октября 2026</p>
+			<p class="legal__subtitle">Последнее обновление: 6 ноября 2026</p>
 		</header>
 
 		<div class="legal__layout">
@@ -41,22 +45,88 @@
 
 			<div class="legal__body">
 				<section class="legal__section" id="data-collected">
-					<h2 class="legal__section-title">1. Какие данные мы собираем</h2>
-					<p class="legal__text">При использовании сервиса мы записываем IP-адрес и имя проверяемого домена в серверные логи
-						для предотвращения злоупотреблений (Rate Limiting).</p>
+					<h2 class="legal__section-title">1. Какие данные обрабатываются</h2>
+					<p class="legal__text">
+						Сервис получает адрес сайта, который вы ввели, IP-адрес вашего подключения и время запроса.
+						IP-адрес нужен для ограничения частоты проверок, адрес сайта — для выполнения самой проверки.
+						Сам отчёт существует только в ответе браузеру и на сервере не сохраняется.
+					</p>
+					<p class="legal__text">
+						В памяти процесса на короткое время хранится отметка «этот IP уже проверял сайт» (около 10 секунд,
+						фоновая чистка раз в 30 секунд) и счётчик одновременных проверок. Эти данные исчезают при
+						перезапуске сервиса.
+					</p>
+					<p class="legal__text">
+						Сервис не устанавливает собственные cookie, не использует аналитику, рекламу и трекеры.
+						Cookie, которые видны в отчёте, — это cookie проверяемого сайта; сервис сохраняет только их имена
+						и флаги, но не значения.
+					</p>
 				</section>
 
 				<section class="legal__section" id="data-usage">
-					<h2 class="legal__section-title">2. Как мы используем данные</h2>
-					<p class="legal__text">Данные используются исключительно для обеспечения работы сервиса и защиты от
-						несанкционированного доступа. Мы не передаем их третьим лицам.</p>
+					<h2 class="legal__section-title">2. Зачем мы обрабатываем данные</h2>
+					<p class="legal__text">
+						Данные используются только для того, чтобы выполнить проверку, показать отчёт, ограничить
+						злоупотребления и разобраться в сбоях. Мы не продаём данные, не передаём их для рекламы и не
+						строим профили пользователей.
+					</p>
+				</section>
+
+				<section class="legal__section" id="processors">
+					<h2 class="legal__section-title">3. Кто ещё участвует в обработке</h2>
+					<p class="legal__text">
+						Сервис размещён на платформе <strong>Render</strong>: она принимает сетевые запросы, завершает
+						HTTPS и ведёт собственные журналы доступа. Обработка на стороне Render регулируется его
+						документами и настройками владельца сервиса.
+					</p>
+					<p class="legal__text">
+						Для проверки SPF, DMARC и CAA сервис отправляет DNS-запросы обычному DNS-резолверу хостинга.
+						Резолвер видит имя проверяемого домена и IP-адрес сервера, но не видит IP-адрес посетителя.
+					</p>
+					<p class="legal__text">
+						Проверяемый сайт, разумеется, видит запросы с IP-адреса сервера и ведёт собственные логи по своим
+						правилам. Сервис не может управлять этими логами.
+					</p>
 				</section>
 
 				<section class="legal__section" id="data-retention">
-					<h2 class="legal__section-title">3. Удаление данных</h2>
-					<p class="legal__text">Результаты сканирований не сохраняются на сервере. IP-адреса и hostname
-						попадают в логи хостинг-провайдера. Приложение не задаёт срок хранения и не ротирует
-						логи; срок определяется политикой провайдера.</p>
+					<h2 class="legal__section-title">4. Хранение и удаление</h2>
+					<p class="legal__text">
+						Приложение не записывает отчёты на диск и не имеет базы данных. IP-адрес клиента и имя
+						проверяемого домена попадают в стандартный вывод серверного процесса и в журналы Render.
+						Приложение не задаёт для них срок хранения и не ротирует их: срок определяется политикой
+						хостинг-провайдера.
+					</p>
+					<p class="legal__text">
+						Запрос на удаление или уточнение данных из журналов можно направить владельцу сервиса через
+						контакты в репозитории проекта. Для ответа может потребоваться дата и примерное время запроса.
+					</p>
+				</section>
+
+				<section class="legal__section" id="rights">
+					<h2 class="legal__section-title">5. Ваши права и основание обработки</h2>
+					<p class="legal__text">
+						Вы вправе запросить сведения об обработке ваших данных, их уточнение или удаление, а также
+						отозвать согласие, прекратив использование сервиса. Основание обработки — ваше согласие,
+						выраженное отправкой формы, и законный интерес в защите сервиса от злоупотреблений.
+					</p>
+					<p class="legal__text">
+						Если сервис используется из другой страны, данные могут обрабатываться за её пределами — там,
+						где расположены серверы хостинга. Это неизбежное следствие работы облачного сервиса.
+					</p>
+				</section>
+
+				<section class="legal__section" id="changes">
+					<h2 class="legal__section-title">6. Изменения политики</h2>
+					<p class="legal__text">
+						Политика может обновляться. Актуальная редакция всегда опубликована на этой странице с датой
+						обновления.
+					</p>
+					<p class="legal__text">
+						Этот документ описывает фактическое поведение сервиса и не является юридическим заключением
+						или консультацией. Для задач, где требуется соответствие конкретному закону, обратитесь к
+						юристу.
+					</p>
 				</section>
 			</div>
 		</div>
@@ -70,7 +140,7 @@
 		<span>CyberCheck © 2026</span>
 	</footer>
 
-	<script type="module" src="/assets/js/legal-toc.js"></script>
+	<script type="module" src="/assets/js/ui/legal-toc.js"></script>
 </body>
 
 </html>

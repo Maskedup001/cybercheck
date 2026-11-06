@@ -36,6 +36,43 @@
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  animation: detail-enter var(--duration-base) var(--easing-standard) both;
+}
+
+@keyframes detail-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.detail:nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.detail:nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.detail:nth-child(4) {
+  animation-delay: 120ms;
+}
+
+.detail:nth-child(5) {
+  animation-delay: 160ms;
+}
+
+.detail:nth-child(6) {
+  animation-delay: 200ms;
+}
+
+.detail:nth-child(7) {
+  animation-delay: 240ms;
 }
 
 .detail__title {
@@ -64,6 +101,18 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   min-width: 0;
+}
+
+/* Термин с подсказкой: пунктир говорит «здесь можно навести курсор».
+   Сама подсказка — нативный title, поэтому CSP не нарушается. */
+.detail__label--hint {
+  border-bottom: 1px dotted var(--color-border-control);
+  cursor: help;
+}
+
+.detail__label--hint:hover {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent);
 }
 
 .detail__value {
@@ -129,5 +178,11 @@
 @media (min-width: 56em) {
   .details__grid .detail--files {
     grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail {
+    animation: none;
   }
 }

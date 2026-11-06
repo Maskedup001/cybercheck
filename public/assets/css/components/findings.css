@@ -6,7 +6,58 @@
   list-style: none;
   display: grid;
   gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+/* Фильтр над находками: кнопки-табы с количеством. aria-pressed — не
+   только для скринридера: по нему же рисуется активное состояние. */
+.findings__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.findings__filter {
+  min-height: var(--touch-target);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  appearance: none;
+  transition:
+    color var(--duration-fast) var(--easing-standard),
+    background-color var(--duration-fast) var(--easing-standard),
+    border-color var(--duration-fast) var(--easing-standard),
+    transform var(--duration-fast) var(--easing-standard);
+}
+
+.findings__filter:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-control);
+  transform: translateY(-1px);
+}
+
+.findings__filter[aria-pressed="true"] {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-line);
+  color: var(--color-accent);
+}
+
+.findings__filter:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.findings__empty {
   margin-top: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 .finding {
@@ -15,9 +66,14 @@
   border: 1px solid var(--color-border);
   border-left: 3px solid var(--color-border-control);
   border-radius: var(--radius-md);
+  animation: finding-enter var(--duration-base) var(--easing-standard) both;
 }
 
+/* Критическая находка сразу читается как проблема: красный фон и рамка,
+   а не только полоска слева. */
 .finding--bad {
+  background: var(--color-danger-surface);
+  border-color: var(--color-danger-border);
   border-left-color: var(--color-danger);
 }
 
@@ -27,6 +83,40 @@
 
 .finding--muted {
   border-left-color: var(--color-border-control);
+}
+
+/* Мягкое появление карточек друг за другом. Задержки заданы для первых
+   шести: на длинном списке ждать очередную карточку уже незачем. */
+@keyframes finding-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.finding:nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.finding:nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.finding:nth-child(4) {
+  animation-delay: 120ms;
+}
+
+.finding:nth-child(5) {
+  animation-delay: 160ms;
+}
+
+.finding:nth-child(6) {
+  animation-delay: 200ms;
 }
 
 .finding__head {
@@ -95,4 +185,23 @@
   color: var(--color-bg);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-bold);
+}
+
+/* Скрытые фильтром находки не должны занимать место в сетке. */
+.findings__list > li[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .finding {
+    animation: none;
+  }
+
+  .findings__filter {
+    transition: none;
+  }
+
+  .findings__filter:hover {
+    transform: none;
+  }
 }

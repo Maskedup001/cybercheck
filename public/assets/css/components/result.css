@@ -87,6 +87,36 @@
   flex: 0 0 auto;
 }
 
+/* Действия отчёта: «Скопировать» и «Скачать PDF» стоят рядом и на узком
+   экране делят ширину поровну. */
+.result__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.result__copy {
+  flex: 0 0 auto;
+}
+
+/* Появление основных блоков отчёта. */
+@keyframes result-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.result__body > * {
+  animation: result-enter var(--duration-base) var(--easing-standard) both;
+}
+
 /* --- Заголовки блоков внутри отчёта --- */
 
 .result__section-title {
@@ -121,7 +151,17 @@
     padding: var(--space-4);
   }
 
-  .result__download {
+  .result__actions {
     width: 100%;
+  }
+
+  .result__actions .button {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result__body > * {
+    animation: none;
   }
 }
