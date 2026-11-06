@@ -1,5 +1,6 @@
-import { scanTarget } from "./api.js";
-import { renderResult, resetReportTitle } from "./render-result.js";
+import { scanTarget } from "./api/client.js";
+import { renderResult, resetReportTitle } from "./ui/render-result.js";
+import { buildShareText } from "./ui/report-model.js";
 
 const form = document.querySelector('[data-js="scan-form"]');
 const input = document.querySelector('[data-js="url"]');
@@ -10,11 +11,18 @@ const resultBody = document.querySelector('[data-js="result-body"]');
 const formError = document.querySelector('[data-js="form-error"]');
 const statusRegion = document.querySelector('[data-js="status"]');
 const printBtn = document.querySelector('[data-js="print"]');
+const copyBtn = document.querySelector('[data-js="copy"]');
+const copyStatus = document.querySelector('[data-js="copy-status"]');
 const scanStatus = document.querySelector('[data-js="scan-status"]');
 const scanStatusText = document.querySelector('[data-js="scan-status-text"]');
 
 const SCAN_IDLE_TEXT = "Проверяем порты, TLS и заголовки…";
+const COPY_IDLE_TEXT = "Скопировать отчёт";
 let elapsedTimer = 0;
+let feedbackTimer = 0;
+// Последний удачный отчёт: копирование не должно зависеть от DOM и от того,
+// какая вкладка фильтра открыта.
+let lastReport = null;
 
 function startScanStatus() {
   // Разметка может быть старой (сервер отдаёт HTML, прочитанный при старте),
@@ -57,6 +65,47 @@ function showError(message) {
   formError.hidden = false;
 }
 
+function setCopyFeedback(message) {
+  if (!copyStatus) return;
+
+  window.clearTimeout(feedbackTimer);
+  copyStatus.textContent = message;
+  feedbackTimer = window.setTimeout(() => {
+    copyStatus.textContent = "";
+  }, 4000);
+}
+
+async function copyReport() {
+  if (!lastReport || !copyBtn) return;
+
+  const text = buildShareText(lastReport);
+
+  try {
+    // Clipboard API доступен только в защищённом контексте (HTTPS или
+    // localhost). Если его нет или браузер отказал — честно говорим об этом,
+    // а не делаем вид, что отчёт скопирован.
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+      throw new Error("clipboard-unavailable");
+    }
+
+    await navigator.clipboard.writeText(text);
+
+    copyBtn.textContent = "Скопировано";
+    setCopyFeedback("Отчёт скопирован в буфер обмена.");
+    window.setTimeout(() => {
+      copyBtn.textContent = COPY_IDLE_TEXT;
+    }, 2500);
+  } catch {
+    copyBtn.textContent = "Не удалось";
+    setCopyFeedback(
+      "Браузер не дал доступ к буферу обмена. Выделите текст отчёта вручную.",
+    );
+    window.setTimeout(() => {
+      copyBtn.textContent = COPY_IDLE_TEXT;
+    }, 2500);
+  }
+}
+
 async function handleSubmit(event) {
   event.preventDefault();
 
@@ -91,6 +140,8 @@ async function handleSubmit(event) {
   submitBtn.textContent = "Проверяем…";
   statusRegion.textContent = "Сканирование началось";
   form.setAttribute("aria-busy", "true");
+  if (copyBtn) copyBtn.textContent = COPY_IDLE_TEXT;
+  if (copyStatus) copyStatus.textContent = "";
   startScanStatus();
 
   try {
@@ -101,6 +152,7 @@ async function handleSubmit(event) {
     stopScanStatus();
 
     renderResult(resultSection, resultBody, data);
+    lastReport = data;
     // host "—" — заглушка нормализации: «Отчёт для — готов» выглядит поломкой.
     statusRegion.textContent =
       data.host && data.host !== "—" ? `Отчёт для ${data.host} готов` : "Отчёт готов";
@@ -118,6 +170,7 @@ async function handleSubmit(event) {
       // Без отчёта в заголовке вкладки не должно оставаться имени прошлого
       // сайта: иначе пустая страница печатается с чужим названием.
       resetReportTitle();
+      lastReport = null;
     }
 
     const message = error instanceof Error ? error.message : "неизвестная ошибка";
@@ -136,6 +189,10 @@ async function handleSubmit(event) {
 
 form.addEventListener("submit", handleSubmit);
 printBtn.addEventListener("click", () => window.print());
+
+if (copyBtn) {
+  copyBtn.addEventListener("click", copyReport);
+}
 
 // Ctrl+P доступен и без кнопки: печать до первого скана давала пустой A4 с
 // одной шапкой. Класс на body прячет разметку и показывает пояснение.
