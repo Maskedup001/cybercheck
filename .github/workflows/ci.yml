@@ -30,27 +30,40 @@ jobs:
       - name: Audit dependencies (production)
         run: npm audit --audit-level=high --omit=dev
 
-      - name: Check checks.js loads
-        run: node -e "const c = require('./src/checks'); if (!c.checkPort || !c.checkSSL || !c.checkHeaders) { process.exit(1); } console.log('checks.js OK');"
+      - name: Check probe modules load
+        run: node -e "const p = require('./src/probes/ports'); const t = require('./src/probes/tls'); const h = require('./src/probes/http-headers'); if (!p.checkPort || !t.checkSSL || !h.checkHeaders) { process.exit(1); } console.log('probes OK');"
 
-      - name: Check server.js syntax
-        run: node --check src/server.js
+      - name: Check server modules parse
+        run: |
+          node --check src/server.js
+          node --check src/core/config.js
+          node --check src/core/server.js
 
       # node --check читает .js как CommonJS и падает на import. Разбираем
       # модули через vm, чтобы синтаксическая ошибка во фронтенде ловилась
-      # в CI, а не глазами в браузере.
+      # в CI, а не глазами в браузере. Обход рекурсивный: ui/ и api/ —
+      # подкаталоги.
       - name: Check frontend modules parse
         run: |
           node --experimental-vm-modules -e '
             const fs = require("node:fs");
+            const path = require("node:path");
             const vm = require("node:vm");
-            const dir = "public/assets/js";
-            for (const name of fs.readdirSync(dir)) {
-              if (!name.endsWith(".js")) continue;
-              const source = fs.readFileSync(`${dir}/${name}`, "utf8");
-              new vm.SourceTextModule(source, { identifier: name });
-              console.log("ok", name);
-            }
+            const root = "public/assets/js";
+            const walk = (dir) => {
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  walk(full);
+                  continue;
+                }
+                if (!entry.name.endsWith(".js")) continue;
+                const source = fs.readFileSync(full, "utf8");
+                new vm.SourceTextModule(source, { identifier: full });
+                console.log("ok", full);
+              }
+            };
+            walk(root);
           '
 
       - name: Run tests

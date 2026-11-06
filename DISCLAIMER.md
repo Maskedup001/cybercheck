@@ -1,6 +1,6 @@
 # DISCLAIMER / ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ
 
-**Версия:** v2.1.0 · **Дата:** 4 ноября 2026
+**Версия:** v2.2.0 · **Дата:** 6 ноября 2026
 
 ---
 
@@ -26,7 +26,7 @@ The software is distributed under the **MIT license**, which permits commercial 
 
 ### What the scanner does
 
-CyberCheck performs **passive, non-destructive checks**:
+CyberCheck performs **active, non-destructive checks**. It sends requests to the target, but does not exploit anything or change data:
 
 - TCP connection attempts to five ports (80, 443, 22, 3306, 8080), with one retry per port;
 - one or more TLS handshakes to read the leaf certificate, determine the negotiated TLS version, and probe whether TLS 1.0/1.1 is accepted;
@@ -52,7 +52,7 @@ The authors assume **no liability** for any damage, legal consequences, or misus
 
 ### Data
 
-Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.1.0. Do not scan systems whose hostnames or addresses you are not allowed to process.
+Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.2.0. Do not scan systems whose hostnames or addresses you are not allowed to process.
 
 ### Legal notice
 
@@ -88,7 +88,7 @@ Laws differ by country; the operator of the service is responsible for complianc
 
 ### Что делает сканер
 
-CyberCheck выполняет **пассивные, неразрушающие проверки**:
+CyberCheck выполняет **активные, неразрушающие проверки**. Он отправляет запросы к цели, но ничего не эксплуатирует и не изменяет данные:
 
 - попытки TCP-соединения на пять портов (80, 443, 22, 3306, 8080), по одному retry на порт;
 - одно или несколько TLS-рукопожатий: чтение leaf-сертификата, определение согласованной версии TLS и проверка поддержки TLS 1.0/1.1;
@@ -114,7 +114,7 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ### Данные
 
-Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.1.0 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
+Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.2.0 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
 
 ### Правовая информация
 
@@ -128,4 +128,4 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ---
 
-**Проект:** CyberCheck · **Версия:** 2.1.0 · **Год:** 2026
+**Проект:** CyberCheck · **Версия:** 2.2.0 · **Год:** 2026

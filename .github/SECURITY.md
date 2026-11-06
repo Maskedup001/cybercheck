@@ -6,7 +6,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 
 | Версия | Поддерживается |
 |---|---|
-| ветка `main` (v2.1.0 и новее) | да, патчи принимаются |
+| ветка `main` (v2.2.0 и новее) | да, патчи принимаются |
 | форки, старые коммиты, локальные модификации | нет |
 
 Проект развивается как коммерческий сервис, но у него нет дежурной смены и bug bounty: гарантий по срокам нет, однако на воспроизводимые отчёты мы отвечаем.
@@ -31,18 +31,18 @@ CyberCheck — сканер внешней безопасности веб-са�
 
 | Компонент | Что проверять |
 |---|---|
-| `src/net-guard.js` | обход SSRF: IPv6-формы, IPv4-mapped/compatible, NAT64/DNS64, 6to4, Teredo, смешанный DNS-ответ |
-| `src/server.js` | порядок валидации, обход лимита, CORS, обработка ошибок, утечка стека/путей, разбор env, `PUBLIC_ORIGIN`/`RENDER_EXTERNAL_URL`, 404 |
-| `src/checks.js` | обработка недоверенных ответов цели, таймауты, retry, `Host`/SNI, `checkOldTls`, cookie-флаги, нестандартные порты |
-| `src/dns-security.js` | парсинг SPF/DMARC/CAA, обработка DNS-ошибок/таймаутов/abort, отсутствие подстановки чужих записей |
-| `src/header-analysis.js` | разбор `Set-Cookie`, security-заголовки, ACAO `*`, WAF/CMS-эвристики, отсутствие утечки значений cookie |
-| `src/web-probes.js` | SSRF-инвариант `connectIp`, HEAD/GET-таймауты, 200/403-классификация, лимит тела фингерпринта, fallback 443 |
+| `src/core/net-guard.js` | обход SSRF: IPv6-формы, IPv4-mapped/compatible, NAT64/DNS64, 6to4, Teredo, смешанный DNS-ответ |
+| `src/core/config.js`, `src/core/server.js` | порядок валидации, обход лимита, CORS, обработка ошибок, утечка стека/путей, разбор env, `PUBLIC_ORIGIN`/`RENDER_EXTERNAL_URL`, 404 |
+| `src/probes/ports.js`, `src/probes/tls.js`, `src/probes/http-headers.js` | обработка недоверенных ответов цели, таймауты, retry, `Host`/SNI, `checkOldTls`, cookie-флаги, нестандартные порты |
+| `src/probes/dns-security.js` | парсинг SPF/DMARC/CAA, обработка DNS-ошибок/таймаутов/abort, отсутствие подстановки чужих записей |
+| `src/probes/header-analysis.js` | разбор `Set-Cookie`, security-заголовки, ACAO `*`, WAF/CMS-эвристики, отсутствие утечки значений cookie |
+| `src/probes/web-probes.js` | SSRF-инвариант `connectIp`, HEAD/GET-таймауты, 200/403-классификация, лимит тела фингерпринта, fallback 443 |
 | `src/scoring.js` | манипуляция оценкой через вход, NaN/деление на ноль, `score` вне 0–100, находки без `recommendation`, рассинхрон `grade`/`score`, обход потолков |
-| `public/assets/js/*` | XSS, обход CSP, инъекции в отчёт (включая `Server`), `postMessage`/UI-redress, подмена `document.title` |
+| `public/assets/js/**` | XSS, обход CSP, инъекции в отчёт (включая `Server`), `postMessage`/UI-redress, подмена `document.title` |
 | `public/index.html`, `public/legal.html`, `public/privacy.html` | OG/Twitter-метатеги, skip-link, `aria-*`, оглавление и scroll-spy на юридических страницах, отсутствие inline-стилей/обработчиков |
 | `public/assets/css/print.css` | утечка данных в печать, скрытые поля, читаемость |
 | `.github/workflows/ci.yml` | supply chain (пиннинг Actions), утечки в логах CI, выполнение кода из PR |
-| `render.yaml`, `.env.example` | небезопасные значения по умолчанию, CORS, `TRUST_PROXY`, обязательные переменные |
+| `render.yaml`, `.env.example` | небезопасные значения по умолчанию, CORS, `TRUST_PROXY`, обязательные переменные, `npm ci --ignore-scripts` |
 | `package-lock.json` | уязвимые версии зависимостей с путём достижимости |
 
 Отдельно приветствуются: обход SSRF, обход лимита, утечка внутренней информации, использование сервиса как «отражателя» для третьих лиц.

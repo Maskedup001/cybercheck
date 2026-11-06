@@ -8,18 +8,23 @@ CyberCheck — сканер внешней безопасности веб-са�
 
 Документация: [архитектура и модель угроз](docs/architecture.md) · [политика безопасности](.github/SECURITY.md) · [DISCLAIMER](DISCLAIMER.md).
 
-**Текущая версия: 2.1.0.**
+**Текущая версия: 2.2.0.**
 
 Ключевое в релизе:
 
-- **Интерфейс.** Отчёт-«приборная панель»: кольцо оценки на `conic-gradient`, вердикт словами, карточки находок с бейджем важности и OWASP-тегом, а также карточки деталей — порты, TLS, заголовки, почтовая безопасность, cookie, технологии и открытые файлы (включая `security.txt`).
-- **Дизайн-система.** Компонентов стало десять вместо четырёх: добавились `badge`, `scan-status`, `score`, `findings`, `details` и `legal`; все 16 файлов подключены через `@import` в `main.css`, без сборщика и без inline-стилей (иначе не пройдёт `style-src 'self'`).
-- **Юридические документы.** `/legal.html` и `/privacy.html` с оглавлением: `legal-toc.js` строит его из заголовков разделов, ведёт подсветку через `aria-current="location"` и переносит фокус в раздел при клике. Без JS оглавление скрыто, текст читается линейно.
-- **Доступность.** Skip-link, `aria-describedby` у поля, `aria-invalid` только на том контроле, о котором говорит ошибка, `role="alert"`/`role="status"`, кастомный чекбокс поверх нативного `input`, поддержка `prefers-reduced-motion` и `prefers-contrast`.
-- **Печать.** A4-версия отчёта: `@page`, `print-color-adjust: exact`, `break-inside: avoid`, имя файла `CyberCheck_<host>_<дата>`.
+- **Архитектура.** Серверные модули разложены по доменам: `src/core` — конфигурация, HTTP-слой, SSRF-защита и общий контракт путей; `src/probes` — порты, TLS, заголовки, DNS/email и веб-пробы; `src/utils` — бюджеты времени и лимиты. Фронтенд — `api/client.js` и `ui/` (рендер, модель отчёта, оглавление). Старые плоские имена оставлены тонкими реэкспортами, чтобы не ломать внешние подключения.
+- **Интерфейс.** Отчёт-«приборная панель»: кольцо оценки на `conic-gradient`, вердикт словами, карточки находок с бейджем важности и OWASP-тегом, а также карточки деталей — порты, TLS, заголовки, почтовая безопасность, cookie, технологии и открытые файлы. Над находками — фильтры «Все / Критичные / Важные / Замечания» с количеством, рядом с PDF — копирование сводки в буфер.
+- **Человеческий язык.** Вместо `DMARC: p=reject` — «Строгий (Блокировка)», вместо `p=none` — «Мониторинг»; SPF и CAA показывают «Настроен / Не настроен». У сложных терминов (SPF, DMARC, CAA, HSTS, CSP, COOP) есть подсказки при наведении. `security.txt` перенесён из «Открытых файлов» в карточку технологий.
+- **Визуальная иерархия.** Критические находки получают красный фон и рамку, важные — янтарную полосу, информационные WAF/CMS не попадают в список «Что исправить». Карточки появляются с мягкой анимацией, у кнопок есть аккуратный hover; `prefers-reduced-motion` отключает движение.
+- **Дизайн-система.** Десять компонентов: кнопка, форма, согласие, статус скана, каркас отчёта, оценка, находки, детали, бейджи и юридические страницы. Всё связано 16 `@import` в `main.css`, без сборщика и без inline-стилей (иначе не пройдёт `style-src 'self'`).
+- **Юридические документы.** `/legal.html` и `/privacy.html` с оглавлением: `legal-toc.js` строит его из заголовков разделов, ведёт подсветку через `aria-current="location"` и переносит фокус в раздел при клике. Без JS оглавление скрыто, текст читается линейно. В соглашении есть оговорка про ст. 272 УК РФ и прямое «это не юридическая консультация»; в политике перечислены Render и DNS-резолвер как участники обработки.
+- **Доступность.** Skip-link, `aria-describedby` у поля, `aria-invalid` только на том контроле, о котором говорит ошибка, `role="alert"`/`role="status"`, `aria-pressed` у фильтров, кастомный чекбокс поверх нативного `input`, поддержка `prefers-reduced-motion` и `prefers-contrast`.
+- **Печать.** A4-версия отчёта: `@page`, `print-color-adjust: exact`, `break-inside: avoid`, имя файла `CyberCheck_<host>_<дата>`. Печать всегда содержит все находки, даже если на экране включён фильтр.
 - **Надёжность.** Единый error handler последним в стеке, JSON-404, `no-store` на `/` и `/api/*` (юридические страницы — `revalidate`), ETag на статике, семафор на 25 одновременных сканов с `Retry-After: 60`, общий таймаут скана 60 с при клиентских 65 с. Обрыв соединения клиентом прерывает скан, а слот семафора освобождается в `finally`; TLS-проверка не тратится на порту 80, а при ошибке заголовков проверяется следующий веб-порт; `Host` собирается с портом для 8080; `unhandledRejection` и `uncaughtException` попадают в лог.
 - **Скоринг.** Буква A требует 95+; положительные веса дают ровно 100, старый TLS — отдельный −10; каждая находка получает OWASP-тег, а критические новые проверки имеют жёсткие потолки.
-- **Зависимости.** `body-parser` 1.20.9 и `qs` 6.16.1 зафиксированы через `overrides`.
+- **Зависимости.** `body-parser` 1.20.9 и `qs` 6.16.1 зафиксированы через `overrides`; CI и Render ставят зависимости с `--ignore-scripts`.
+
+**Что нового в 2.2.0.** Сервер разложен по доменам `core` / `probes` / `utils`, фронтенд — по `api/` и `ui/`; конфигурация вынесена в `core/config.js`, Express-приложение собирается отдельно от запуска. В интерфейсе появились фильтры находок, копирование отчёта, человеческие формулировки SPF/DMARC/CAA, подсказки к терминам и перенос `security.txt`. 197 тестов в 12 файлах.
 
 **Что нового в 2.1.0.** DNS/email-проверки (SPF, DMARC, CAA), cookie-флаги, дополнительные security-заголовки, HEAD-пробы `/.env`, `/.git/config`, `/.DS_Store`, `/backup.zip`, `security.txt`, CORS `*` и WAF/CMS-фингерпринт. Пересчитан Risk Score: сумма весов 100, новые потолки для открытых файлов и CORS, OWASP-теги у всех находок. В дашборде появились карточки почты, cookie, технологий и открытых файлов. Серверный таймаут — 60 с, клиентский — 65 с; 89 тестов.
 
@@ -109,7 +114,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 
 Новые проверки дают находки `spf-missing`, `dmarc-missing`/`dmarc-weak`/`dmarc-invalid`, `caa-missing`, `cookie-no-secure`/`cookie-no-httponly`/`cookie-no-samesite`, `no-referrer-policy`/`no-permissions-policy`/`no-coop`, `cors-wildcard`, `exposed-env`/`exposed-git`/`exposed-backup`/`exposed-dsstore`, `security-txt-missing`. WAF/CMS — информационные `waf-detected`/`cms-detected` с `weight: 0`.
 
-**Находка (`findings[]`)** — объект с полями `id`, `title`, `desc`, `severity` (`high` / `medium` / `low`), `weight`, `recommendation` и `owasp` (например, `A05:2021 Security Misconfiguration`). Находки сортируются по весу; `severity` управляет цветом. OWASP-тег — маркировка категории, а не заявление о сертификации.
+**Находка (`findings[]`)** — объект с полями `id`, `title`, `desc`, `severity` (`high` / `medium` / `low`), `weight`, `recommendation` и `owasp` (например, `A05:2021 Security Misconfiguration`). Находки сортируются по важности (high → medium → low), внутри уровня — по весу; `severity` управляет цветом и фильтрами. OWASP-тег — маркировка категории, а не заявление о сертификации.
 
 Оценка детерминирована: одинаковый вход даёт одинаковый выход, сеть внутри `scoring.js` не используется. Контракт и тесты — в [архитектуре](docs/architecture.md).
 
@@ -306,6 +311,8 @@ Content-Type: application/json
 
 Оценка учитывает `dns`, `files`, `securityTxt` и расширенные поля `headers`; `fingerprint` даёт только информационные находки `weight: 0` и score не меняет. Каждая находка содержит `owasp`. Для `files` критичны только `200` на `/.env`, `/.git/config` и `/backup.zip`; `403` не считается экспозицией.
 
+Дополнительные поля контракта: у `headers` — `hstsState`, `cspState`, `xframeState`, `xcontentState`, `referrerPolicyState`, `permissionsPolicyState`, `coopState` (`ok` / `weak` / `missing`); у `ssl` — `tlsConfirmed`; у `dns.spf` — `multiple` и `weak`; у `dns.dmarc` — `multiple` и `weak`; у `dns.caa` — `restrictive`; у `cookieSummary` — `insecureNone`. Они нужны, чтобы UI отличал «заголовка нет» от «заголовок есть, но защита выключена», и не расходился со скорингом.
+
 Ошибки — всегда JSON `{ "error": "..." }` без стека и внутренних деталей:
 
 | Код | Когда |
@@ -325,26 +332,30 @@ Content-Type: application/json
 npm test
 ```
 
-Запускается `node --test test/*.test.js` — **89 тестов** в восьми файлах:
+Запускается `node --test test/*.test.js` — **197 тестов** в двенадцати файлах:
 
-- `test/net-guard.test.js` — 3 теста: 20 приватных/служебных адресов блокируются, 4 публичных разрешаются, мусорный ввод блокируется (fail-closed). Покрыты IPv4-mapped, IPv4-compatible, NAT64 и `::/96`.
-- `test/scoring.test.js` — 29 тестов: сумма весов 100; TLS/SSL, заголовки, порты; потолки `.env`/`.git`/`backup`/CORS; DMARC `p=none`; DNS timeout и `ENODATA`; cookie-флаги; `security.txt`; WAF/CMS; OWASP-теги у всех находок.
-- `test/checks.test.js` — 4 теста: `checkPort` на закрытом и открытом порту, `checkHeaders` (CSP, X-Frame-Options, cookie-флаги, дополнительные заголовки, CORS), `checkSSL` с `HANDSHAKE_FAILED`.
-- `test/dns-security.test.js` — 19 тестов: SPF, DMARC (`reject`/`quarantine`/`none`), CAA, IP/localhost, таймауты, DNS-ошибки и abort.
-- `test/header-analysis.test.js` — 23 теста: разбор `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, ACAO `*`, WAF (Cloudflare/Sucuri/Akamai), CMS (WordPress/Drupal/Joomla/Bitrix).
-- `test/web-probes.test.js` — 8 тестов: HEAD-пробы (200/403/404/301), `security.txt`, фингерпринт, Host/connectIp, таймаут и abort.
-- `test/frontend-contract.test.js` — 2 теста: нормализация `owasp`/новых полей в `api.js` и наличие карточек/OWASP-класса в `render-result.js`.
+- `test/net-guard.test.js` — 9 тестов: 20 приватных/служебных адресов блокируются, 4 публичных разрешаются, мусорный ввод блокируется (fail-closed), инъекция резолвера, таймаут и смешанный DNS-ответ.
+- `test/scoring.test.js` — 45 тестов: сумма весов 100; TLS/SSL, заголовки, порты; потолки `.env`/`.git`/`backup`/CORS; DMARC `p=none`; DNS timeout и `ENODATA`; cookie-флаги; `security.txt`; WAF/CMS; OWASP-теги у всех находок; сортировка находок.
+- `test/checks.test.js` — 10 тестов: `checkPort` на закрытом и открытом порту, дедлайн и отказ от нелитерального `connectIp`, `checkHeaders` (CSP, X-Frame-Options, cookie-флаги, дополнительные заголовки, CORS, weak-значения), `checkSSL` с `HANDSHAKE_FAILED` и самоподписанным сертификатом.
+- `test/dns-security.test.js` — 23 теста: SPF, DMARC (`reject`/`quarantine`/`none`), CAA, IP/localhost, таймауты, DNS-ошибки и abort.
+- `test/header-analysis.test.js` — 30 тестов: разбор `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, ACAO `*`, WAF (Cloudflare/Sucuri/Akamai), CMS (WordPress/Drupal/Joomla/Bitrix).
+- `test/web-probes.test.js` — 12 тестов: HEAD-пробы (200/403/404/301), `security.txt`, фингерпринт, Host/connectIp, таймаут, abort и частичное тело.
+- `test/scan-helpers.test.js` — 19 тестов: `parseTarget`, `rateKey`, бюджеты и дедлайны, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath`, `isLiteralIp`.
+- `test/rate-limit.test.js` — 10 тестов: кулдаун, LRU, sweep, потолок одновременных сканов, лишний `finish`, таймер чистки.
+- `test/report-model.test.js` — 22 теста: `sanitizeText`, критичность путей, `filesNote`, `tlsNotice`, `caaState`, `secureContextState`, склонения и имя отчёта.
+- `test/frontend-contract.test.js` — 5 тестов: нормализация `owasp`/новых полей в `api/client.js`, мусорные `score`/`grade`/`ports`, сетевые ошибки, безопасный DOM и экспорты `ui/render-result.js`.
 - `test/server.test.js` — 1 тест: сервер запускается с `TRUST_PROXY=0` (на случайном порту) и не падает.
+- `test/server-http.test.js` — 11 тестов: `/healthz`, HTML с подставленным `BASE_URL` и security-заголовками, защита от шаблонов в статике, редирект `/index.html`, 400/415/413, кулдаун 429, CORS и JSON-404.
 
-Не покрыто: HTTP-слой (400/404/429/503/CORS), интеграция новых проб в `server.js` (сборка `dns/files/securityTxt/fingerprint`), `checkOldTls`/`supportsOldTls`, URL-валидация, `buildReport`, DOM-рендер карточек и печать. Как это закрыть — в [архитектуре](docs/architecture.md).
+Не покрыто: `checkOldTls`/`supportsOldTls` (нужен TLS-стенд), 503/504, интеграция оркестрации скана в `core/server.js`, DOM-рендер карточек и печать, retry `checkHeaders`. `createApp()` уже экспортируется, поэтому HTTP-слой можно тестировать через supertest без запуска процесса. Как это закрыть — в [архитектуре](docs/architecture.md).
 
-CI (`.github/workflows/ci.yml`) на каждый push и PR: `npm ci --ignore-scripts` → `npm audit --audit-level=high --omit=dev` → проверка загрузки `checks.js` → `node --check src/server.js` → разбор модулей фронтенда через `vm.SourceTextModule` → `npm test` → запуск сервера и smoke-проверка `/`.
+CI (`.github/workflows/ci.yml`) на каждый push и PR: `npm ci --ignore-scripts` → `npm audit --audit-level=high --omit=dev` → проверка загрузки probe-модулей → `node --check` для точки входа и `core/` → рекурсивный разбор модулей фронтенда через `vm.SourceTextModule` → `npm test` → запуск сервера и smoke-проверка `/`.
 
 ## Деплой на Render
 
 ### Вариант 1. Blueprint
 
-В репозитории есть [`render.yaml`](render.yaml): web-сервис, план `starter`, `npm ci` / `npm start`, health-check `/healthz`, `NODE_ENV=production`, `TRUST_PROXY=1`.
+В репозитории есть [`render.yaml`](render.yaml): web-сервис, план `starter`, `npm ci --ignore-scripts` / `npm start`, health-check `/healthz`, `NODE_ENV=production`, `TRUST_PROXY=1`.
 
 1. Render → **New** → **Blueprint** → выбрать репозиторий.
 2. Render читает `render.yaml` и создаёт сервис. `PUBLIC_ORIGIN` в blueprint не задан намеренно: Render сам передаёт `RENDER_EXTERNAL_URL` (например, `https://cybercheck.onrender.com`), и `server.js` использует её как fallback.
@@ -356,7 +367,7 @@ CI (`.github/workflows/ci.yml`) на каждый push и PR: `npm ci --ignore-s
 
 ### Вариант 2. Вручную
 
-- Build: `npm ci`, Start: `npm start`
+- Build: `npm ci --ignore-scripts`, Start: `npm start`
 - Env: `NODE_ENV=production`, `PUBLIC_ORIGIN=https://<service>.onrender.com`, `TRUST_PROXY=1`
 - Health Check Path: `/healthz`
 - План: **Starter**. На Free инстанс засыпает, первый скан после простоя может занять 30–50 с; клиентский таймаут — 65 с, ретрая нет.
@@ -408,29 +419,51 @@ cybercheck/
 │       │       ├── details.css     # сетка деталей проверки
 │       │       └── legal.css       # документ с оглавлением
 │       ├── js/
-│       │   ├── app.js              # контроллер формы и состояния
-│       │   ├── api.js              # fetch + AbortController (65 с) + нормализация
-│       │   ├── render-result.js    # рендер отчёта через DOM API/textContent
-│       │   └── legal-toc.js        # оглавление юридических страниц + scroll-spy
+│       │   ├── app.js              # контроллер формы, состояние, копирование
+│       │   ├── api/
+│       │   │   └── client.js       # fetch + AbortController (65 с) + нормализация
+│       │   ├── ui/
+│       │   │   ├── render-result.js # рендер отчёта через DOM API/textContent
+│       │   │   ├── report-model.js  # чистые функции отчёта и текст для буфера
+│       │   │   └── legal-toc.js     # оглавление юридических страниц + scroll-spy
+│       │   ├── api.js              # фасад → api/client.js
+│       │   ├── render-result.js    # фасад → ui/render-result.js
+│       │   ├── report-model.js     # фасад → ui/report-model.js
+│       │   └── legal-toc.js        # фасад → ui/legal-toc.js
 │       └── screenshots/
 │           └── og-cover.png        # OG-обложка
 ├── src/                            # Серверная часть
-│   ├── server.js                   # Express, конфиг, валидация, лимит, buildReport
-│   ├── checks.js                   # порты, TLS, заголовки, cookie-флаги
-│   ├── dns-security.js             # SPF, DMARC, CAA
-│   ├── header-analysis.js          # Set-Cookie, security-заголовки, WAF/CMS
-│   ├── web-probes.js               # HEAD-файлы, security.txt, fingerprint
+│   ├── server.js                   # точка входа: readConfig() + startServer()
 │   ├── scoring.js                  # Risk Score и findings (чистая функция)
-│   └── net-guard.js                # SSRF-защита: isPublicIp, resolvePublicIps
-├── test/
-│   ├── net-guard.test.js           # 3 теста SSRF-классификации
-│   ├── scoring.test.js             # 29 тестов скоринга
-│   ├── checks.test.js              # 4 теста: порты, заголовки, cookie, TLS
-│   ├── dns-security.test.js        # 19 тестов SPF/DMARC/CAA
-│   ├── header-analysis.test.js     # 23 теста cookie/заголовков/WAF/CMS
-│   ├── web-probes.test.js          # 8 тестов HEAD/security.txt/fingerprint
-│   ├── frontend-contract.test.js   # 2 теста нормализации/карточек/OWASP
-│   └── server.test.js              # 1 тест: запуск с TRUST_PROXY=0
+│   ├── core/
+│   │   ├── config.js               # PUBLIC_ORIGIN, PORT, TRUST_PROXY, DEMO_MODE
+│   │   ├── server.js               # Express, страницы, лимит, маршрут /api/scan
+│   │   ├── net-guard.js            # SSRF-защита: isPublicIp, resolvePublicIps
+│   │   └── file-paths.js           # общий список путей и критических файлов
+│   ├── probes/
+│   │   ├── ports.js                # TCP-проверка пяти портов
+│   │   ├── tls.js                  # сертификат, версия TLS, TLS 1.0/1.1
+│   │   ├── http-headers.js         # заголовки ответа, cookie-флаги, CORS
+│   │   ├── header-analysis.js      # разбор Set-Cookie, WAF/CMS-эвристики
+│   │   ├── dns-security.js         # SPF, DMARC, CAA
+│   │   └── web-probes.js           # HEAD-файлы, security.txt, fingerprint
+│   └── utils/
+│       ├── scan-helpers.js         # parseTarget, бюджеты, buildReport
+│       └── rate-limit.js           # кулдаун, семафор, LRU
+├── test/                           # 12 тестовых файлов + fixtures/tls
+│   ├── net-guard.test.js           # 9 тестов SSRF-классификации
+│   ├── scoring.test.js             # 45 тестов скоринга
+│   ├── checks.test.js              # 10 тестов: порты, TLS, заголовки
+│   ├── dns-security.test.js        # 23 теста SPF/DMARC/CAA
+│   ├── header-analysis.test.js     # 30 тестов cookie/заголовков/WAF/CMS
+│   ├── web-probes.test.js          # 12 тестов HEAD/security.txt/fingerprint
+│   ├── scan-helpers.test.js        # 19 тестов бюджета и сборки отчёта
+│   ├── rate-limit.test.js          # 10 тестов лимитов
+│   ├── report-model.test.js        # 22 теста модели отчёта
+│   ├── frontend-contract.test.js   # 5 тестов нормализации и DOM
+│   ├── server.test.js              # 1 тест: запуск с TRUST_PROXY=0
+│   ├── server-http.test.js         # 11 тестов HTTP-слоя
+│   └── fixtures/tls/self-signed.js # сертификат для тестов TLS
 ├── .env.example
 ├── .gitignore
 ├── package.json
@@ -444,6 +477,8 @@ cybercheck/
 > `node_modules/` создаётся после `npm install` и в репозиторий не попадает.
 >
 > `SECURITY.md` лежит в `.github/` — именно оттуда GitHub показывает его на вкладке **Security**.
+>
+> Плоские `src/checks.js`, `src/dns-security.js`, `src/header-analysis.js`, `src/web-probes.js`, `src/net-guard.js`, `src/rate-limit.js`, `src/scan-helpers.js` и `src/file-paths.js` — тонкие реэкспорты новых доменов. Они оставлены для совместимости; новый код подключает `core/`, `probes/` и `utils/` напрямую.
 
 ## Безопасность
 
@@ -482,14 +517,16 @@ cybercheck/
 17. **HEAD-проба — только четыре пути.** `200` на `/.env`, `/.git/config` или `/backup.zip` даёт critical и потолок 40/50/50; `/.DS_Store` — low. SPA/редирект-заглушка тоже может вернуть `200` — это ложное срабатывание. `403` трактуется как WAF/запрет и не является уязвимостью. Ответы `301/302/401/405` — только данные.
 18. **Фингерпринт — эвристика.** WAF определяется по заголовкам/кукам (Cloudflare, Sucuri, Akamai), CMS — по кукам/meta/HTML (WordPress, Drupal, Joomla, Bitrix). Кастомные сборки, закрытый бэкенд и сжатый/бинарный ответ могут не определиться; тело читается не больше 64 КБ.
 19. **CORS проверяется по корню.** `Access-Control-Allow-Origin: *` смотрится в ответе `/`; отдельные API-эндпоинты не обходятся.
+20. **Копирование отчёта требует защищённого контекста.** `navigator.clipboard.writeText` доступен на HTTPS или `localhost`. На HTTP-стенде кнопка не падает, а честно сообщает, что браузер не дал доступ к буферу; текст отчёта при этом остаётся на экране.
 
 ## Roadmap
 
-- **2.1.0 (текущая)** — DNS/email (SPF/DMARC/CAA), cookie-флаги, Referrer-Policy/Permissions-Policy/COOP, HEAD-пробы файлов, `security.txt`, CORS `*`, WAF/CMS-фингерпринт; новый скоринг на 100 с OWASP и потолками; карточки почты/cookie/технологий/файлов; 60/65 с; 89 тестов.
+- **2.2.0 (текущая)** — архитектура `core` / `probes` / `utils`, фронтенд `api/` и `ui/`; конфигурация вынесена из точки входа, Express-приложение собирается отдельно от запуска; фильтры находок, копирование отчёта, человеческие формулировки SPF/DMARC/CAA, подсказки к терминам, `security.txt` в карточке технологий; 197 тестов.
+- **2.1.0** — DNS/email (SPF/DMARC/CAA), cookie-флаги, Referrer-Policy/Permissions-Policy/COOP, HEAD-пробы файлов, `security.txt`, CORS `*`, WAF/CMS-фингерпринт; новый скоринг на 100 с OWASP и потолками; карточки почты/cookie/технологий/файлов; 60/65 с; 89 тестов.
 - **2.0.1** — `ssl-error` вместо ложного «Нет SSL», HTTP-порты 80/8080, fallback 443 → 80 → 8080, до трёх IP, таймаут 40 с, `TRUST_PROXY` 0–10, 27 тестов.
 - **2.0.0** — отчёт-«приборная панель», дизайн-система и разбиение CSS на компоненты, юридические страницы с оглавлением, печать A4, a11y, семафор на 25 сканов, JSON-404, раздельное кэширование.
-- **2.2.0** — глобальный rate-limit, verification домена, мультидомен в CORS, PostgreSQL, история, API-ключи, share-ссылки, рефакторинг `server.js` на `app.js`/`config.js`, тесты HTTP-слоя.
-- **Дальше** — пассивные модули для пентеста: TLS-шифры и цепочка, cookie/CORS-политики, DNS/email, утечки, fingerprinting.
+- **2.3.0** — глобальный rate-limit, verification домена, мультидомен в CORS, PostgreSQL, история, API-ключи, share-ссылки, тесты 503/504 и DOM-рендера.
+- **Дальше** — дополнительные модули для пентеста: TLS-шифры и цепочка, cookie/CORS-политики, DNS/email, утечки, fingerprinting.
 
 ## Disclaimer
 
