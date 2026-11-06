@@ -17,6 +17,7 @@ const PAGE_TITLE = document.title;
 let reportTitle = "";
 let currentGauge = null;
 let currentScore = 0;
+let gaugeFrame = 0;
 
 const GRADE_LABELS = {
   A: "Отличная защита",
@@ -47,7 +48,7 @@ const TECH_LABELS = {
 };
 
 // Подсказки для сложных терминов. title показывает их при наведении, а
-// пунктирное подчёркивание в CSS подсказывает, что термин можно «потрогать».
+// маленькая иконка рядом с термином подсказывает, что пояснение существует.
 const HINTS = {
   server: "Заголовок Server сообщает имя и версию веб-сервера.",
   csp: "CSP ограничивает, откуда страница может загружать скрипты и стили.",
@@ -119,6 +120,44 @@ function createMuted(text) {
   return span;
 }
 
+// Иконка-подсказка рисуется SVG, а не текстовым символом: так она выглядит
+// одинаково на всех платформах и не зависит от шрифта пользователя.
+function createInfoIcon() {
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("class", "tooltip-icon");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+
+  const circle = document.createElementNS(svgNS, "circle");
+  circle.setAttribute("cx", "12");
+  circle.setAttribute("cy", "12");
+  circle.setAttribute("r", "10");
+
+  const line1 = document.createElementNS(svgNS, "line");
+  line1.setAttribute("x1", "12");
+  line1.setAttribute("y1", "16");
+  line1.setAttribute("x2", "12");
+  line1.setAttribute("y2", "12");
+
+  const line2 = document.createElementNS(svgNS, "line");
+  line2.setAttribute("x1", "12");
+  line2.setAttribute("y1", "8");
+  line2.setAttribute("x2", "12.01");
+  line2.setAttribute("y2", "8");
+
+  svg.append(circle, line1, line2);
+  return svg;
+}
+
 function formatTechName(value) {
   // Имя приходит из ответа сервера: нестроковое значение не должно давать
   // пустой бейдж, поэтому приводим его к строке.
@@ -127,13 +166,16 @@ function formatTechName(value) {
   if (text.length === 0) return "";
 
   const key = text.toLowerCase();
-  if (TECH_LABELS[key]) return TECH_LABELS[key];
+  if (Object.hasOwn(TECH_LABELS, key)) return TECH_LABELS[key];
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function dnsSectionUnavailable(section) {
+function dnsSectionUnavailable(
+  section,
+  missingErrors = ["ENODATA", "ENOTFOUND"],
+) {
   if (!section || typeof section !== "object") return true;
-  return Boolean(section.error) && !["ENODATA", "ENOTFOUND"].includes(section.error);
+  return Boolean(section.error) && !missingErrors.includes(section.error);
 }
 
 function getCookieSummary(headers) {
@@ -146,12 +188,14 @@ function getCookieSummary(headers) {
   let secure = 0;
   let httpOnly = 0;
   let sameSite = 0;
+  let insecureNone = 0;
 
   for (const cookie of headers.cookies) {
     if (!cookie || typeof cookie !== "object") continue;
     if (cookie.secure) secure += 1;
     if (cookie.httpOnly) httpOnly += 1;
     if (cookie.sameSite) sameSite += 1;
+    if (cookie.sameSiteValue === "none" && !cookie.secure) insecureNone += 1;
   }
 
   return {
@@ -159,6 +203,7 @@ function getCookieSummary(headers) {
     secure,
     httpOnly,
     sameSite,
+    insecureNone,
     missingSecure: total - secure,
     missingHttpOnly: total - httpOnly,
     missingSameSite: total - sameSite,
@@ -166,7 +211,7 @@ function getCookieSummary(headers) {
 }
 
 // «2/3» без текста читалось скринридером как «2 слэш 3», а title
-// недоступен с клавиатуры: добавляем визуально скрытое пояснение.
+// недоступен с клавиатуры: даём бейджу единственное доступное имя.
 function cookieFlagBadge(summary, missingKey, missingTone, label) {
   const total = summary.total;
   const missing = Number.isFinite(summary[missingKey])
@@ -176,11 +221,14 @@ function cookieFlagBadge(summary, missingKey, missingTone, label) {
   const tone = missing === 0 ? "ok" : missing >= total ? missingTone : "warn";
   const badge = createBadge(tone, `${present}/${total}`);
   badge.setAttribute("title", `${present} из ${total} cookie`);
-
-  const hidden = document.createElement("span");
-  hidden.className = "u-visually-hidden";
-  hidden.textContent = ` ${present} из ${total} cookie с флагом ${label}`;
-  badge.append(hidden);
+  // Видимый «2/3» читается как «два слэш три». role="img" нужен, чтобы
+  // aria-label на span действительно заменил текст для скринридера, а не
+  // был проигнорирован как на обычном контейнере.
+  badge.setAttribute("role", "img");
+  badge.setAttribute(
+    "aria-label",
+    `${present} из ${total} cookie с флагом ${label}`,
+  );
 
   return badge;
 }
@@ -227,7 +275,9 @@ function createScore(report, score) {
 
   const title = document.createElement("p");
   title.className = "score__title";
-  title.textContent = GRADE_LABELS[report.grade] ?? "Оценка";
+  title.textContent = Object.hasOwn(GRADE_LABELS, report.grade)
+    ? GRADE_LABELS[report.grade]
+    : "Оценка";
 
   const text = document.createElement("p");
   text.className = "score__text";
@@ -286,13 +336,20 @@ function createFindings(findings) {
   const empty = document.createElement("p");
   empty.className = "findings__empty";
   empty.hidden = true;
+  // При фильтрации в пустую категорию текст появляется не только визуально:
+  // role=status сообщает об этом скринридеру.
+  empty.setAttribute("role", "status");
 
   const entries = [];
   const buttons = [];
 
   for (const finding of findings) {
-    const severity = SEVERITY[finding.severity] ?? SEVERITY.low;
-    const severityKey = SEVERITY[finding.severity] ? finding.severity : "low";
+    // Object.hasOwn, а не просто SEVERITY[key]: ключ "__proto__" или
+    // "constructor" иначе вернул бы встроенный объект и сломал tone/фильтр.
+    const severityKey = Object.hasOwn(SEVERITY, finding.severity)
+      ? finding.severity
+      : "low";
+    const severity = SEVERITY[severityKey];
 
     const item = document.createElement("li");
     item.className = `finding finding--${severity.tone}`;
@@ -332,7 +389,13 @@ function createFindings(findings) {
     fixLabel.className = "finding__fix-label";
     fixLabel.textContent = "Как исправить:";
 
-    fix.append(fixLabel, document.createTextNode(` ${finding.recommendation}`));
+    const recommendation =
+      typeof finding.recommendation === "string" &&
+      finding.recommendation.trim() !== ""
+        ? finding.recommendation
+        : "Проверьте настройку вручную.";
+
+    fix.append(fixLabel, document.createTextNode(` ${recommendation}`));
 
     item.append(head);
     if (desc) item.append(desc);
@@ -353,10 +416,9 @@ function createFindings(findings) {
     }
 
     for (const button of buttons) {
-      button.setAttribute(
-        "aria-pressed",
-        String(button.dataset.filter === key),
-      );
+      const isActive = button.dataset.filter === key;
+      button.setAttribute("aria-pressed", String(isActive));
+      button.classList.toggle("is-active", isActive);
     }
 
     empty.hidden = visible > 0;
@@ -369,7 +431,7 @@ function createFindings(findings) {
   for (const filter of FILTERS) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "findings__filter";
+    button.className = "findings__filter filter-tab";
     button.dataset.filter = filter.key;
     button.textContent = `${filter.label} (${countFor(filter.key)})`;
     button.setAttribute("aria-pressed", String(filter.key === "all"));
@@ -379,6 +441,8 @@ function createFindings(findings) {
     filters.append(button);
     buttons.push(button);
   }
+
+  applyFilter("all");
 
   section.append(filters, list, empty);
   return section;
@@ -390,13 +454,27 @@ function createRow(label, value, hint) {
 
   const term = document.createElement("dt");
   term.className = "detail__label";
-  term.textContent = label;
+
+  // Текст — отдельный flex-элемент: длинный термин переносится по словам,
+  // а иконка-подсказка остаётся вплотную к последней строке.
+  const termText = document.createElement("span");
+  termText.className = "detail__label-text";
+  termText.textContent = label;
+  term.append(termText);
 
   if (hint) {
-    term.classList.add("detail__label--hint");
-    // title — нативный и доступный способ показать пояснение при наведении;
-    // он не нарушает CSP и не требует JS.
+    // title — нативный способ показать пояснение при наведении; он не
+    // нарушает CSP. Иконка декоративная по умолчанию, но с подсказкой
+    // становится фокусируемым триггером: иначе keyboard-only пользователь
+    // не мог получить пояснение.
     term.setAttribute("title", hint);
+    term.append(createInfoIcon());
+
+    const icon = term.lastElementChild;
+    icon.setAttribute("role", "img");
+    icon.setAttribute("tabindex", "0");
+    icon.setAttribute("aria-label", hint);
+    icon.removeAttribute("aria-hidden");
   }
 
   const cell = document.createElement("dd");
@@ -416,6 +494,18 @@ function createCard(titleText, rows, note) {
   const title = document.createElement("h4");
   title.className = "detail__title";
   title.textContent = titleText;
+
+  if (rows.length > 0) {
+    const meta = document.createElement("span");
+    meta.className = "detail__meta";
+    meta.textContent = `${rows.length} ${plural(rows.length, [
+      "параметр",
+      "параметра",
+      "параметров",
+    ])}`;
+    title.append(meta);
+  }
+
   card.append(title);
 
   if (rows.length > 0) {
@@ -436,12 +526,18 @@ function createCard(titleText, rows, note) {
     card.append(text);
   }
 
+  // Секция без строк — компактное пустое состояние: заголовок и
+  // пояснение, без отдельной коробки и растягивания под соседа.
+  if (rows.length === 0) card.classList.add("detail--empty");
+
   return card;
 }
 
 function createPortsCard(ports) {
   const rows = ports.map((port) => {
-    const tone = PORT_TONES[port.port] ?? "warn";
+    const tone = Object.hasOwn(PORT_TONES, port.port)
+      ? PORT_TONES[port.port]
+      : "warn";
     return {
       label: `Порт ${port.port}`,
       value: createBadge(tone, PORT_LABELS[tone]),
@@ -537,11 +633,13 @@ function createTlsCard(ssl, ports) {
 
 function createHeadersCard(headers, ssl) {
   if (headers.error) {
-    return createCard(
+    const card = createCard(
       "Заголовки",
       [],
       "Сервер не ответил на HTTP-запрос — заголовки не проверены.",
     );
+    card.classList.add("detail--headers");
+    return card;
   }
 
   const context = secureContextState(ssl);
@@ -609,7 +707,9 @@ function createHeadersCard(headers, ssl) {
     { label: "CORS", value: cors, hint: HINTS.cors },
   ];
 
-  return createCard("Заголовки", rows);
+  const card = createCard("Заголовки", rows);
+  card.classList.add("detail--headers");
+  return card;
 }
 
 function createMailCard(dns) {
@@ -631,7 +731,10 @@ function createMailCard(dns) {
 
   const spf = dns.spf;
   let spfValue;
-  if (dnsSectionUnavailable(spf)) {
+  // У apex ENOTFOUND — рассинхрон резолвера, а не отсутствие SPF: scoring
+  // именно так и считает (APEX_MISSING_ERRORS), поэтому UI не должен
+  // рисовать красное «Не настроен».
+  if (dnsSectionUnavailable(spf, ["ENODATA"])) {
     spfValue = createMuted("Не удалось проверить");
   } else if (!spf.present) {
     spfValue = createBadge("bad", "Не настроен");
@@ -687,7 +790,7 @@ function createMailCard(dns) {
   // CAA оценивается тем же правилом, что и бейдж: ENOTFOUND для apex — сбой,
   // а не «записи нет», поэтому в счётчик недоступных он тоже входит.
   const unavailable = [
-    dnsSectionUnavailable(dns.spf),
+    dnsSectionUnavailable(dns.spf, ["ENODATA"]),
     dnsSectionUnavailable(dns.dmarc),
     caaStateValue === "unknown",
   ].filter(Boolean).length;
@@ -747,7 +850,9 @@ function createCookieCard(headers, ssl) {
   ];
 
   let note = `Всего cookie: ${summary.total}.`;
-  if (context === "ok" && summary.insecureNone > 0) {
+  // SameSite=None без Secure браузеры отвергают независимо от того, есть ли
+  // у сайта HTTPS: предупреждение не должно зависеть от secure-контекста.
+  if (summary.insecureNone > 0) {
     note += " Часть cookie с SameSite=None без Secure — браузеры их отвергают.";
   }
 
@@ -776,11 +881,13 @@ function createTechCard(fingerprint, securityTxt) {
   };
 
   if (!fingerprint || typeof fingerprint !== "object") {
-    return createCard(
+    const card = createCard(
       "Технологии",
       [securityRow],
       "Не удалось проверить: данные фингерпринта не получены.",
     );
+    card.classList.add("detail--tech");
+    return card;
   }
 
   const wafName =
@@ -826,7 +933,9 @@ function createTechCard(fingerprint, securityTxt) {
     note = `Страница ответила ${fingerprint.status}; WAF/CMS не проверялись — заглушка ошибки не доказывает их отсутствие.`;
   }
 
-  return createCard("Технологии", rows, note);
+  const card = createCard("Технологии", rows, note);
+  card.classList.add("detail--tech");
+  return card;
 }
 
 function createFilesCard(files) {
@@ -837,6 +946,10 @@ function createFilesCard(files) {
 
   const exposed = getExposedFiles(files);
   if (exposed.length === 0) return card;
+
+  // Список продолжает карточку: её содержимое снова прижато к верху,
+  // а не центрировано как пустое состояние.
+  card.classList.remove("detail--empty");
 
   const criticalPaths = getCriticalPaths(files);
 
@@ -876,19 +989,55 @@ function createDetails(report) {
   title.className = "result__section-title";
   title.textContent = "Детали проверки";
 
+  const legend = document.createElement("div");
+  legend.className = "details__legend";
+
+  const legendPrefix = document.createElement("span");
+  legendPrefix.className = "u-visually-hidden";
+  legendPrefix.textContent = "Цвет точки в заголовке карточки: ";
+  legend.append(legendPrefix);
+
+  const legendItems = [
+    ["bad", "проблема"],
+    ["warn", "риск"],
+    ["ok", "настроено"],
+    ["muted", "нет данных"],
+    ["info", "информация"],
+  ];
+
+  for (const [tone, label] of legendItems) {
+    const item = document.createElement("span");
+    item.className = "details__legend-item";
+
+    const dot = document.createElement("span");
+    dot.className = `details__legend-dot details__legend-dot--${tone}`;
+    dot.setAttribute("aria-hidden", "true");
+
+    item.append(dot, document.createTextNode(label));
+    legend.append(item);
+  }
+
+  const head = document.createElement("div");
+  head.className = "details__head";
+  head.append(title, legend);
+
   const grid = document.createElement("div");
   grid.className = "details__grid";
+  // Одна колонка полноширинных карточек: у карточек разная высота, и
+  // любая попытка разложить их в две колонки либо оставляет дыры, либо
+  // растягивает короткие карточки. Внутри карточек двух- и трёхколоночные
+  // таблицы остаются только там, где они не создают пустых ячеек.
   grid.append(
     createPortsCard(report.ports),
     createTlsCard(report.ssl, report.ports),
-    createHeadersCard(report.headers, report.ssl),
-    createMailCard(report.dns),
     createCookieCard(report.headers, report.ssl),
+    createMailCard(report.dns),
     createTechCard(report.fingerprint, report.securityTxt),
     createFilesCard(report.files),
+    createHeadersCard(report.headers, report.ssl),
   );
 
-  section.append(title, grid);
+  section.append(head, grid);
   return section;
 }
 
@@ -898,6 +1047,13 @@ function createDetails(report) {
  * style-src 'self' её не блокирует.
  */
 function animateGauge(gauge, score) {
+  // Повторный скан не должен оставлять старую анимацию: она писала бы в уже
+  // откреплённый узел и держала кадры до конца своих 700 мс.
+  if (gaugeFrame) {
+    window.cancelAnimationFrame(gaugeFrame);
+    gaugeFrame = 0;
+  }
+
   const apply = (value) => gauge.style.setProperty("--value", String(value));
 
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -909,15 +1065,22 @@ function animateGauge(gauge, score) {
   const startedAt = performance.now();
 
   const tick = (now) => {
+    // Отчёт могли перерисовать, пока кадр стоял в очереди.
+    if (currentGauge !== gauge) return;
+
     const progress = Math.min(1, Math.max(0, (now - startedAt) / duration));
     const eased = 1 - (1 - progress) ** 3;
 
     apply((score * eased).toFixed(1));
 
-    if (progress < 1) window.requestAnimationFrame(tick);
+    if (progress < 1) {
+      gaugeFrame = window.requestAnimationFrame(tick);
+    } else {
+      gaugeFrame = 0;
+    }
   };
 
-  window.requestAnimationFrame(tick);
+  gaugeFrame = window.requestAnimationFrame(tick);
 }
 
 function setText(selector, text) {
@@ -1014,6 +1177,10 @@ window.addEventListener("beforeprint", () => {
 
   // И кольцо должно попасть на бумагу в конечном положении,
   // даже если печать нажали в середине анимации.
+  if (gaugeFrame) {
+    window.cancelAnimationFrame(gaugeFrame);
+    gaugeFrame = 0;
+  }
   if (currentGauge) currentGauge.style.setProperty("--value", String(currentScore));
 });
 

@@ -51,9 +51,14 @@ if (toc && list) {
 
       links.set(section.id, link);
 
-      // Переход по оглавлению переносит фокус в раздел, иначе следующая
-      // табуляция снова начинается с оглавления.
-      if (!section.hasAttribute("tabindex")) section.setAttribute("tabindex", "-1");
+      // Фокус при переходе ставим на заголовок: у section нет доступного
+      // имени, и скринридер объявлял бы просто «группа». Заголовок получает
+      // tabindex=-1 и связывается с секцией через aria-labelledby.
+      if (!heading.id) heading.id = `${section.id}-title`;
+      if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+      if (!section.hasAttribute("aria-labelledby")) {
+        section.setAttribute("aria-labelledby", heading.id);
+      }
     });
 
     list.append(fragment);
@@ -154,9 +159,11 @@ if (toc && list) {
       lockCurrent();
 
       // Хэш нужен, чтобы ссылку можно было скопировать и вернуться к ней.
+      // pushState, а не replaceState: «Назад» возвращает к предыдущему
+      // разделу, а не уводит со страницы.
       if (window.location.hash !== `#${id}`) {
         try {
-          window.history.replaceState(null, "", `#${id}`);
+          window.history.pushState(null, "", `#${id}`);
         } catch {
           /* Среда без доступа к истории: навигация остаётся рабочей. */
         }
@@ -164,7 +171,8 @@ if (toc && list) {
 
       // Фокус ставим до прокрутки: так он не может прервать её, а
       // следующая табуляция пойдёт по тексту раздела.
-      section.focus({ preventScroll: true });
+      const heading = section.querySelector(".legal__section-title") || section;
+      heading.focus({ preventScroll: true });
       // scroll-margin-top у раздела отрабатывает и здесь.
       section.scrollIntoView({ block: "start", behavior: "auto" });
     };

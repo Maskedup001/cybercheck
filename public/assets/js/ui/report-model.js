@@ -70,7 +70,13 @@ export function getExposedFiles(files) {
 
   if (paths.size === 0 && Array.isArray(files.results)) {
     for (const item of files.results) {
-      if (item && item.status === 200 && typeof item.path === "string") {
+      if (
+        item &&
+        item.status === 200 &&
+        item.exposed !== false &&
+        !item.error &&
+        typeof item.path === "string"
+      ) {
         paths.add(item.path);
       }
     }
@@ -81,7 +87,8 @@ export function getExposedFiles(files) {
 
 // Сколько HEAD-проб реально ответили, сколько упало и сколько заблокировано.
 export function getProbeStats(files) {
-  const results = Array.isArray(files && files.results) ? files.results : [];
+  const results = (Array.isArray(files && files.results) ? files.results : [])
+    .filter((item) => item && typeof item === "object");
   let failed = 0;
   let blocked = 0;
   let exposed = 0;
@@ -90,7 +97,16 @@ export function getProbeStats(files) {
     if (!item || typeof item !== "object") continue;
     if (item.error) failed += 1;
     else if (item.status === 403) blocked += 1;
-    else if (item.status === 200) exposed += 1;
+    else if (
+      item.exposed === true ||
+      (item.exposed === undefined && item.status === 200)
+    ) {
+      exposed += 1;
+    } else if (item.status !== 404 && item.status !== 410) {
+      // Редирект, 5xx, 401/405 и прочие ответы не доказывают отсутствие
+      // файла: показываем их как непроверенные, а не как «не найдено».
+      failed += 1;
+    }
   }
 
   return { total: results.length, failed, blocked, exposed };
@@ -118,9 +134,22 @@ export function filesNote(files) {
     return `Найдены файлы, доступные без авторизации: ${exposed.join(", ")}. Критических путей среди них нет.`;
   }
 
-  if (total > 0 && failed >= total) {
+  // Нет ни одного результата — это не «файлов нет», а «проверка не
+  // выполнялась». Иначе пустой объект от старого/неполного API выглядел бы
+  // как доказанное отрицание.
+  if (total === 0) {
+    return "Проверки файлов не выполнялись: результатов HEAD-проб нет.";
+  }
+
+  // Ни один путь не подтверждён: все пробы упали или были заблокированы
+  // (WAF/403). «Открытых файлов не найдено» здесь было бы ложью.
+  if (total > 0 && failed + blocked >= total) {
     const pathsForm = plural(total, ["пути", "путей", "путей"]);
-    return `Не удалось проверить ни один из ${total} ${pathsForm} (WAF или таймаут). Что файлов нет — не подтверждено.`;
+    const blockedPart =
+      blocked > 0
+        ? `: ${plural(blocked, ["заблокирован", "заблокированы", "заблокировано"])} ${blocked} ${plural(blocked, ["путь", "пути", "путей"])} (403/WAF)`
+        : "";
+    return `Не удалось проверить ни один из ${total} ${pathsForm}${blockedPart}. Что файлов нет — не подтверждено (WAF, редирект, SPA-заглушка или таймаут).`;
   }
 
   const parts = ["Открытых файлов не найдено."];
@@ -193,7 +222,12 @@ export function secureContextState(ssl) {
 export function reportTitleFor(host, date) {
   const safeHost = sanitizeText(host, 60);
   if (!safeHost || safeHost === "—") return "";
-  return `CyberCheck_${safeHost}_${date}`;
+
+  // Двоеточие в IPv6-литере и другие символы, запрещённые в именах файлов
+  // Windows, не должны попадать в имя PDF: браузер молча обрежет или
+  // заменит их, и пользователь получит непредсказуемое имя.
+  const fileSafeHost = safeHost.replace(/[\\/:*?"<>|]/g, "-");
+  return `CyberCheck_${fileSafeHost}_${date}`;
 }
 
 // Текст для кнопки «Скопировать отчёт»: 3–5 самых важных находок с
@@ -238,6 +272,13 @@ export function buildShareText(report) {
 
       lines.push(`${index + 1}. [${severity}] ${title}${fix}`);
     });
+
+    const rest = findings.length - 5;
+    if (rest > 0) {
+      lines.push(
+        `…и ещё ${rest} ${plural(rest, ["замечание", "замечания", "замечаний"])}.`,
+      );
+    }
   }
 
   lines.push(

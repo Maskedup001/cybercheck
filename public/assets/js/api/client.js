@@ -60,7 +60,17 @@ export async function scanTarget({ url, consent }) {
       throw error;
     }
 
-    const data = await res.json().catch(() => null);
+    // Таймаут может сработать уже во время чтения тела ответа. Если
+    // проглотить AbortError, пользователь увидит «некорректный ответ»
+    // вместо честного «превышено время ожидания».
+    const data = await res.json().catch((error) => {
+      if (error && error.name === "AbortError") {
+        throw new Error(
+          "Превышено время ожидания (65 сек). Попробуйте другой адрес.",
+        );
+      }
+      return null;
+    });
 
     if (!res.ok) throw new Error(data?.error || `Сервер ответил ${res.status}`);
     if (!data) throw new Error("Сервер вернул некорректный ответ");

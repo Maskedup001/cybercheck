@@ -52,17 +52,25 @@ function stopScanStatus() {
 }
 
 function clearError() {
-  if (formError.hidden) return;
-
   formError.hidden = true;
   formError.textContent = "";
-  input.removeAttribute("aria-invalid");
-  consent.removeAttribute("aria-invalid");
+
+  // Ошибка одна на форму, поэтому aria-invalid/aria-errormessage должны
+  // жить только на том поле, к которому она относится.
+  for (const field of [input, consent]) {
+    field.removeAttribute("aria-invalid");
+    field.removeAttribute("aria-errormessage");
+  }
 }
 
-function showError(message) {
+function showError(message, field = null) {
   formError.textContent = message;
   formError.hidden = false;
+
+  if (field) {
+    field.setAttribute("aria-invalid", "true");
+    field.setAttribute("aria-errormessage", "form-error");
+  }
 }
 
 function setCopyFeedback(message) {
@@ -118,15 +126,13 @@ async function handleSubmit(event) {
     // Плашка одна на всю форму, поэтому aria-invalid ставим ровно на то
     // поле, о котором она говорит: иначе скринридер объявит неверным
     // соседний контрол.
-    showError("Введи адрес сайта");
-    input.setAttribute("aria-invalid", "true");
+    showError("Введи адрес сайта", input);
     input.focus();
     return;
   }
 
   if (!isConsent) {
-    showError("Подтверди согласие на проверку");
-    consent.setAttribute("aria-invalid", "true");
+    showError("Подтверди согласие на проверку", consent);
     consent.focus();
     return;
   }
@@ -184,6 +190,13 @@ async function handleSubmit(event) {
     submitBtn.disabled = false;
     submitBtn.textContent = "Проверить";
     form.removeAttribute("aria-busy");
+
+    // disabled-кнопка отдаёт фокус body. При успехе фокус уже на заголовке
+    // отчёта, при ошибке — возвращаем его на кнопку, иначе клавиатурный
+    // пользователь теряет место в документе.
+    if (document.activeElement === document.body) {
+      submitBtn.focus();
+    }
   }
 }
 
