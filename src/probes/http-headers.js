@@ -10,6 +10,7 @@ const {
 } = require("./header-analysis");
 const {
   isLiteralIp,
+  hostHeaderFor,
   stageDeadline,
   timeoutFor,
   hasBudget,
@@ -49,9 +50,8 @@ function checkHeaders(
     if (signal?.aborted) return resolve({ error: true });
 
     const servername = net.isIP(hostname) ? undefined : hostname;
-    // Добавляем порт в Host для нестандартных портов (например, 8080)
-    const hostHeader =
-      port === 80 || port === 443 ? hostname : `${hostname}:${port}`;
+    // Для IPv6 Host обязан быть в скобках; для нестандартного порта — с :port.
+    const hostHeader = hostHeaderFor(hostname, port);
 
     let settled = false;
     let retryTimer = null;
@@ -103,13 +103,22 @@ function checkHeaders(
           {
             host: connectIp,
             port,
+            // Одноразовый сокет: глобальный keep-alive agent иначе держал бы
+            // соединения со всеми просканированными хостами до таймаута.
+            agent: false,
             // Используем hostHeader и актуальную версию UA
             headers: { Host: hostHeader, "User-Agent": UA },
             timeout: requestTimeout,
             signal,
           },
           (res) => {
-            resolveOnce(parseHeaders(res.headers, "HTTP"));
+            try {
+              resolveOnce(parseHeaders(res.headers, "HTTP"));
+            } catch {
+              // Недоверенные заголовки не должны ронять процесс через
+              // uncaughtException: любой сбой разбора — это ошибка проверки.
+              resolveOnce({ error: true });
+            }
             res.destroy();
           },
         );
@@ -136,13 +145,18 @@ function checkHeaders(
             port,
             servername,
             rejectUnauthorized: false,
+            agent: false,
             // Используем hostHeader и актуальную версию UA
             headers: { Host: hostHeader, "User-Agent": UA },
             timeout: requestTimeout,
             signal,
           },
           (res) => {
-            resolveOnce(parseHeaders(res.headers, "HTTPS"));
+            try {
+              resolveOnce(parseHeaders(res.headers, "HTTPS"));
+            } catch {
+              resolveOnce({ error: true });
+            }
             res.destroy();
           },
         );

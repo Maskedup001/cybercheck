@@ -52,7 +52,8 @@ function hstsMaxAge(value) {
 
 // Источники, которые не ограничивают, откуда берётся скрипт: wildcard,
 // inline/eval и схемы без хоста (data:, blob:, http:, https: — последние
-// разрешают любой сайт по этой схеме).
+// разрешают любой сайт по этой схеме). `https://*` — тот же wildcard,
+// только записанный иначе.
 const PERMISSIVE_CSP_SOURCES = new Set([
   "*",
   "'unsafe-inline'",
@@ -62,6 +63,11 @@ const PERMISSIVE_CSP_SOURCES = new Set([
   "http:",
   "https:",
 ]);
+const ANY_HOST_SCHEME_RE = /^(?:https?:)?\/\/\*$/i;
+
+function isPermissiveCspSource(source) {
+  return PERMISSIVE_CSP_SOURCES.has(source) || ANY_HOST_SCHEME_RE.test(source);
+}
 
 // nonce/hash отключает 'unsafe-inline' по CSP3: браузер игнорирует его,
 // если в директиве есть nonce или hash. Поэтому такая политика — рабочая,
@@ -116,9 +122,17 @@ function cspIsRestrictive(value) {
     hasNonceOrHash || !meaningful.includes("'unsafe-inline'");
   if (!restrictsInline) return false;
 
-  // Хотя бы один источник должен быть ограничивающим: 'self', конкретный
-  // хост, nonce/hash.
-  return meaningful.some((source) => !PERMISSIVE_CSP_SOURCES.has(source));
+  // Список источников — объединение: одного `https:` или `data:` достаточно,
+  // чтобы загрузить скрипт с любого сайта/из data-URL, даже если рядом стоит
+  // 'self'. Поэтому «строгая» политика не должна содержать ни одного
+  // permissive-источника. Исключение — 'unsafe-inline' рядом с nonce/hash:
+  // браузер его игнорирует (CSP3).
+  const hasPermissive = meaningful.some((source) => {
+    if (source === "'unsafe-inline'" && hasNonceOrHash) return false;
+    return isPermissiveCspSource(source);
+  });
+
+  return !hasPermissive;
 }
 
 // Permissions-Policy защищает, только если значение реально ограничивает
@@ -137,7 +151,16 @@ function permissionsPolicyIsRestrictive(value) {
     const separator = directive.indexOf("=");
     if (separator === -1) return false; // без allowlist — как "*"
     const allowlist = directive.slice(separator + 1).trim();
-    return allowlist.startsWith("(") && allowlist.endsWith(")");
+    if (!allowlist.startsWith("(") || !allowlist.endsWith(")")) return false;
+
+    const inner = allowlist.slice(1, -1).trim();
+    // Пустой allowlist camera=() запрещает API всем — это ограничение.
+    if (inner === "") return true;
+
+    // camera=(*) формально в скобках, но разрешает API любому origin.
+    return !inner
+      .split(/\s+/)
+      .some((token) => token === "*" || token === '"*"');
   });
 }
 

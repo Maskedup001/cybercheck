@@ -6,8 +6,10 @@ const {
   parseSetCookie,
   detectWaf,
   detectCms,
+  sanitizeHeaderText,
 } = require("./header-analysis");
 const { SENSITIVE_FILE_PATHS } = require("../core/file-paths");
+const { hostHeaderFor } = require("../utils/scan-helpers");
 
 const UA = `CyberCheck/${pkg.version}`;
 const DEFAULT_TIMEOUT_MS = 2000;
@@ -26,11 +28,9 @@ function headerText(headers, name) {
   return trimmed === "" ? null : trimmed;
 }
 
-// Host без порта только для стандартных портов, иначе браузер/сервер
-// должны видеть hostname:port.
-function hostHeaderFor(hostname, port) {
-  return port === 80 || port === 443 ? hostname : `${hostname}:${port}`;
-}
+// Host без порта только для стандартных портов; IPv6 — в квадратных скобках.
+// Сама логика живёт в scan-helpers, чтобы HTTP-заголовки и веб-пробы не
+// разошлись в формате Host.
 
 // Список протоколов для попыток. Для 443 сначала HTTPS (часто TLS не
 // подтверждён checkSSL), при сетевой/TLS-ошибке — HTTP. Для остальных
@@ -422,12 +422,24 @@ async function checkSensitiveFiles(
 
   const results = responses.map((response, index) => {
     const status = response.status;
+
+    // 200 от SPA/catch-all — это HTML-заглушка на любой путь, а не файл
+    // утечки. Без этой проверки /.env на сайте с client-side routing давал
+    // ложную критическую находку и потолок 40. HEAD не отдаёт тело, но
+    // Content-Type уже пришёл в заголовках.
+    const contentType = response.headers && response.headers["content-type"];
+    const htmlFallback =
+      status === 200 &&
+      typeof contentType === "string" &&
+      /^text\/html\b/i.test(contentType);
+    const exposed = status === 200 && !htmlFallback;
+
     return {
       path: SENSITIVE_FILE_PATHS[index],
       status,
-      exposed: status === 200,
+      exposed,
       blocked: status === 403,
-      error: response.error ?? null,
+      error: response.error ?? (htmlFallback ? "SPA_HTML" : null),
     };
   });
 
@@ -530,7 +542,7 @@ async function checkFingerprint(
   return {
     waf,
     cms,
-    server: headerText(headers, "server"),
+    server: sanitizeHeaderText(headerText(headers, "server")),
     status: response.status,
     error: response.error,
     bodyBytes: Buffer.byteLength(body, "utf8"),

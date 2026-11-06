@@ -34,6 +34,26 @@ function parseTarget(raw) {
   return parsed;
 }
 
+// URL.hostname для IPv6 приходит в квадратных скобках ([::1]), а net.isIP,
+// DNS-проверки и отчёт ждут «голый» адрес. Скобки нужны только в Host/SNI,
+// поэтому нормализация живёт здесь, а не в каждом потребителе.
+function normalizeHostname(raw) {
+  if (typeof raw !== "string") return "";
+
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "")
+    .replace(/^\[([^\]]+)\]$/, "$1");
+}
+
+// Host для HTTP-запроса: у IPv6 обязательны скобки, у нестандартного порта —
+// суффикс :port. Одна функция на все пробы, чтобы заголовки не разъехались.
+function hostHeaderFor(hostname, port) {
+  const host = net.isIP(hostname) === 6 ? `[${hostname}]` : hostname;
+  return port === 80 || port === 443 ? host : `${host}:${port}`;
+}
+
 // Ключ rate-limit: канонический IPv4 или /64 для IPv6.
 // Без канонизации "2001:db8::1" и "2001:0db8:0:0::1" давали разные ключи
 // для одной и той же сети, а IPv4-mapped схлопывался в "::/64".
@@ -199,6 +219,8 @@ function isLiteralIp(value) {
 
 module.exports = {
   parseTarget,
+  normalizeHostname,
+  hostHeaderFor,
   rateKey,
   budgetLeft,
   timeoutFor,

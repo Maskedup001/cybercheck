@@ -44,7 +44,9 @@ function spfIsWeak(record) {
     return qualifier === "+" || qualifier === "?";
   }
 
-  return false;
+  // Нет механизма all — по RFC 7208 действует неявный ?all. Это не защита:
+  // домен не сообщает получателю, что делать с чужими письмами.
+  return true;
 }
 
 // Ищет SPF-запись среди TXT-рекордов.
@@ -52,7 +54,9 @@ function spfIsWeak(record) {
 // пробел или конец строки — так "v=spf10" не считается SPF.
 // multiple — несколько SPF-записей: по RFC 7208 это permerror, а не защита.
 function parseSpfTxt(records) {
-  const txtRecords = joinTxtRecords(records);
+  // TXT-запись может прийти с ведущими/хвостовыми пробелами: RFC 7208
+  // разрешает их вокруг версии, а без trim `v=spf1` не распознавался бы.
+  const txtRecords = joinTxtRecords(records).map((txt) => txt.trim());
   const spfRecords = txtRecords.filter((txt) =>
     /^v=spf1(?:\s|$)/i.test(txt),
   );
@@ -77,7 +81,7 @@ function parseSpfTxt(records) {
 // multiple — несколько DMARC-записей: по RFC 7489 они не применяются,
 // поэтому такая запись не должна давать баллов.
 function parseDmarcTxt(records) {
-  const txtRecords = joinTxtRecords(records);
+  const txtRecords = joinTxtRecords(records).map((txt) => txt.trim());
   const matches = txtRecords.filter((txt) =>
     /^v=DMARC1(?:;|\s|$)/i.test(txt),
   );

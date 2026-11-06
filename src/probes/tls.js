@@ -1,5 +1,6 @@
 const net = require("node:net");
 const tls = require("node:tls");
+const { sanitizeHeaderText } = require("./header-analysis");
 const {
   isLiteralIp,
   stageDeadline,
@@ -29,26 +30,58 @@ function checkOldTls(connectIp, port, hostname, signal, timeoutMs) {
     if (budget < MIN_ATTEMPT_MS) return resolve(false);
 
     const servername = net.isIP(hostname) ? undefined : hostname;
-    const socket = tls.connect(
-      {
-        host: connectIp,
-        port,
-        servername,
-        rejectUnauthorized: false,
-        minVersion: "TLSv1",
-        maxVersion: "TLSv1.1",
-        ciphers: "ALL:@SECLEVEL=0", // Максимальная совместимость для детекта старых шифров
-        signal,
-      },
-      () => {
-        resolve(true); // Если подключился — значит, поддерживает старые TLS
+
+    let settled = false;
+    let onAbort = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+
+    let socket;
+    try {
+      socket = tls.connect(
+        {
+          host: connectIp,
+          port,
+          servername,
+          rejectUnauthorized: false,
+          minVersion: "TLSv1",
+          maxVersion: "TLSv1.1",
+          ciphers: "ALL:@SECLEVEL=0", // Максимальная совместимость для детекта старых шифров
+          signal,
+        },
+        () => {
+          finish(true); // Если подключился — значит, поддерживает старые TLS
+          socket.destroy();
+        },
+      );
+    } catch {
+      return resolve(false);
+    }
+
+    // Обработчик ошибок вешаем до проверки abort: destroy() на уже
+    // отменённом сигнале может породить error, который нельзя оставлять
+    // без слушателя.
+    socket.on("error", () => finish(false));
+
+    if (signal) {
+      onAbort = () => {
         socket.destroy();
-      },
-    );
-    socket.on("error", () => resolve(false));
+        finish(false);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) {
+        socket.destroy();
+        return finish(false);
+      }
+    }
+
     socket.setTimeout(budget, () => {
       socket.destroy();
-      resolve(false);
+      finish(false);
     });
   });
 }
@@ -145,12 +178,21 @@ async function checkSSL(
               });
             }
 
+            // Node может оставить authorizationError undefined у валидного
+            // сертификата: приводим «нет ошибки» к null, иначе valid ложно
+            // станет false и сайт получит bad-ssl.
             const verifyError = socket.authorizationError || null;
-            const valid = verifyError === null;
+            const tlsVersion = socket.getProtocol();
+            // Браузеры не подключаются по TLS 1.0/1.1. Такой сервер нельзя
+            // считать «валидным» только потому, что цепочка формально сошлась:
+            // иначе scoring начислит 12 баллов за протокол, которым нельзя
+            // воспользоваться.
+            const modernTls =
+              tlsVersion === "TLSv1.2" || tlsVersion === "TLSv1.3";
+            const valid = verifyError === null && modernTls;
             const daysLeft = Math.floor(
               (new Date(cert.valid_to) - Date.now()) / 86400000,
             );
-            const tlsVersion = socket.getProtocol();
             socket.end();
 
             // Старые протоколы проверяются только на остаток бюджета этапа:
@@ -179,7 +221,10 @@ async function checkSSL(
                 const d = new Date(cert.valid_to);
                 return Number.isNaN(d.getTime()) ? null : d.toISOString();
               })(),
-              issuer: cert.issuer?.O || cert.issuer?.CN || "неизвестен",
+              issuer:
+                sanitizeHeaderText(
+                  cert.issuer?.O || cert.issuer?.CN || "неизвестен",
+                ) || "неизвестен",
               tlsVersion,
               supportsOldTls,
             });
