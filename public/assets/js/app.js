@@ -5,6 +5,7 @@ import { buildShareText } from "./ui/report-model.js";
 const form = document.querySelector('[data-js="scan-form"]');
 const input = document.querySelector('[data-js="url"]');
 const consent = document.querySelector('[data-js="consent"]');
+const consentTokenInput = document.querySelector('[data-js="consent-token"]');
 const submitBtn = document.querySelector('[data-js="scan-submit"]');
 const resultSection = document.querySelector('[data-js="result"]');
 const resultBody = document.querySelector('[data-js="result-body"]');
@@ -92,7 +93,10 @@ async function copyReport() {
     // Clipboard API доступен только в защищённом контексте (HTTPS или
     // localhost). Если его нет или браузер отказал — честно говорим об этом,
     // а не делаем вид, что отчёт скопирован.
-    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+    if (
+      !navigator.clipboard ||
+      typeof navigator.clipboard.writeText !== "function"
+    ) {
       throw new Error("clipboard-unavailable");
     }
 
@@ -151,7 +155,14 @@ async function handleSubmit(event) {
   startScanStatus();
 
   try {
-    const data = await scanTarget({ url, consent: isConsent });
+    const token = consentTokenInput ? consentTokenInput.value : null;
+
+    // Передаем токен на сервер
+    const data = await scanTarget({
+      url,
+      consent: isConsent,
+      consentToken: token,
+    });
 
     // Сначала убираем индикатор, потом показываем отчёт:
     // иначе страница дёргается уже после переноса фокуса.
@@ -161,7 +172,9 @@ async function handleSubmit(event) {
     lastReport = data;
     // host "—" — заглушка нормализации: «Отчёт для — готов» выглядит поломкой.
     statusRegion.textContent =
-      data.host && data.host !== "—" ? `Отчёт для ${data.host} готов` : "Отчёт готов";
+      data.host && data.host !== "—"
+        ? `Отчёт для ${data.host} готов`
+        : "Отчёт готов";
 
     const resultTitle = resultSection.querySelector(".result__title");
     if (resultTitle) {
@@ -179,7 +192,8 @@ async function handleSubmit(event) {
       lastReport = null;
     }
 
-    const message = error instanceof Error ? error.message : "неизвестная ошибка";
+    const message =
+      error instanceof Error ? error.message : "неизвестная ошибка";
 
     // Сетевой сбой, таймаут и 429 к содержимому поля отношения не имеют:
     // aria-invalid на адресе только сбивал бы с толку.

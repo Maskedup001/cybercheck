@@ -5,10 +5,12 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 	<meta name="theme-color" content="#0f172a">
-	<meta name="description" content="CyberCheck — проверка безопасности сайта: порты, TLS, security-заголовки и cookie, SPF/DMARC/CAA, открытые файлы, CORS и WAF/CMS.">
+	<meta name="description"
+		content="CyberCheck — проверка безопасности сайта: порты, TLS, security-заголовки и cookie, SPF/DMARC/CAA, открытые файлы, CORS и WAF/CMS.">
 	<title>CyberCheck — Проверка безопасности сайта</title>
 	<meta property="og:title" content="CyberCheck — экспресс-проверка безопасности сайта">
-	<meta property="og:description" content="Порты, TLS, заголовки и cookie, DNS/email, открытые файлы, WAF/CMS и Risk Score A–F за один скан.">
+	<meta property="og:description"
+		content="Порты, TLS, заголовки и cookie, DNS/email, открытые файлы, WAF/CMS и Risk Score A–F за один скан.">
 	<meta property="og:type" content="website">
 	<meta property="og:image" content="__BASE_URL__/assets/screenshots/og-cover.png">
 	<meta property="og:image:type" content="image/jpeg">
@@ -20,7 +22,8 @@
 	<link rel="canonical" href="__BASE_URL__">
 	<meta name="twitter:card" content="summary_large_image">
 	<meta name="twitter:title" content="CyberCheck — экспресс-проверка безопасности сайта">
-	<meta name="twitter:description" content="Порты, TLS, заголовки и cookie, DNS/email, открытые файлы, WAF/CMS и Risk Score A–F за один скан.">
+	<meta name="twitter:description"
+		content="Порты, TLS, заголовки и cookie, DNS/email, открытые файлы, WAF/CMS и Risk Score A–F за один скан.">
 	<meta name="twitter:image" content="__BASE_URL__/assets/screenshots/og-cover.png">
 	<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 	<link rel="stylesheet" href="/assets/css/main.css">
@@ -41,6 +44,7 @@
 				<input class="scan-form__input" id="url" name="url" data-js="url" type="text" placeholder="example.com"
 					autocomplete="url" inputmode="url" autocapitalize="none" spellcheck="false" maxlength="2048"
 					aria-describedby="form-hint">
+				<input type="hidden" data-js="consent-token" value="__CONSENT_TOKEN__">
 				<button class="button button--primary scan-form__submit" type="submit" data-js="scan-submit">Проверить</button>
 			</div>
 			<p class="scan-form__hint" id="form-hint">Домен или IP-адрес — проверка занимает до 65 секунд</p>

@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const http = require("node:http");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const { issueConsentToken } = require("../src/core/server");
 
 // HTTP-слой проверяется на живом процессе: приложение поднимается на
 // случайном порту, тесты ходят в него через fetch (Node 22).
@@ -162,19 +163,23 @@ test("POST /api/scan: невалидные запросы — 400 JSON", async (
   const cases = [
     [{ url: "example.com" }, /право на проверку/],
     [
-      { url: "    ", consent: true, consentTimestamp: Date.now() },
+      { url: "    ", consent: true, consentToken: issueConsentToken() },
       /Некорректный адрес/,
     ],
-    [{ url: "example.com", consent: true, consentTimestamp: 1 }, /устарело/],
+    [{ url: "example.com", consent: true, consentToken: "fake" }, /устарело/],
     [
-      { url: "ftp://example.com", consent: true, consentTimestamp: Date.now() },
+      {
+        url: "ftp://example.com",
+        consent: true,
+        consentToken: issueConsentToken(),
+      },
       /только http и https/,
     ],
     [
       {
         url: `example.com/${"x".repeat(2100)}`,
         consent: true,
-        consentTimestamp: Date.now(),
+        consentToken: issueConsentToken(),
       },
       /Некорректный адрес/,
     ],
@@ -203,7 +208,7 @@ test("POST /api/scan: экранированный query с :// не ломае�
     body: JSON.stringify({
       url: "http://127.0.0.1/?next=https://example.com",
       consent: true,
-      consentTimestamp: Date.now(),
+      consentToken: issueConsentToken(),
     }),
   });
 
@@ -219,14 +224,14 @@ test("POST /api/scan: после неудачной попытки включа�
   const started = await startServer();
   t.after(() => started.proc.kill());
 
-  const scan = (url) =>
+  const scan = (url, token) =>
     fetch(`${started.url}/api/scan`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         url,
         consent: true,
-        consentTimestamp: Date.now(),
+        consentToken: token || issueConsentToken(),
       }),
     });
 
@@ -258,7 +263,7 @@ test("POST /api/scan: не-JSON Content-Type — 415", async () => {
     body: JSON.stringify({
       url: "example.com",
       consent: true,
-      consentTimestamp: Date.now(),
+      consentToken: issueConsentToken(),
     }),
   });
 
@@ -284,7 +289,7 @@ test("POST /api/scan: тело больше 8 КБ — 413", async () => {
     body: JSON.stringify({
       url: "example.com",
       consent: true,
-      consentTimestamp: Date.now(),
+      consentToken: issueConsentToken(),
       padding: "x".repeat(9000),
     }),
   });

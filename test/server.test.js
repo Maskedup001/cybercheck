@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
-const { createApp } = require("../src/core/server");
+const { createApp, issueConsentToken } = require("../src/core/server");
 
 test("TRUST_PROXY=0 не роняет сервер", async (t) => {
   const child = spawn(
@@ -79,7 +79,7 @@ test("Rate limit использует реальный IP прокси, а не 
   const payload = {
     url: "http://localhost",
     consent: true,
-    consentTimestamp: Date.now(),
+    consentToken: issueConsentToken(),
   };
 
   // Первый запрос: клиент подделывает левый край, прокси дописывает 10.0.0.1
@@ -137,7 +137,7 @@ test("При trustProxy=0 заголовок X-Forwarded-For полностью 
   const payload = {
     url: "http://localhost",
     consent: true,
-    consentTimestamp: Date.now(),
+    consentToken: issueConsentToken(),
   };
 
   // Первый запрос с XFF
@@ -165,4 +165,34 @@ test("При trustProxy=0 заголовок X-Forwarded-For полностью 
     429,
     "Второй запрос должен быть заблокирован, несмотря на смену XFF",
   );
+});
+
+test("Сервер отклоняет сканирование с поддельным токеном согласия", async (t) => {
+  const { app } = createApp({
+    publicOrigin: "http://localhost:3000",
+    publicDir: "public",
+    pages: ["index.html", "legal.html", "privacy.html"],
+    isProduction: false,
+    demoMode: true,
+    trustProxy: 0,
+  });
+
+  const server = app.listen(0);
+  const port = server.address().port;
+  const url = `http://127.0.0.1:${port}/api/scan`;
+  t.after(() => server.close());
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: "http://localhost",
+      consent: true,
+      consentToken: "12345.fake_mac_signature",
+    }),
+  });
+
+  assert.strictEqual(res.status, 400);
+  const data = await res.json();
+  assert.match(data.error, /Подтверждение устарело или недействительно/);
 });

@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
 const path = require("node:path");
@@ -36,6 +37,20 @@ const TLS_TIMEOUT_MS = 5000;
 const HEADERS_TIMEOUT_MS = 5000;
 const DNS_SECURITY_TIMEOUT_MS = 3000;
 const PROBE_TIMEOUT_MS = 2000;
+
+// Секрет для подписи токенов согласия. В продакшене должен быть задан явно.
+const CONSENT_SECRET =
+  process.env.CONSENT_SECRET ||
+  (process.env.NODE_ENV === "production"
+    ? null
+    : "dev-secret-do-not-use-in-prod");
+
+if (process.env.NODE_ENV === "production" && !CONSENT_SECRET) {
+  console.error(
+    "ОШИБКА: Переменная окружения CONSENT_SECRET обязательна в production.",
+  );
+  process.exit(1);
+}
 
 const SCAN_PORTS = [80, 443, 22, 3306, 8080];
 
@@ -93,6 +108,33 @@ function withTimeout(factory, ms, externalSignal) {
   });
 }
 
+function issueConsentToken() {
+  const issuedAt = Date.now().toString();
+  const mac = crypto
+    .createHmac("sha256", CONSENT_SECRET)
+    .update(issuedAt)
+    .digest("base64url");
+  return `${issuedAt}.${mac}`;
+}
+
+function verifyConsentToken(token) {
+  if (typeof token !== "string" || token.length > 200) return false;
+  const [issuedAtStr, mac] = token.split(".");
+  if (!issuedAtStr || !mac) return false;
+
+  const expectedMac = crypto
+    .createHmac("sha256", CONSENT_SECRET)
+    .update(issuedAtStr)
+    .digest("base64url");
+  const a = Buffer.from(mac);
+  const b = Buffer.from(expectedMac);
+
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+
+  const issuedAt = Number(issuedAtStr);
+  return Number.isFinite(issuedAt) && Date.now() - issuedAt <= 900_000; // 15 минут
+}
+
 // Определяет реальный IP клиента с учетом доверия к прокси.
 // Берет IP из сокета (edgeKey) и из правого края X-Forwarded-For (clientKey).
 function clientIdentity(req, trustProxy) {
@@ -129,7 +171,10 @@ function createApp(config) {
 
   function renderPage(name) {
     const raw = fs.readFileSync(path.join(publicDir, name), "utf-8");
-    return raw.replaceAll("__BASE_URL__", () => publicOrigin);
+    const token = issueConsentToken();
+    return raw
+      .replaceAll("__BASE_URL__", () => publicOrigin)
+      .replaceAll("__CONSENT_TOKEN__", () => token);
   }
 
   function pageHtml(name) {
@@ -269,7 +314,7 @@ function createApp(config) {
     // Сначала валидация, чтобы мусорные запросы не жгли лимит.
     // req.body может быть undefined (не-JSON Content-Type): destructuring
     // упал бы 500 вместо понятного 400.
-    const { url, consent, consentTimestamp } = req.body || {};
+    const { url, consent, consentToken } = req.body || {};
 
     if (typeof url !== "string" || url.length === 0 || url.length > 2048) {
       return res.status(400).json({ error: "Некорректный адрес" });
@@ -279,15 +324,13 @@ function createApp(config) {
         .status(400)
         .json({ error: "Подтверди, что у тебя есть право на проверку" });
     }
-    const ts = Number(consentTimestamp);
-    if (
-      !Number.isFinite(ts) ||
-      Date.now() - ts > 900_000 || // 15 минут на случай дрейфа часов
-      ts - Date.now() > 60_000
-    ) {
+
+    if (!verifyConsentToken(consentToken)) {
       return res
         .status(400)
-        .json({ error: "Подтверждение устарело, обнови страницу" });
+        .json({
+          error: "Подтверждение устарело или недействительно. Обнови страницу.",
+        });
     }
 
     // Схема определяется по началу строки: поиск "://" где угодно ломал
@@ -738,4 +781,10 @@ function startServer(config) {
   return { app, server, limiter };
 }
 
-module.exports = { createApp, startServer, SCAN_PORTS };
+module.exports = {
+  createApp,
+  startServer,
+  SCAN_PORTS,
+  issueConsentToken,
+  verifyConsentToken,
+};
