@@ -85,24 +85,45 @@ function withTimeout(factory, ms, externalSignal) {
     }, ms);
   });
 
-  return Promise.race([Promise.resolve().then(() => factory(signal)), timeout]).finally(
-    () => {
-      clearTimeout(timer);
-    },
-  );
+  return Promise.race([
+    Promise.resolve().then(() => factory(signal)),
+    timeout,
+  ]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+// Определяет реальный IP клиента с учетом доверия к прокси.
+// Берет IP из сокета (edgeKey) и из правого края X-Forwarded-For (clientKey).
+function clientIdentity(req, trustProxy) {
+  const socketIp = req.socket && req.socket.remoteAddress;
+  const edgeKey = rateKey(socketIp);
+
+  if (!trustProxy || trustProxy <= 0) {
+    return { edgeKey, clientKey: edgeKey, rawIp: socketIp };
+  }
+
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  // Правый элемент дописал наш прокси (Render/Cloudflare); левые контролирует клиент.
+  const candidate =
+    forwarded.length > 0 ? forwarded[forwarded.length - 1] : socketIp;
+
+  return {
+    edgeKey,
+    clientKey: net.isIP(candidate) ? rateKey(candidate) : edgeKey,
+    rawIp: candidate,
+  };
 }
 
 // Собирает Express-приложение и лимитер, но ничего не слушает: так HTTP-слой
 // можно поднять на случайном порту в тестах и переиспользовать.
 function createApp(config) {
-  const {
-    publicOrigin,
-    publicDir,
-    pages,
-    isProduction,
-    demoMode,
-    trustProxy,
-  } = config;
+  const { publicOrigin, publicDir, pages, isProduction, demoMode, trustProxy } =
+    config;
 
   const pageCache = new Map();
 
@@ -243,7 +264,7 @@ function createApp(config) {
   limiter.startSweeper(30_000);
 
   app.post("/api/scan", async (req, res) => {
-    const ip = req.ip;
+    const { clientKey, rawIp } = clientIdentity(req, trustProxy);
 
     // Сначала валидация, чтобы мусорные запросы не жгли лимит.
     // req.body может быть undefined (не-JSON Content-Type): destructuring
@@ -300,7 +321,7 @@ function createApp(config) {
     // одновременных сканов раньше кулдауна, чтобы 503 не блокировал клиента
     // на 10 секунд. Ключ считается по IP, а не по цели: иначе лимит обходился
     // бы сменой домена.
-    const key = rateKey(ip);
+    const key = clientKey;
     const denial = limiter.attempt(key);
     if (denial) {
       res.set("Retry-After", String(denial.retryAfter));
@@ -322,7 +343,7 @@ function createApp(config) {
       // Логируем ПОСЛЕ валидации (защита от log injection).
       // req.ip — недоверенное значение: при TRUST_PROXY>0 оно приходит
       // из X-Forwarded-For, поэтому в лог попадает только валидный адрес.
-      const loggedIp = net.isIP(ip) ? ip : "unknown";
+      const loggedIp = net.isIP(rawIp) ? rawIp : "unknown";
       console.log(
         `[${new Date().toISOString()}] Сканирование: ${hostname} | IP: ${loggedIp}`,
       );
