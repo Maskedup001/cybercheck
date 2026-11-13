@@ -194,19 +194,55 @@ function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Ищет <meta ... name="generator" ... content="WordPress">.
-// Порядок атрибутов может быть любым; версия после названия допускается.
+// Тег ограничен по длине: [^>]{0,4096} не даёт квадратичного скана.
+const META_TAG_RE = /<meta\b[^>]{0,4096}>/gi;
+const ATTR_RE =
+  /([a-z_:][-a-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+
+function parseTagAttributes(tag) {
+  const attrs = new Map();
+  ATTR_RE.lastIndex = 0;
+  let m;
+  while ((m = ATTR_RE.exec(tag)) !== null) {
+    const name = m[1].toLowerCase();
+    if (!attrs.has(name)) attrs.set(name, m[2] ?? m[3] ?? m[4] ?? "");
+  }
+  return attrs;
+}
+
+function isWordChar(ch) {
+  return ch !== undefined && /[a-z0-9_]/.test(ch);
+}
+
+// Ищет <meta ... name="generator" ... content="WordPress"> в любом порядке
+// атрибутов. Сложность линейна по длине html: ни одного вложенного
+// квантификатора по [^>]*.
 function hasGeneratorMeta(html, value) {
-  const escaped = escapeRegExp(value);
-  const nameFirst = new RegExp(
-    `<meta\\b[^>]*\\bname\\s*=\\s*["']?generator["']?[^>]*\\bcontent\\s*=\\s*["']?${escaped}\\b`,
-    "i",
-  );
-  const contentFirst = new RegExp(
-    `<meta\\b[^>]*\\bcontent\\s*=\\s*["']?${escaped}\\b[^>]*\\bname\\s*=\\s*["']?generator["']?`,
-    "i",
-  );
-  return nameFirst.test(html) || contentFirst.test(html);
+  if (
+    typeof html !== "string" ||
+    typeof value !== "string" ||
+    value.length === 0
+  )
+    return false;
+  const needle = value.toLowerCase();
+
+  META_TAG_RE.lastIndex = 0;
+  let tag;
+  while ((tag = META_TAG_RE.exec(html)) !== null) {
+    const attrs = parseTagAttributes(tag[0]);
+    const name = (attrs.get("name") || "").trim().toLowerCase();
+    if (name !== "generator") continue;
+
+    const content = (attrs.get("content") || "").toLowerCase();
+    let index = content.indexOf(needle);
+    while (index !== -1) {
+      const before = content[index - 1];
+      const after = content[index + needle.length];
+      if (!isWordChar(before) && !isWordChar(after)) return true; // \b...\b
+      index = content.indexOf(needle, index + 1);
+    }
+  }
+  return false;
 }
 
 // Разбирает Set-Cookie. Значение cookie никогда не попадает в результат:
@@ -257,9 +293,7 @@ function parseSetCookie(value) {
 
       const attributeEquals = attribute.indexOf("=");
       const key = (
-        attributeEquals === -1
-          ? attribute
-          : attribute.slice(0, attributeEquals)
+        attributeEquals === -1 ? attribute : attribute.slice(0, attributeEquals)
       )
         .trim()
         .toLowerCase();

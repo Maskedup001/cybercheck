@@ -82,7 +82,13 @@ test("parseSetCookie: невалидное SameSite не засчитывает�
   const cookies = parseSetCookie("a=1; SameSite=Foo");
 
   assert.deepStrictEqual(cookies, [
-    { name: "a", secure: false, httpOnly: false, sameSite: false, sameSiteValue: null },
+    {
+      name: "a",
+      secure: false,
+      httpOnly: false,
+      sameSite: false,
+      sameSiteValue: null,
+    },
   ]);
 });
 
@@ -254,8 +260,9 @@ test("analyzeSecurityHeaders: небезопасные значения дают
     "ok",
   );
   assert.strictEqual(
-    analyzeSecurityHeaders({ "cross-origin-opener-policy": "same-origin-allow-popups" })
-      .coopState,
+    analyzeSecurityHeaders({
+      "cross-origin-opener-policy": "same-origin-allow-popups",
+    }).coopState,
     "ok",
   );
 });
@@ -352,7 +359,7 @@ test("analyzeSecurityHeaders: Permissions-Policy без ограничений �
     ["camera=()", "ok"],
     ["camera=(self)", "ok"],
     ["camera=(*)", "weak"],
-    ["camera=(\"*\")", "weak"],
+    ['camera=("*")', "weak"],
     ["geolocation=*, microphone=()", "ok"],
   ];
 
@@ -394,10 +401,7 @@ test("analyzeSecurityHeaders: ACAO со звёздочкой и конкретн
     "access-control-allow-origin": "https://example.com",
   });
   assert.strictEqual(specific.corsWildcard, false);
-  assert.strictEqual(
-    specific.accessControlAllowOrigin,
-    "https://example.com",
-  );
+  assert.strictEqual(specific.accessControlAllowOrigin, "https://example.com");
 });
 
 test("detectWaf: Cloudflare по cf-ray", () => {
@@ -516,9 +520,7 @@ test("detectCms: Bitrix", () => {
 });
 
 test("detectCms: обычный HTML не даёт ложного срабатывания", () => {
-  const cookies = parseSetCookie(
-    "session=abc; Secure; HttpOnly; SameSite=Lax",
-  );
+  const cookies = parseSetCookie("session=abc; Secure; HttpOnly; SameSite=Lax");
   const result = detectCms(
     "<html><body><h1>Hello</h1><p>No CMS here.</p></body></html>",
     { server: "nginx" },
@@ -536,4 +538,17 @@ test("detectCms: meta content=drupal без name=generator не считаетс
   );
 
   assert.strictEqual(result.name, null);
+});
+
+test("detectCms не деградирует на длинных meta-тегах", () => {
+  const html = "<meta name=generator content=".repeat(2000); // ~58 КБ ядовитого текста
+  const start = Date.now();
+  const result = detectCms(html, {}, []);
+  const elapsed = Date.now() - start;
+
+  assert.deepStrictEqual(result.name, null);
+  assert.ok(
+    elapsed < 500,
+    "возможен ReDoS: detectCms занял " + elapsed + " мс",
+  );
 });
