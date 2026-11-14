@@ -11,3 +11,7 @@ services:
         value: production
       - key: TRUST_PROXY
         value: "1"
+      # HMAC-секрет для токенов согласия: без него сервер с NODE_ENV=production
+      # завершается с кодом 1. Render генерирует значение при создании сервиса.
+      - key: CONSENT_SECRET
+        generateValue: true

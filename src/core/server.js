@@ -171,24 +171,29 @@ function createApp(config) {
 
   function renderPage(name) {
     const raw = fs.readFileSync(path.join(publicDir, name), "utf-8");
-    const token = issueConsentToken();
-    return raw
-      .replaceAll("__BASE_URL__", () => publicOrigin)
-      .replaceAll("__CONSENT_TOKEN__", () => token);
+    return raw.replaceAll("__BASE_URL__", () => publicOrigin);
+  }
+
+  // Токен согласия живёт 15 минут, поэтому его нельзя кэшировать вместе с
+  // HTML: в production страница рендерится один раз на старте, и через
+  // четверть часа все сканы получали бы 400 до перезапуска процесса.
+  // Кэшируем только шаблон с подставленным BASE_URL, а токен — на каждый ответ.
+  function withConsentToken(html) {
+    return html.replaceAll("__CONSENT_TOKEN__", () => issueConsentToken());
   }
 
   function pageHtml(name) {
-    if (!isProduction) return renderPage(name);
+    if (!isProduction) return withConsentToken(renderPage(name));
 
     if (!pageCache.has(name)) pageCache.set(name, renderPage(name));
-    return pageCache.get(name);
+    return withConsentToken(pageCache.get(name));
   }
 
-  // В продакшене HTML кэшируется на старте: это дешевле и сразу падает,
-  // если файл пропал. В разработке читаем с диска на каждый запрос, иначе
-  // после правки разметки сервер продолжает отдавать старую версию.
+  // В продакшене HTML читается на старте: это сразу падает, если файл пропал.
+  // В разработке читаем с диска на каждый запрос, иначе после правки разметки
+  // сервер продолжает отдавать старую версию.
   if (isProduction) {
-    for (const name of pages) pageHtml(name);
+    for (const name of pages) pageCache.set(name, renderPage(name));
   }
 
   const app = express();
@@ -269,11 +274,11 @@ function createApp(config) {
   app.get("/index.html", (req, res) => res.redirect("/"));
   app.get("/favicon.ico", (req, res) => res.redirect(301, "/favicon.svg"));
 
-  // Обложка OG хранится с расширением .png, но внутри — JPEG. Без явного
-  // типа статика отдала бы image/png, а X-Content-Type-Options: nosniff
-  // заставил бы браузеры и краулеры отказаться от картинки.
+  // Обложка OG — PNG. Явный Content-Type нужен, чтобы тип совпадал с
+  // og:image:type и не зависел от настроек статики; при nosniff расхождение
+  // заставило бы браузеры и краулеры отказаться от картинки.
   app.get("/assets/screenshots/og-cover.png", revalidate, (req, res) => {
-    res.set("Content-Type", "image/jpeg");
+    res.set("Content-Type", "image/png");
     res.sendFile(path.join(publicDir, "assets/screenshots/og-cover.png"));
   });
 
