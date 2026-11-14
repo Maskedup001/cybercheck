@@ -36,7 +36,13 @@ test("parseTarget: явные схемы и голый хост", () => {
 });
 
 test("parseTarget: неподдерживаемая схема и мусор", () => {
-  for (const value of ["ftp://example.com", "javascript://x", "not a url", "", "   "]) {
+  for (const value of [
+    "ftp://example.com",
+    "javascript://x",
+    "not a url",
+    "",
+    "   ",
+  ]) {
     assert.strictEqual(parseTarget(value), null, value);
   }
 
@@ -59,10 +65,7 @@ test("hostHeaderFor: IPv6 в скобках, нестандартный порт
   assert.strictEqual(hostHeaderFor("example.com", 443), "example.com");
   assert.strictEqual(hostHeaderFor("example.com", 8080), "example.com:8080");
   assert.strictEqual(hostHeaderFor("2001:db8::1", 443), "[2001:db8::1]");
-  assert.strictEqual(
-    hostHeaderFor("2001:db8::1", 8080),
-    "[2001:db8::1]:8080",
-  );
+  assert.strictEqual(hostHeaderFor("2001:db8::1", 8080), "[2001:db8::1]:8080");
 });
 
 // --- Канонический ключ rate-limit ---------------------------------
@@ -154,7 +157,10 @@ test("selectWebPorts: только открытые веб-порты в пор�
   assert.deepStrictEqual(selectWebPorts([]), []);
   assert.deepStrictEqual(selectWebPorts(null), []);
   assert.deepStrictEqual(
-    selectWebPorts([{ port: 80, status: "open" }, { port: 443, status: "closed" }]),
+    selectWebPorts([
+      { port: 80, status: "open" },
+      { port: 443, status: "closed" },
+    ]),
     [80],
   );
 });
@@ -244,7 +250,9 @@ test("buildReport: без данных новых проверок отчёт в
   assert.strictEqual(report.files, null);
   assert.strictEqual(report.securityTxt, null);
   assert.strictEqual(report.fingerprint, null);
-  assert.ok(report.findings.some((finding) => finding.id === "tls-not-checked"));
+  assert.ok(
+    report.findings.some((finding) => finding.id === "tls-not-checked"),
+  );
   assert.strictEqual(typeof report.score, "number");
 });
 
@@ -302,6 +310,16 @@ test("isHtmlRequestPath: ловит .html и его encoded-варианты", (
 
   for (const path of ["/", "/app.js", "/assets/css/main.css", "/api/scan"]) {
     assert.strictEqual(isHtmlRequestPath(path), false, path);
+  }
+});
+
+test("isHtmlRequestPath: блокирует NTFS ADS и обратные слэши", () => {
+  for (const path of [
+    "/index.html::$DATA",
+    "\\index.html",
+    "/index.html:zone.identifier",
+  ]) {
+    assert.strictEqual(isHtmlRequestPath(path), true, path);
   }
 });
 

@@ -156,7 +156,9 @@ function withCriticalFiles(files) {
   return {
     ...files,
     critical: exposed
-      .filter((path) => typeof path === "string" && CRITICAL_FILE_PATHS.has(path))
+      .filter(
+        (path) => typeof path === "string" && CRITICAL_FILE_PATHS.has(path),
+      )
       .map((path) => ({ path, severity: "high" })),
   };
 }
@@ -165,8 +167,12 @@ function withCriticalFiles(files) {
 // extra — результаты DNS/файлов/security.txt/фингерпринта, без них карточки
 // показывали бы проверки, которые не влияют на оценку.
 function buildReport(host, ports, ssl, headers, extra = {}) {
-  const { dns = null, files = null, securityTxt = null, fingerprint = null } =
-    extra;
+  const {
+    dns = null,
+    files = null,
+    securityTxt = null,
+    fingerprint = null,
+  } = extra;
 
   const filesReport = withCriticalFiles(files);
   const { score, grade, findings } = calculateScore({
@@ -200,12 +206,19 @@ function buildReport(host, ports, ssl, headers, extra = {}) {
 function isHtmlRequestPath(rawPath) {
   if (typeof rawPath !== "string" || rawPath.length === 0) return false;
 
+  // На Windows существуют NTFS Alternate Data Streams (ADS) и обратные слэши.
+  // Файл index.html::$DATA отдается как index.html. Такие пути нельзя
+  // отдавать через статику, чтобы не обойти проверку.
+  if (rawPath.includes(":") || rawPath.includes("\\")) return true;
+
   let decoded = rawPath;
   try {
     decoded = decodeURIComponent(rawPath);
   } catch {
-    // Битая percent-последовательность: проверяем как есть.
+    // Оставляем строку как есть, если декодирование не удалось
   }
+
+  if (decoded.includes(":") || decoded.includes("\u0000")) return true;
 
   return /\.html?$/i.test(decoded);
 }
