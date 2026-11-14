@@ -2,7 +2,7 @@
 
 Документ отвечает на вопрос «как это устроено и почему именно так». Он не заменяет `README.md` (запуск, переменные, деплой) и `.github/SECURITY.md` (порядок сообщения об уязвимостях).
 
-**Кодовые ориентиры:** `src/server.js` (точка входа), `src/core/{config,server,net-guard,file-paths}.js`, `src/probes/{ports,tls,http-headers,dns-security,header-analysis,web-probes}.js`, `src/utils/{scan-helpers,rate-limit}.js`, `src/scoring.js`, `public/assets/js/{app.js,api/client.js,ui/*}`, `test/*.test.js` — около 8 000 строк вместе с CSS, разметкой, тестами и фронтенд-скриптами.
+**Кодовые ориентиры:** `src/server.js` (точка входа), `src/core/{config,server,net-guard,file-paths}.js`, `src/probes/{ports,tls,http-headers,dns-security,header-analysis,web-probes}.js`, `src/utils/{scan-helpers,rate-limit}.js`, `src/scoring.js`, `public/assets/js/{app.js,api/client.js,ui/*}`, `test/*.test.js` — около 13 700 строк вместе с CSS, разметкой, тестами и фронтенд-скриптами.
 
 > **Соглашение о ссылках.** Ссылки указывают на **функции и маркеры** в коде, а не на номера строк: номера устаревают от любой вставки, а имена — нет. Ищите `isPublicIp`, `resolvePublicIps`, `calculateScore`, `checkOldTls`, `createApp`, `startServer` или маркеры `Сначала валидация`, `Лимит частоты`, `Логируем ПОСЛЕ валидации`.
 
@@ -17,7 +17,7 @@
 * не эксплуатирует уязвимости и не аутентифицируется на цели;
 * не аутентифицирует пользователей — API публичный;
 * не хранит результаты (ни БД, ни файлов, ни кэша);
-* не проверяет владение доменом (согласие — только фиксация намерения);
+* не проверяет владение доменом: согласие подтверждается HMAC-токеном (см. §3.1), но это лишь признак того, что запрос пришёл со страницы сканера, а не проверка прав;
 * не сканирует пути и нестандартные порты (`https://site:8443/admin` проверяется как `https://site/` на 80/443/8080);
 * не разворачивает редиректы;
 * не поддерживает zone-id у IPv6 (`fe80::1%eth0`) — обычные IPv6-литералы проверяются;
@@ -35,7 +35,7 @@
 │    (vanilla)     │  assets/js/app.js → api/client.js → ui/render-result.js
 │                  │  fetch("/api/scan")
 └────────┬─────────┘
-         │ POST /api/scan {url, consent, consentTimestamp}
+         │ POST /api/scan {url, consent, consentToken}
          ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Express (src/core/server.js)                                │
@@ -75,7 +75,7 @@
 | Модуль | Отвечает за | Не отвечает за |
 |---|---|---|
 | `core/config.js` | чтение и строгая проверка `PUBLIC_ORIGIN`, `PORT`, `TRUST_PROXY`, `DEMO_MODE`, `NODE_ENV` | маршруты, сеть |
-| `core/server.js` | сборка Express (`createApp`), страницы, CORS, лимит, валидация URL, маршрут `/api/scan`, 404, запуск (`startServer`) | сетевые проверки, расчёт оценки |
+| `core/server.js` | сборка Express (`createApp`), страницы, CORS, лимит, валидация URL, выдача и проверка токена согласия (`issueConsentToken` / `verifyConsentToken`), маршрут `/api/scan`, 404, запуск (`startServer`) | сетевые проверки, расчёт оценки |
 | `core/net-guard.js` | решение «можно ли подключаться к этому хосту» | подключение |
 | `core/file-paths.js` | единый список путей HEAD-проб и критических файлов | сами пробы |
 | `probes/ports.js` | TCP-проверка пяти портов, retry в бюджете этапа | TLS, HTTP |
@@ -102,7 +102,7 @@
 | 4 | CORS | `core/server.js` → `cors({ origin: [publicOrigin] })` | только один origin |
 | 5 | JSON 8 КБ | `core/server.js` → `express.json({ limit: "8kb" })` | 413 вместо стека |
 | 6 | Страницы и статика | `core/server.js` → `pageHtml()` + `express.static(…)` | три HTML с подставленным BASE_URL и файлы `public/` |
-| 7 | Валидация входа | `core/server.js` → маршрут `/api/scan` | `url` строкой, ≤ 2048; `consent === true`; timestamp в окне 15 мин назад / 1 мин вперёд |
+| 7 | Валидация входа | `core/server.js` → маршрут `/api/scan` | `url` строкой, ≤ 2048; `consent === true`; `consentToken` — HMAC-SHA256 и TTL 15 мин (иначе 400) |
 | 8 | `new URL()` + схема | `utils/scan-helpers.js` → `parseTarget()` | только `http:`/`https:`; `ftp://` отклоняется |
 | 9 | Hostname | `utils/scan-helpers.js` → `normalizeHostname()`: нижний регистр, снятие trailing dot и скобок IPv6; длина ≤ 253, `net.isIP` + `domainRegex` | IDN/punycode, IPv4/IPv6; скобки возвращает только `hostHeaderFor()` для `Host` |
 | 10 | Семафор и лимит частоты | `utils/rate-limit.js` → `activeScans` (503), затем `CooldownGate.wait()` (429) | 503 и 429 до сети; 503 не сжигает 10 секунд |
@@ -138,14 +138,39 @@ DNS-разрешение входит в те же 60 с: `withTimeout` запу
 
 При fallback ошибка TLS с 443 не затирается успехом на 80: `bestSsl` обновляется только если у него ещё нет ни `hasSSL`, ни `error`. Валидный сертификат с 443 сохраняется, а `ssl-error` не превращается в «Нет SSL».
 
+### 3.1. Токен согласия (HMAC)
+
+`consent: true` — это заявление пользователя, а не доказательство. Поэтому страница получает от сервера короткоживущий токен, без которого `/api/scan` не работает:
+
+```text
+renderPage("index.html")        → шаблон с подставленным __BASE_URL__
+withConsentToken(html)          → issueConsentToken() на каждый ответ
+      issuedAt = Date.now()
+      mac = HMAC-SHA256(CONSENT_SECRET, issuedAt).base64url
+      token = "<issuedAt>.<mac>"
+  → __CONSENT_TOKEN__ подставляется в скрытое поле data-js="consent-token"
+```
+
+Проверка (`verifyConsentToken`):
+
+* токен — строка не длиннее 200 символов, ровно два сегмента `<issuedAt>.<mac>`;
+* `mac` сверяется с ожидаемым через `crypto.timingSafeEqual` (сначала сравнивается длина, чтобы не бросать исключение на разных буферах);
+* `issuedAt` — конечное число, `Date.now() - issuedAt <= 900 000` (15 минут). Проверки «не из будущего» нет: подпись всё равно требует секрета, поэтому сдвинутая вперёд дата без него бесполезна.
+
+`CONSENT_SECRET` читается из env. При `NODE_ENV=production` без него процесс завершается с кодом 1; в development подставляется `dev-secret-do-not-use-in-prod`. Токен на сервере не хранится: валидность — это подпись плюс TTL, поэтому рестарт её не сбрасывает, а смена секрета инвалидирует все выданные токены.
+
+В production `pageHtml()` кэширует только шаблон с подставленным `__BASE_URL__`, а `__CONSENT_TOKEN__` заменяется на каждый ответ (`withConsentToken`). Если закэшировать страницу целиком, один токен выдавался бы всем посетителям и через 15 минут после старта процесса любой скан получал бы 400 до перезапуска — тесты этого не ловят, потому что HTTP-тесты идут с `isProduction: false`. Ответы: нет `consent` — 400 «Подтверди, что у тебя есть право на проверку»; нет, просрочен или подделан токен — 400 «Подтверждение устарело или недействительно».
+
+Что это даёт и чего не даёт: без секрета валидную подпись не сгенерировать, поэтому `curl` с `{"consent": true}` перестаёт работать. Но страница публичная, и любой посетитель получает токен на 15 минут. Это анти-абьюз и фиксация намерения, а не verification владения доменом: токен не привязан к сессии, IP или цели.
+
 ---
 
 ## 4. Модель доверия
 
 | Субъект / данные | Доверяем? | Обоснование |
 |---|---|---|
-| `req.body` (url, consent, timestamp) | ❌ | валидируется; `consent` — только намерение |
-| `req.ip` | ⚠️ условно | при `TRUST_PROXY=0` — адрес сокета; при `>0` — `X-Forwarded-For`, только за реальным прокси. В лог попадает лишь валидный IP (`net.isIP`), иначе `unknown` |
+| `req.body` (url, consent, consentToken) | ❌ | валидируется; `consent` — намерение, `consentToken` — HMAC-SHA256 с TTL 15 мин, сверка через `timingSafeEqual` |
+| IP клиента (сокет / `X-Forwarded-For`) | ⚠️ условно | при `TRUST_PROXY=0` — адрес сокета, заголовок игнорируется; при `>0` — **правый** элемент `X-Forwarded-For`, только за реальным прокси. В лог попадает лишь валидный IP (`net.isIP`), иначе `unknown` |
 | DNS-ответ | ❌ | проверяются все адреса; смешанный ответ — отказ |
 | `connectIp` | ✅ | подключаемся к проверенному IP, не к имени |
 | Сертификат цели | ❌ | читается с `rejectUnauthorized:false`; валидность — по `authorizationError` |
@@ -153,7 +178,7 @@ DNS-разрешение входит в те же 60 с: `withTimeout` запу
 | Тело HTML цели | ❌ | читается не больше 64 КБ только для CMS-признаков; не исполняется и не сохраняется |
 | DNS-записи (SPF/DMARC/CAA) | ❌ | парсятся как текст, ошибки/таймауты возвращаются данными, не роняют скан |
 | `report` для скоринга | ❌ | `scoring.js` не ходит в сеть и не выполняет код; получает `dns/files/headers/...` как данные |
-| Конфигурация (env) | ✅ в пределах процесса | `PUBLIC_ORIGIN`/`RENDER_EXTERNAL_URL`, `TRUST_PROXY`, `DEMO_MODE`, `NODE_ENV`, `PORT` |
+| Конфигурация (env) | ✅ в пределах процесса | `PUBLIC_ORIGIN`/`RENDER_EXTERNAL_URL`, `TRUST_PROXY`, `DEMO_MODE`, `NODE_ENV`, `PORT`, `CONSENT_SECRET` |
 
 ---
 
@@ -190,11 +215,14 @@ DEMO_MODE === "true"  И  NODE_ENV === "development"   →  работаем
 ## 7. Лимит частоты
 
 ```
-rateKey(req.ip) → IPv4-mapped → IPv4
+clientIdentity(req) → IP сокета, при TRUST_PROXY>0 — правый элемент X-Forwarded-For
+                → rateKey() → IPv4-mapped → IPv4
                 → IPv6 → /64
                 → невалидный → "unknown"
 CooldownGate.entries: Map<key, timestamp>   TTL 10 с, чистка раз в 30 с, MAX_KEYS 10 000, LRU
 ```
+
+IP клиента определяет `clientIdentity()`: при `TRUST_PROXY=0` берётся адрес сокета, а `X-Forwarded-For` игнорируется целиком; при `>0` — **правый** элемент заголовка (его дописал наш прокси), а левые, которые контролирует клиент, не используются. Невалидный адрес из заголовка откатывается к IP сокета, а не в общий бакет.
 
 Лимит списывается **после** валидации URL и hostname. Невалидные имена окно не занимают; невалидный IP попадает в общий бакет `"unknown"`; IPv6 нормализуется до `/64`, чтобы смена младших 64 бит не давала нового окна.
 
@@ -231,17 +259,17 @@ CooldownGate.entries: Map<key, timestamp>   TTL 10 с, чистка раз в 30
 * `API_URL = "/api"` — относительный путь, работает за прокси и не конфликтует с `default-src 'self'`.
 * Рендер — только `textContent` и DOM API (`createElement`, `append`); `innerHTML` отсутствует. В отчёт попадает `Server` чужого сервера — это данные третьей стороны.
 * Обработчик формы вынесен из разметки (`addEventListener`), работает строгий `script-src 'self'` без `'unsafe-inline'`.
-* `style-src 'self'`, инлайновых стилей нет.
+* `style-src 'self'`, инлайновых стилей нет. CSP и `X-Frame-Options` приходят **только HTTP-заголовками** Helmet: `<meta http-equiv="Content-Security-Policy">` в разметке нет, поэтому раздача `public/` без Express (статика/CDN) оставит страницы без CSP.
 * `X-Frame-Options: DENY` согласован с `frame-ancestors 'none'`.
 * Клиентский таймаут 65 с через `AbortController`; `api/client.js` нормализует ответ, чтобы рендер не падал на неполном JSON.
 * **CSS:** токены в `tokens.css` (`--color-*`, `--space-1..10`, `--control-height`, `--touch-target`, `--container-max`), база — `reset.css`, `base`, `layout`, `utilities`, печать — `print.css`, дальше по файлу на компонент (10 штук). Всё связано 16 `@import` в `main.css`: сборщика нет, поэтому порядок импортов и есть каскад — токены → reset → база → layout → утилиты → компоненты → печать.
-* **Отчёт:** три блока — оценка (кольцо на `conic-gradient`, заполнение через CSS-переменную `--value`), «Что исправить» (карточки находок с бейджем важности и OWASP) и «Детали проверки» (семь карточек: порты, TLS, заголовки, почтовая безопасность, cookie, технологии, открытые файлы). `security.txt` живёт в карточке «Технологии»; WAF/CMS остаются там же информационными бейджами и не попадают в список исправлений.
+* **Отчёт:** три блока — оценка (кольцо на `conic-gradient`, заполнение через CSS-переменную `--value`), «Что исправить» (карточки находок с бейджем важности и OWASP) и «Детали проверки» (семь карточек в порядке рендера: порты, TLS, cookie, почтовая безопасность, технологии, открытые файлы, заголовки). `security.txt` живёт в карточке «Технологии»; WAF/CMS остаются там же информационными бейджами и не попадают в список исправлений.
 * **Фильтры и копирование.** Над находками — кнопки «Все / Критичные / Важные / Замечания» с количеством; они переключают `hidden` у `li`, `aria-pressed` и класс `is-active` у кнопок, DOM не пересобирается. Кнопка «Скопировать отчёт» вызывает `navigator.clipboard.writeText(buildShareText(report))`; текст собирает чистая функция в `ui/report-model.js` (до пяти находок с рекомендациями). Без Clipboard API кнопка сообщает об ошибке через `role="status"`, а не молчит.
 * **Человеческий язык.** `ui/render-result.js` переводит технические значения в понятные: DMARC `reject` → «Строгий (Блокировка)», `quarantine` → «Карантин (В спам)», `none` → «Мониторинг»; SPF и CAA → «Настроен / Не настроен». У терминов SPF, DMARC, CAA, HSTS, CSP, COOP, CORS и cookie-флагов есть `title`-подсказки; рядом с термином стоит маленькая SVG-иконка, созданная через `createElementNS`, а пунктирных подчёркиваний нет. Иконка с подсказкой фокусируема (`role="img"` + `aria-label`), без подсказки — декоративна (`aria-hidden`); в печати скрыта.
 * **Юридические страницы:** `legal.html` и `privacy.html` — документ с оглавлением. `ui/legal-toc.js` строит его из `.legal__section-title`, ведёт подсветку через `aria-current="location"` и сам обрабатывает клик (переход + перенос фокуса в раздел), поэтому подсветка переключается и на документе, который целиком влезает в экран. Без JS оглавление остаётся скрытым (`hidden`), текст читается линейно.
 * **A11y:** skip-link на всех трёх страницах, `aria-describedby` у поля, `aria-invalid` ровно на том контроле, о котором говорит ошибка, `role="alert"`/`role="status"`, `aria-pressed` и `aria-controls` у фильтров, `dl`-семантика, focus на заголовке отчёта, кастомный чекбокс 18 px поверх нативного `input` (сам `input` остаётся фокусируемым и кликабельным).
 * **Печать:** `document.title` = `CyberCheck_<host>_<локальная дата>`; host ≤ 60, небезопасные для имени файла символы (включая `:` у IPv6) заменяются, `afterprint` восстанавливает имя текущего отчёта, а `resetReportTitle()` возвращает исходный заголовок вкладки. `print.css` переопределяет токены, включая `--color-surface-raised` и `--color-warning`; находки читаемы с фонами. Кнопки отчёта и фильтры на бумагу не попадают, а скрытые фильтром находки печатаются все.
-* **OG:** `og:title`, `og:description`, `og:type`, `og:url`, `og:image`, `og:image:alt`, `og:site_name`, `twitter:card`, `twitter:image` и `canonical` — на `index.html`, `legal.html` и `privacy.html`. Плейсхолдер `__BASE_URL__` подставляется в `pageHtml()` при отдаче, поэтому страницы не раздаются как обычная статика. Обложка хранится как JPEG, но с именем `.png`; сервер отдаёт её с `Content-Type: image/jpeg`, иначе `nosniff` заблокировал бы картинку.
+* **OG:** `og:title`, `og:description`, `og:type`, `og:url`, `og:image`, `og:image:alt`, `og:site_name`, `twitter:card`, `twitter:image` и `canonical` — на `index.html`, `legal.html` и `privacy.html`. Плейсхолдер `__BASE_URL__` подставляется в `pageHtml()` при отдаче, поэтому страницы не раздаются как обычная статика. Обложка — PNG; сервер отдаёт её с `Content-Type: image/png`, совпадающим с `og:image:type`, иначе `nosniff` заблокировал бы картинку.
 
 ---
 
@@ -421,7 +449,8 @@ report = {
 | Результаты скана | только HTTP-ответ | не сохраняются |
 | Сертификаты, заголовки | только ответ | не сохраняются |
 | Счётчик активных сканов | `activeScans` (память) | только на время скана |
-| Секреты | — | отсутствуют |
+| Токены согласия | не хранятся: проверяется подпись и TTL | 15 минут после выдачи |
+| Секрет `CONSENT_SECRET` | переменная окружения процесса | на всё время работы процесса |
 
 Ничего не пишется на диск. Состояние в памяти — `Map` последних запросов и счётчик активных сканов. `/healthz` отдаёт `{ok, uptime}`.
 
@@ -429,19 +458,19 @@ report = {
 
 ## 12. Тестирование
 
-Покрыто (**209 тестов** в 12 файлах):
+Покрыто (**215 тестов** в 12 файлах):
 
 * `test/net-guard.test.js` — 9 тестов: 20 адресов на блокировку (mapped, NAT64, `::/96`, `::7f00:1`), 4 на разрешение, 5 мусорных на fail-closed, инъекция резолвера, смешанный ответ, таймаут.
 * `test/scoring.test.js` — 47 тестов (см. §10.4), включая веса 100, `FILE_CHECKS`, потолки файлов/CORS, DNS-ошибки, cookie, `NO_WEB_PORT`, `security-txt-invalid` и OWASP.
-* `test/checks.test.js` — 11 тестов: `checkPort` на закрытом и открытом порту, дедлайн, отказ от нелитерального `connectIp`, `checkHeaders` с cookie/доп. заголовками/CORS/weak-значениями/IPv6-Host, `checkSSL` с `HANDSHAKE_FAILED` и самоподписанным сертификатом.
+* `test/checks.test.js` — 12 тестов: `checkPort` на закрытом и открытом порту, дедлайн, отказ от нелитерального `connectIp`, `checkHeaders` с cookie/доп. заголовками/CORS/weak-значениями/IPv6-Host, `checkSSL` с `HANDSHAKE_FAILED`, самоподписанным сертификатом и отменённым сигналом.
 * `test/dns-security.test.js` — 24 теста: SPF, DMARC (`reject`/`quarantine`/`none`), CAA, IP/localhost, таймауты, DNS-ошибки, abort.
-* `test/header-analysis.test.js` — 30 тестов: `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, ACAO `*`, WAF и CMS.
+* `test/header-analysis.test.js` — 31 тест: `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, ACAO `*`, WAF и CMS, отсутствие ReDoS на ~58 КБ `<meta>`-текста.
 * `test/web-probes.test.js` — 12 тестов: HEAD-файлы (200/403/404/301), `security.txt`, фингерпринт, Host/connectIp, таймаут, abort, частичное тело.
-* `test/scan-helpers.test.js` — 21 тест: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath`, `isLiteralIp`.
+* `test/scan-helpers.test.js` — 22 теста: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath` (включая NTFS ADS и обратные слэши), `isLiteralIp`.
 * `test/rate-limit.test.js` — 10 тестов: кулдаун, LRU, sweep, семафор, лишний `finish`, таймер.
 * `test/report-model.test.js` — 25 тестов: `sanitizeText`, критичность путей, `filesNote`, `tlsNotice`, `caaState`, `secureContextState`, склонения, имя отчёта, `buildShareText`.
 * `test/frontend-contract.test.js` — 7 тестов: нормализация `owasp`/`dns`/`files`/`securityTxt`/`fingerprint` в `api/client.js`; мусорные `score`/`grade`/`ports`; сетевые ошибки; SVG-иконка подсказки; ENOTFOUND для SPF; наличие карточек и `finding__owasp` в `ui/render-result.js`; отсутствие `.innerHTML` и экспорты.
-* `test/server.test.js` — 1 тест: запуск с `TRUST_PROXY=0` на случайном порту.
+* `test/server.test.js` — 4 теста: запуск с `TRUST_PROXY=0`; ключ лимита берётся из реального IP прокси, а не из подставленного `X-Forwarded-For`; при `trustProxy=0` заголовок игнорируется полностью; скан с поддельным токеном согласия отклоняется.
 * `test/server-http.test.js` — 12 тестов: `/healthz`, HTML с `BASE_URL` и security-заголовками, защита от шаблонов в статике, редирект, 400/415/413, 404 для неизвестного `/api/scan/*`, 429-кулдаун, CORS, JSON-404.
 
 `npm test` запускает все 12 файлов, CI — тот же набор плюс рекурсивный разбор модулей фронтенда через `vm.SourceTextModule`.
@@ -480,9 +509,9 @@ report = {
 | В ответе нет поля `ip` | при нескольких A-записях непонятно, какой узел проверен |
 | Редиректы не разворачиваются | заголовки могут быть с 301-заглушки |
 | Express 4 | не ловит rejected promise |
+| Токен согласия не привязан к сессии, IP или цели | один токен переиспользуется все 15 минут; отличить двух клиентов с одной страницы нельзя |
 | Нет истории/БД | stateless, нет share/«до/после»/API-ключей |
 | OG-превью статичное, без генерации под отчёт | одна картинка на все страницы |
-| `og-cover.png` содержит JPEG | сервер отдаёт правильный MIME, но файл стоит перекодировать или переименовать |
 | Политика приватности описывает фактическое поведение и прямо говорит, что не является юридическим заключением | для B2B по 152-ФЗ нужна отдельная проработка |
 
 ---
@@ -496,20 +525,36 @@ report = {
 | DNS rebinding | подключение по проверенному IP | — |
 | XSS через данные цели | `textContent`/DOM API, строгий CSP | — |
 | Утечка стека | error handler, JSON без деталей | `next(err)` при `headersSent` |
-| Подмена `X-Forwarded-For` | `"unknown"`, `/64` | неверный `TRUST_PROXY`: значение больше числа реальных хопов отдаёт `req.ip` клиенту |
-| Abuse сканера | CORS, лимит, согласие, DISCLAIMER | распределённый источник, нет verification |
+| Подмена `X-Forwarded-For` | правый элемент заголовка, `"unknown"`, `/64` | неверный `TRUST_PROXY`: значение больше числа реальных хопов отдаёт клиентский IP из XFF |
+| Abuse сканера | CORS, лимит, HMAC-токен согласия, DISCLAIMER | распределённый источник; токен получает любой посетитель, verification нет |
 | DoS на сервис | лимит, `MAX_KEYS`, таймауты, семафор на 25 одновременных сканов | лимиты живут в памяти процесса: N реплик = N лимитов |
 | Захват зависимости | `npm ci --ignore-scripts`, lock, `npm audit` | Actions запинены по SHA |
-| Утечка секретов | секретов нет, `.env` в `.gitignore` | — |
+| Подделка согласия | HMAC-SHA256, TTL 15 мин, `timingSafeEqual` | токен не привязан к сессии/IP и живёт 15 минут |
+| ReDoS через заголовки/HTML цели | линейный `hasGeneratorMeta`, обрезка значений до 120 символов, тело ≤ 64 КБ | — |
+| Утечка секретов | единственный секрет — `CONSENT_SECRET`, он в env; `.env` в `.gitignore` | при утечке секрета токены можно подделывать до его смены |
 
 ---
 
-## 15. Конфигурация и деплой
+## 15. Устойчивость к ReDoS
 
-`PUBLIC_ORIGIN` проверяется на старте (`new URL` + схема) в `core/config.js`. Если не задан — используется `RENDER_EXTERNAL_URL`, который Render передаёт веб-сервису автоматически. Это делает blueprint zero-config, но привязывает CORS к `*.onrender.com`: при кастомном домене `PUBLIC_ORIGIN` нужно задать явно.
+Разбор данных цели не должен зависеть от длины входа. Что сделано:
 
-`render.yaml`: web-сервис, `NODE_ENV=production`, `TRUST_PROXY=1`, health-check `/healthz`, план `starter`, сборка `npm ci --ignore-scripts`. Graceful shutdown: `SIGTERM`/`SIGINT` → `server.close()` + `closeIdleConnections()`, ожидание до 40 с, затем `closeAllConnections()` и `exit(1)`. Render может ограничивать окно завершения — проверьте на своём плане.
+* **`hasGeneratorMeta()`** (`probes/header-analysis.js`) ищет `<meta name="generator" content="…">` без регулярки с вложенными квантификаторами: `META_TAG_RE` находит тег, атрибуты разбираются вручную, а подстрока ищется через `indexOf` с проверкой границ слова. Сложность линейна по длине HTML — это и есть закрытие ReDoS.
+* **`sanitizeHeaderText()`** убирает управляющие символы, bidi-переопределения и zero-width, схлопывает пробелы и обрезает значение до **120 символов**. В отчёт попадает чужой `Server`, поэтому длина важна не только для вёрстки.
+* **`checkFingerprint()`** читает не больше **64 КБ** HTML и уничтожает ответ после лимита; `security.txt` — не больше 8 КБ.
+* **`parseTarget()`/`normalizeHostname()`** ограничены `url.length <= 2048` и `hostname.length <= 253` до применения `domainRegex`; токен согласия — не длиннее 200 символов.
+* Тест `detectCms не деградирует на длинных meta-тегах` подаёт ~58 КБ «ядовитого» текста и требует меньше 500 мс.
 
 ---
 
-*Документ описывает состояние кода на 06.11.2026, тег `v2.2.0`. Ссылки указывают на функции и маркеры, а не на номера строк. При изменении логики §5–§8 и §10 документ нужно перечитать.*
+## 16. Конфигурация и деплой
+
+`PUBLIC_ORIGIN` проверяется на старте (`new URL` + схема) в `core/config.js`. Остальные переменные тоже читает `config.js`, и только `CONSENT_SECRET` — исключение: он читается при загрузке `core/server.js`, потому что нужен функции подписи. Если `PUBLIC_ORIGIN` не задан — используется `RENDER_EXTERNAL_URL`, который Render передаёт веб-сервису автоматически. Это делает blueprint zero-config, но привязывает CORS к `*.onrender.com`: при кастомном домене `PUBLIC_ORIGIN` нужно задать явно.
+
+`CONSENT_SECRET` обязателен при `NODE_ENV=production`: без него `core/server.js` печатает ошибку и завершается с кодом 1 (fail-closed), потому что подписывать токены нечем. В development подставляется `dev-secret-do-not-use-in-prod`. При смене секрета все ранее выданные токены (TTL 15 минут) перестают проверяться.
+
+`render.yaml`: web-сервис, `NODE_ENV=production`, `TRUST_PROXY=1`, `CONSENT_SECRET` с `generateValue: true` (Render создаёт секрет при первом деплое), health-check `/healthz`, план `starter`, сборка `npm ci --ignore-scripts`. Graceful shutdown: `SIGTERM`/`SIGINT` → `server.close()` + `closeIdleConnections()`, ожидание до 40 с, затем `closeAllConnections()` и `exit(1)`. Render может ограничивать окно завершения — проверьте на своём плане.
+
+---
+
+*Документ описывает состояние кода на 14.11.2026, тег `v2.2.0`. Ссылки указывают на функции и маркеры, а не на номера строк. При изменении логики §3.1, §5–§8, §10 и §15 документ нужно перечитать.*

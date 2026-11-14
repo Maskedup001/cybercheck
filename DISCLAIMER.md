@@ -52,7 +52,7 @@ The authors assume **no liability** for any damage, legal consequences, or misus
 
 ### Data
 
-Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.2.0. Do not scan systems whose hostnames or addresses you are not allowed to process.
+Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.2.0. The service issues a short-lived signed consent token (15 minutes, not stored server-side, no personal data) so that a scan request can be tied to the page it was sent from. Do not scan systems whose hostnames or addresses you are not allowed to process.
 
 ### Legal notice
 
@@ -114,7 +114,7 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ### Данные
 
-Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.2.0 нет. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
+Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.2.0 нет. Сервис выдаёт короткоживущий подписанный токен согласия (15 минут, на сервере не хранится, персональных данных не содержит), чтобы запрос скана был связан со страницей, с которой он отправлен. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
 
 ### Правовая информация
 
