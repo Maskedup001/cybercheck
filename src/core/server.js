@@ -326,11 +326,9 @@ function createApp(config) {
     }
 
     if (!verifyConsentToken(consentToken)) {
-      return res
-        .status(400)
-        .json({
-          error: "Подтверждение устарело или недействительно. Обнови страницу.",
-        });
+      return res.status(400).json({
+        error: "Подтверждение устарело или недействительно. Обнови страницу.",
+      });
     }
 
     // Схема определяется по началу строки: поиск "://" где угодно ломал
@@ -546,7 +544,13 @@ function createApp(config) {
                     1,
                     budget(TLS_TIMEOUT_MS),
                     deadline,
-                  );
+                  ).catch((error) => {
+                    return {
+                      hasSSL: false,
+                      error: "PROBE_FAILED",
+                      errorCode: error.code || null,
+                    };
+                  });
             if (wp === 8080 && ssl.error) ssl = { hasSSL: false };
             if (wp === bestPort) bestPortTls = Boolean(ssl.hasSSL);
             if (signal.aborted) throw new Error("SCAN_TIMEOUT");
@@ -595,7 +599,13 @@ function createApp(config) {
               1,
               budget(TLS_TIMEOUT_MS),
               deadline,
-            );
+            ).catch((error) => {
+              return {
+                hasSSL: false,
+                error: "PROBE_FAILED",
+                errorCode: error.code || null,
+              };
+            });
             if (rechecked && rechecked.hasSSL) {
               bestSsl = rechecked;
             } else {

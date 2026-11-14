@@ -138,10 +138,7 @@ async function checkSSL(
           return finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
         }
 
-        const retryFits = hasBudget(
-          stage,
-          RETRY_DELAY_MS + MIN_ATTEMPT_MS,
-        );
+        const retryFits = hasBudget(stage, RETRY_DELAY_MS + MIN_ATTEMPT_MS);
         if (attemptsLeft > 0 && retryFits) {
           retryTimer = setTimeout(() => {
             retryTimer = null;
@@ -153,87 +150,99 @@ async function checkSSL(
       };
 
       const servername = net.isIP(hostname) ? undefined : hostname;
-      const socket = tls.connect(
-        {
-          host: connectIp,
-          port,
-          servername,
-          rejectUnauthorized: false,
-          ciphers: "DEFAULT@SECLEVEL=0",
-          signal,
-          minVersion: "TLSv1",
-        },
-        async () => {
-          mainSucceeded = true;
-          socket.setTimeout(0);
-          try {
-            const cert = socket.getPeerCertificate();
-            if (!cert || !cert.valid_to) {
+
+      let socket;
+      try {
+        socket = tls.connect(
+          {
+            host: connectIp,
+            port,
+            servername,
+            rejectUnauthorized: false,
+            ciphers: "DEFAULT@SECLEVEL=0",
+            signal,
+            minVersion: "TLSv1",
+          },
+          async () => {
+            mainSucceeded = true;
+            socket.setTimeout(0);
+            try {
+              const cert = socket.getPeerCertificate();
+              if (!cert || !cert.valid_to) {
+                socket.end();
+                // TLS поднялся, но сертификат не разобран: это ошибка проверки,
+                // а не «SSL нет». Иначе отчёт печатал бы no-ssl и потолок 30.
+                return finish({
+                  hasSSL: false,
+                  error: "CERT_PARSE_FAILED",
+                });
+              }
+
+              // Node может оставить authorizationError undefined у валидного
+              // сертификата: приводим «нет ошибки» к null, иначе valid ложно
+              // станет false и сайт получит bad-ssl.
+              const verifyError = socket.authorizationError || null;
+              const tlsVersion = socket.getProtocol();
+              // Браузеры не подключаются по TLS 1.0/1.1. Такой сервер нельзя
+              // считать «валидным» только потому, что цепочка формально сошлась:
+              // иначе scoring начислит 12 баллов за протокол, которым нельзя
+              // воспользоваться.
+              const modernTls =
+                tlsVersion === "TLSv1.2" || tlsVersion === "TLSv1.3";
+              const valid = verifyError === null && modernTls;
+              const daysLeft = Math.floor(
+                (new Date(cert.valid_to) - Date.now()) / 86400000,
+              );
               socket.end();
-              // TLS поднялся, но сертификат не разобран: это ошибка проверки,
-              // а не «SSL нет». Иначе отчёт печатал бы no-ssl и потолок 30.
-              return finish({
-                hasSSL: false,
-                error: "CERT_PARSE_FAILED",
+
+              // Старые протоколы проверяются только на остаток бюджета этапа:
+              // иначе успешный хендшейк добавлял к этапу фиксированные 3 с.
+              let supportsOldTls = false;
+              if (hasBudget(stage, OLD_TLS_MIN_MS)) {
+                try {
+                  supportsOldTls = await checkOldTls(
+                    connectIp,
+                    port,
+                    hostname,
+                    signal,
+                    timeoutFor(OLD_TLS_TIMEOUT_MS, stage),
+                  );
+                } catch (e) {}
+              }
+
+              finish({
+                hasSSL: true,
+                valid,
+                verifyError,
+                daysLeft,
+                validTo: cert.valid_to,
+                validToISO: (() => {
+                  if (!cert.valid_to) return null;
+                  const d = new Date(cert.valid_to);
+                  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+                })(),
+                issuer:
+                  sanitizeHeaderText(
+                    cert.issuer?.O || cert.issuer?.CN || "неизвестен",
+                  ) || "неизвестен",
+                tlsVersion,
+                supportsOldTls,
               });
+            } catch (e) {
+              socket.end();
+              finish({ hasSSL: false, error: "CERT_PARSE_FAILED" });
             }
-
-            // Node может оставить authorizationError undefined у валидного
-            // сертификата: приводим «нет ошибки» к null, иначе valid ложно
-            // станет false и сайт получит bad-ssl.
-            const verifyError = socket.authorizationError || null;
-            const tlsVersion = socket.getProtocol();
-            // Браузеры не подключаются по TLS 1.0/1.1. Такой сервер нельзя
-            // считать «валидным» только потому, что цепочка формально сошлась:
-            // иначе scoring начислит 12 баллов за протокол, которым нельзя
-            // воспользоваться.
-            const modernTls =
-              tlsVersion === "TLSv1.2" || tlsVersion === "TLSv1.3";
-            const valid = verifyError === null && modernTls;
-            const daysLeft = Math.floor(
-              (new Date(cert.valid_to) - Date.now()) / 86400000,
-            );
-            socket.end();
-
-            // Старые протоколы проверяются только на остаток бюджета этапа:
-            // иначе успешный хендшейк добавлял к этапу фиксированные 3 с.
-            let supportsOldTls = false;
-            if (hasBudget(stage, OLD_TLS_MIN_MS)) {
-              try {
-                supportsOldTls = await checkOldTls(
-                  connectIp,
-                  port,
-                  hostname,
-                  signal,
-                  timeoutFor(OLD_TLS_TIMEOUT_MS, stage),
-                );
-              } catch (e) {}
-            }
-
-            finish({
-              hasSSL: true,
-              valid,
-              verifyError,
-              daysLeft,
-              validTo: cert.valid_to,
-              validToISO: (() => {
-                if (!cert.valid_to) return null;
-                const d = new Date(cert.valid_to);
-                return Number.isNaN(d.getTime()) ? null : d.toISOString();
-              })(),
-              issuer:
-                sanitizeHeaderText(
-                  cert.issuer?.O || cert.issuer?.CN || "неизвестен",
-                ) || "неизвестен",
-              tlsVersion,
-              supportsOldTls,
-            });
-          } catch (e) {
-            socket.end();
-            finish({ hasSSL: false, error: "CERT_PARSE_FAILED" });
-          }
-        },
-      );
+          },
+        );
+      } catch (error) {
+        // Если соединение упало синхронно, возвращаем безопасный результат,
+        // чтобы не ломать весь отчет.
+        return finish({
+          hasSSL: false,
+          error: "HANDSHAKE_FAILED",
+          errorCode: error.code || null,
+        });
+      }
 
       socket.on("error", onError);
       socket.setTimeout(attemptTimeout, () => {

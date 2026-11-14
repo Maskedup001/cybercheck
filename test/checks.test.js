@@ -115,9 +115,24 @@ test("checkHeaders: небезопасные значения заголовко
 
   const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
 
-  for (const field of ["hsts", "csp", "xframe", "xcontent", "referrerPolicy", "coop"]) {
-    assert.strictEqual(result[field], false, `${field} не должен считаться защитой`);
-    assert.strictEqual(result[`${field}State`], "weak", `${field} должен быть weak`);
+  for (const field of [
+    "hsts",
+    "csp",
+    "xframe",
+    "xcontent",
+    "referrerPolicy",
+    "coop",
+  ]) {
+    assert.strictEqual(
+      result[field],
+      false,
+      `${field} не должен считаться защитой`,
+    );
+    assert.strictEqual(
+      result[`${field}State`],
+      "weak",
+      `${field} должен быть weak`,
+    );
   }
 
   // server нормализован: строка или null, без заглушки «не указан».
@@ -284,4 +299,23 @@ test("проверки отказываются от нелитеральног�
   assert.deepStrictEqual(headers, { error: true });
 
   assert.ok(Date.now() - startedAt < 500);
+});
+
+// --- Устойчивость к сбоям ------------------------------------------
+
+test("checkSSL: не бросает исключение при отмененном сигнале", async () => {
+  const controller = new AbortController();
+  controller.abort(); // Сигнал уже отменен
+
+  // Вызываем проверку TLS с отмененным сигналом
+  const result = await checkSSL(
+    "127.0.0.1",
+    443,
+    "localhost",
+    controller.signal,
+  );
+
+  // Главное: функция не упала с throw, а вернула безопасный объект
+  assert.strictEqual(result.hasSSL, false);
+  assert.ok(result.error); // Должна быть ошибка (HANDSHAKE_FAILED)
 });
