@@ -288,11 +288,11 @@
 /* Пустое состояние — компактная карточка: высоту задают только заголовок
    и сообщение, без искусственной минимальной высоты. */
 .detail--empty {
-  text-align: center;
+  text-align: left;
 }
 
 .detail--empty .detail__title {
-  justify-content: center;
+  justify-content: flex-start;
   margin-bottom: var(--space-2);
   padding-bottom: 0;
   border-bottom: 0;
@@ -303,18 +303,6 @@
   padding-top: 0;
   border-top: 0;
   font-size: var(--font-size-xs);
-}
-
-/* Пустые «Открытые файлы» и «Заголовки» читаются как статусная строка,
-   а не как центрированная плашка. */
-.detail--files.detail--empty,
-.detail--headers.detail--empty {
-  text-align: left;
-}
-
-.detail--files.detail--empty .detail__title,
-.detail--headers.detail--empty .detail__title {
-  justify-content: flex-start;
 }
 
 .detail__muted {
