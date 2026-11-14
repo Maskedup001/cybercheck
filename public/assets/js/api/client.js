@@ -28,7 +28,8 @@ export function normalizeFinding(raw) {
   };
 }
 
-export async function scanTarget({ url, consent }) {
+export async function scanTarget({ url, consent, consentToken }) {
+  // <-- Добавили consentToken
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -41,7 +42,7 @@ export async function scanTarget({ url, consent }) {
       res = await fetch(`${API_URL}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, consent, consentTimestamp: Date.now() }),
+        body: JSON.stringify({ url, consent, consentToken }), // <-- Передаем токен
         signal: controller.signal,
       });
     } catch (error) {
