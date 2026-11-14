@@ -128,7 +128,12 @@ test("api.js нормализует OWASP и не теряет новые пол
   assert.strictEqual(fallback.owasp, "");
 
   const source = fs.readFileSync(API_PATH, "utf8");
-  for (const field of ["data.dns", "data.files", "data.securityTxt", "data.fingerprint"]) {
+  for (const field of [
+    "data.dns",
+    "data.files",
+    "data.securityTxt",
+    "data.fingerprint",
+  ]) {
     assert.ok(source.includes(field), `api.js должен сохранять ${field}`);
   }
 });
@@ -232,7 +237,10 @@ test("render-result.js: подсказка — SVG-иконка, а не тек�
   );
   assert.match(details, /\.tooltip-icon\s*\{[^}]*margin-left:\s*4px/s);
   assert.match(details, /\.tooltip-icon\s*\{[^}]*vertical-align:\s*middle/s);
-  assert.match(details, /\.tooltip-icon\s*\{[^}]*color:\s*var\(--color-text-muted\)/s);
+  assert.match(
+    details,
+    /\.tooltip-icon\s*\{[^}]*color:\s*var\(--color-text-muted\)/s,
+  );
   assert.doesNotMatch(details, /\.detail__label--hint/);
 
   const print = fs.readFileSync(
@@ -281,7 +289,11 @@ test("render-result.js: экспортируемые функции и безо�
       new RegExp(`^export function ${name}\\b`, "m"),
       `${name} должен быть экспортирован`,
     );
-    assert.strictEqual(typeof render[name], "function", `${name} не загрузилась`);
+    assert.strictEqual(
+      typeof render[name],
+      "function",
+      `${name} не загрузилась`,
+    );
   }
 
   // Карточки — внутренние функции: экспорт им не нужен, важно, что объявлены.
@@ -300,8 +312,25 @@ test("render-result.js: экспортируемые функции и безо�
 
   // Пути и тексты карточек больше не дублируются в рендере.
   assert.strictEqual(source.includes("files.critical"), false);
-  assert.strictEqual(source.includes(".innerHTML"), false);
-  assert.strictEqual(source.includes("insertAdjacentHTML"), false);
+
+  // Проверяем все HTML-синки во всех файлах фронтенда, а не только два самых частых.
+  const HTML_SINK_RE =
+    /\b(innerHTML|outerHTML|insertAdjacentHTML|srcdoc|createContextualFragment)\b|\bdocument\.write(ln)?\s*\(/;
+
+  const jsDir = path.join(ROOT, "public/assets/js");
+  const jsFiles = fs
+    .readdirSync(jsDir, { recursive: true })
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => path.join(jsDir, f));
+
+  for (const file of jsFiles) {
+    const code = fs
+      .readFileSync(file, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "") // вырезаем блочные комментарии
+      .replace(/^\s*\/\/.*$/gm, ""); // вырезаем строчные комментарии
+
+    assert.ok(!HTML_SINK_RE.test(code), `HTML-синк в ${file} — риск DOM-XSS`);
+  }
 
   // Решения о CAA и контексте HSTS/Secure живут в report-model.
   assert.ok(source.includes("caaState("));
@@ -309,7 +338,8 @@ test("render-result.js: экспортируемые функции и безо�
 
   // Заголовок вкладки сбрасывается только когда отчёт убран; после печати
   // вкладка остаётся с именем отчёта.
-  const pageTitleAssignments = source.match(/document\.title\s*=\s*PAGE_TITLE\b/g) || [];
+  const pageTitleAssignments =
+    source.match(/document\.title\s*=\s*PAGE_TITLE\b/g) || [];
   assert.strictEqual(
     pageTitleAssignments.length,
     1,
@@ -321,6 +351,9 @@ test("render-result.js: экспортируемые функции и безо�
   );
 
   const model = fs.readFileSync(MODEL_PATH, "utf8");
-  assert.ok(model.includes("files.critical"), "report-model.js читает files.critical");
+  assert.ok(
+    model.includes("files.critical"),
+    "report-model.js читает files.critical",
+  );
   assert.ok(model.includes("failed"), "report-model.js считает упавшие пробы");
 });
