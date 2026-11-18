@@ -20,17 +20,67 @@ const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 const BOT_UA = `CyberCheck/${pkg.version}`;
 
-// Пауза перед повтором заголовков входит в бюджет этапа.
 const RETRY_DELAY_MS = 1000;
-
-// Попытка короче 50 мс не успевает даже на TCP-хендшейк.
 const MIN_ATTEMPT_MS = 50;
+const MAX_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+function normalizeHostname(hostname) {
+  return String(hostname)
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
+}
+
+// Возвращает path + query только для того же origin.
+// Внешние хосты не преследуются.
+function sameOriginPath(location, hostname, port, protocol) {
+  if (typeof location !== "string" || !location.trim()) {
+    return null;
+  }
+
+  const scheme = protocol === "HTTPS" ? "https:" : "http:";
+
+  let target;
+
+  try {
+    const base = new URL(
+      `${scheme}//${hostHeaderFor(hostname, port)}/`
+    );
+
+    target = new URL(location, base);
+  } catch {
+    return null;
+  }
+
+  if (
+    target.protocol !== scheme ||
+    target.username ||
+    target.password
+  ) {
+    return null;
+  }
+
+  const targetPort = target.port
+    ? Number(target.port)
+    : target.protocol === "https:"
+      ? 443
+      : 80;
+
+  if (
+    normalizeHostname(target.hostname) !== normalizeHostname(hostname) ||
+    targetPort !== Number(port)
+  ) {
+    return null;
+  }
+
+  return `${target.pathname || "/"}${target.search}`;
+}
 
 // Проверяет HTTP-заголовки безопасности.
-// hasTls — результат checkSSL по этому же порту: если TLS не поднялся,
-// HTTPS-попытка заведомо провалится и только съест таймаут.
-// connectIp — IP для подключения, hostname — для SNI и Host-заголовка.
-// timeoutMs — бюджет всего этапа, deadline — дедлайн скана.
+// connectIp — заранее проверенный литеральный IP.
+// hostname используется для Host и SNI.
+// Бюджет всех запросов и redirect-хопов общий.
 function checkHeaders(
   connectIp,
   port,
@@ -49,151 +99,209 @@ function checkHeaders(
   const stage = stageDeadline(timeoutMs, deadline);
 
   return new Promise((resolve) => {
-    if (!port) return resolve({ error: true });
-    if (signal?.aborted) return resolve({ error: true });
+    if (!port || signal?.aborted) {
+      return resolve({ error: true });
+    }
 
-    const servername = net.isIP(hostname) ? undefined : hostname;
-    // Для IPv6 Host обязан быть в скобках; для нестандартного порта — с :port.
+    const servername = net.isIP(hostname)
+      ? undefined
+      : hostname;
+
     const hostHeader = hostHeaderFor(hostname, port);
 
     let settled = false;
     let retryTimer = null;
+
     const resolveOnce = (data) => {
       if (settled) return;
+
       settled = true;
+
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
       }
+
       resolve(data);
     };
 
-    const attempt = (attemptsLeft) => {
-      if (timeoutFor(timeoutMs, stage) < MIN_ATTEMPT_MS) {
+    const attempt = (
+      attemptsLeft,
+      path = "/",
+      redirectsLeft = MAX_REDIRECTS,
+      forcedProtocol = null,
+    ) => {
+      if (settled) return;
+
+      if (
+        signal?.aborted ||
+        timeoutFor(timeoutMs, stage) < MIN_ATTEMPT_MS
+      ) {
         return resolveOnce({ error: true });
       }
 
-      let failing = false;
       let retried = false;
+      let failing = false;
 
       const retryOrFail = () => {
         if (settled || retried) return;
-        retried = true;
-        if (signal?.aborted) return resolveOnce({ error: true });
 
-        const retryFits = hasBudget(stage, RETRY_DELAY_MS + MIN_ATTEMPT_MS);
+        retried = true;
+
+        if (signal?.aborted) {
+          return resolveOnce({ error: true });
+        }
+
+        const retryFits = hasBudget(
+          stage,
+          RETRY_DELAY_MS + MIN_ATTEMPT_MS
+        );
+
         if (attemptsLeft > 0 && retryFits) {
-          // Пауза перед повтором входит в тот же бюджет этапа.
           retryTimer = setTimeout(() => {
             retryTimer = null;
-            attempt(attemptsLeft - 1);
+
+            attempt(
+              attemptsLeft - 1,
+              path,
+              redirectsLeft,
+              forcedProtocol
+            );
           }, RETRY_DELAY_MS);
         } else {
           resolveOnce({ error: true });
         }
       };
 
-      const tryHttp = () => {
-        // Таймаут считается перед каждым запросом: fallback с HTTPS на HTTP
-        // не должен получать полный бюджет этапа второй раз.
-        const requestTimeout = timeoutFor(timeoutMs, stage);
-        if (requestTimeout < MIN_ATTEMPT_MS) return retryOrFail();
+      const handleResponse = (res, protocol) => {
+        const status =
+          typeof res.statusCode === "number"
+            ? res.statusCode
+            : null;
 
-        const req = http.get(
-          {
-            host: connectIp,
-            port,
-            // Одноразовый сокет: глобальный keep-alive agent иначе держал бы
-            // соединения со всеми просканированными хостами до таймаута.
-            agent: false,
-            headers: { Host: hostHeader, "User-Agent": ua },
-            timeout: requestTimeout,
-            signal,
-          },
-          (res) => {
-            try {
-              resolveOnce(parseHeaders(res.headers, "HTTP"));
-            } catch {
-              // Недоверенные заголовки не должны ронять процесс через
-              // uncaughtException: любой сбой разбора — это ошибка проверки.
-              resolveOnce({ error: true });
-            }
-            res.destroy();
-          },
-        );
-        let failed = false;
-        const done = () => {
-          if (failed || settled) return;
-          failed = true;
-          retryOrFail();
-        };
-        req.on("error", done);
-        req.on("timeout", () => {
-          req.destroy();
-          done();
-        });
+        const location = res.headers?.location;
+
+        const nextPath =
+          REDIRECT_STATUSES.has(status) && redirectsLeft > 0
+            ? sameOriginPath(
+                location,
+                hostname,
+                port,
+                protocol
+              )
+            : null;
+
+        if (nextPath) {
+          // Промежуточный редирект не участвует в оценке.
+          // Тело ответа отбрасывается.
+          res.on("error", () => {});
+          res.resume();
+
+          attempt(
+            attemptsLeft,
+            nextPath,
+            redirectsLeft - 1,
+            protocol
+          );
+
+          return;
+        }
+
+        try {
+          resolveOnce(
+            parseHeaders(res.headers, protocol, status)
+          );
+        } catch {
+          resolveOnce({ error: true });
+        }
+
+        res.destroy();
       };
 
-      const tryHttps = () => {
-        const requestTimeout = timeoutFor(timeoutMs, stage);
-        if (requestTimeout < MIN_ATTEMPT_MS) return retryOrFail();
-
-        const req = https.get(
-          {
-            host: connectIp,
-            port,
-            servername,
-            rejectUnauthorized: false,
-            agent: false,
-            headers: { Host: hostHeader, "User-Agent": ua },
-            timeout: requestTimeout,
-            signal,
-          },
-          (res) => {
-            try {
-              resolveOnce(parseHeaders(res.headers, "HTTPS"));
-            } catch {
-              resolveOnce({ error: true });
-            }
-            res.destroy();
-          },
+      const requestWithProtocol = (protocol) => {
+        const requestTimeout = timeoutFor(
+          timeoutMs,
+          stage
         );
+
+        if (requestTimeout < MIN_ATTEMPT_MS) {
+          return retryOrFail();
+        }
+
+        const options = {
+          host: connectIp,
+          port,
+          path,
+          agent: false,
+          headers: {
+            Host: hostHeader,
+            "User-Agent": ua,
+          },
+          timeout: requestTimeout,
+          signal,
+        };
+
+        const isHttps = protocol === "HTTPS";
+
+        if (isHttps) {
+          options.servername = servername;
+          options.rejectUnauthorized = false;
+        }
+
+        const client = isHttps ? https : http;
+
+        const req = client.get(options, (res) => {
+          handleResponse(res, protocol);
+        });
 
         const onFail = () => {
           if (settled || failing) return;
+
           failing = true;
-          tryHttp();
+
+          // HTTPS -> HTTP fallback допустим только
+          // для первоначального запроса.
+          if (
+            isHttps &&
+            !forcedProtocol &&
+            !signal?.aborted
+          ) {
+            requestWithProtocol("HTTP");
+          } else {
+            retryOrFail();
+          }
         };
 
         req.on("error", onFail);
+
         req.on("timeout", () => {
           req.destroy();
           onFail();
         });
       };
 
-      // Пробуем HTTPS на 443, даже если checkSSL не успел подтвердить TLS
-      if (hasTls || port === 443) {
-        tryHttps();
-      } else {
-        tryHttp();
-      }
+      const protocol =
+        forcedProtocol ||
+        (hasTls || port === 443 ? "HTTPS" : "HTTP");
+
+      requestWithProtocol(protocol);
     };
 
     attempt(retries);
   });
 }
 
-// Приводит заголовки к единому формату для фронтенда.
-// protocol — 'HTTP' или 'HTTPS', чтобы клиент видел реальную схему.
-// server нормализован в строку или null: «не указан» — это решение UI,
-// а не данные API (иначе у headers и fingerprint разные контракты).
-function parseHeaders(h, protocol) {
+// Приводит заголовки к единому формату.
+// status и location относятся к конечному ответу,
+// если same-origin редирект удалось выполнить.
+function parseHeaders(h, protocol, status = null) {
   const cookies = parseSetCookie(h["set-cookie"]);
   const security = analyzeSecurityHeaders(h);
 
   return {
     protocol,
+    status,
+    location: sanitizeHeaderText(h.location),
     server: sanitizeHeaderText(h["server"]),
     ...security,
     cookies,
@@ -201,4 +309,10 @@ function parseHeaders(h, protocol) {
   };
 }
 
-module.exports = { checkHeaders, parseHeaders, BROWSER_UA, BOT_UA };
+module.exports = {
+  checkHeaders,
+  parseHeaders,
+  BROWSER_UA,
+  BOT_UA,
+  sameOriginPath,
+};
