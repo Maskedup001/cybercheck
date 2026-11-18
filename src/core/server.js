@@ -52,6 +52,16 @@ if (process.env.NODE_ENV === "production" && !CONSENT_SECRET) {
   process.exit(1);
 }
 
+if (
+  !process.env.CONSENT_SECRET &&
+  process.env.NODE_ENV &&
+  process.env.NODE_ENV !== "development"
+) {
+  console.warn(
+    "ВНИМАНИЕ: CONSENT_SECRET не задан, токены согласия подписываются публичным dev-секретом.",
+  );
+}
+
 const SCAN_PORTS = [80, 443, 22, 3306, 8080];
 
 // Резолв с жёстким таймаутом и отменой. Гонка нужна потому, что DNS-модуль

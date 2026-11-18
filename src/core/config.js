@@ -6,6 +6,7 @@ const path = require("node:path");
 
 const PUBLIC_DIR = path.join(__dirname, "../../public");
 const PAGES = ["index.html", "legal.html", "privacy.html"];
+const ALLOWED_NODE_ENVS = new Set(["development", "production", "test"]);
 
 function fail(message) {
   console.error(`ОШИБКА: ${message}`);
@@ -64,13 +65,22 @@ function readTrustProxy(raw) {
   return value;
 }
 
+function readNodeEnv(raw) {
+  if (raw === undefined || raw === "") return undefined;
+  if (!ALLOWED_NODE_ENVS.has(raw)) {
+    fail("NODE_ENV должен быть development, production или test");
+  }
+  return raw;
+}
+
 function readConfig(env = process.env) {
+  const nodeEnv = readNodeEnv(env.NODE_ENV);
   const publicOrigin = readOrigin(env);
   const demoMode = env.DEMO_MODE === "true";
 
   // Демо-режим ослабляет SSRF-защиту, поэтому без явного development он
   // не включается, а останавливает сервис.
-  if (demoMode && env.NODE_ENV !== "development") {
+  if (demoMode && nodeEnv !== "development") {
     fail("DEMO_MODE разрешён только при NODE_ENV=development");
   }
 
@@ -78,7 +88,7 @@ function readConfig(env = process.env) {
     publicOrigin,
     publicDir: PUBLIC_DIR,
     pages: PAGES,
-    isProduction: env.NODE_ENV === "production",
+    isProduction: nodeEnv === "production",
     demoMode,
     trustProxy: readTrustProxy(env.TRUST_PROXY),
     port: readPort(env.PORT),
