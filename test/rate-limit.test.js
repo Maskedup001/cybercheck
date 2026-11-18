@@ -180,3 +180,20 @@ test("ScanLimiter: таймер чистки включается и выклю�
   limiter.stopSweeper();
   assert.strictEqual(limiter.sweeper, null);
 });
+
+test("ScanLimiter: лимит на edgeKey блокирует обход через смену ключа (XFF)", () => {
+  const limiter = new ScanLimiter({ maxPerEdge: 2, maxConcurrent: 5 });
+
+  // Два запроса с разными clientKey, но с одного edgeKey (сокета)
+  assert.strictEqual(limiter.attempt("client1", "edge1"), null);
+  assert.strictEqual(limiter.attempt("client2", "edge1"), null);
+
+  // Третий запрос с того же сокета (пусть даже с новым XFF) — блокируется
+  const denial = limiter.attempt("client3", "edge1");
+  assert.strictEqual(denial.status, 429);
+  assert.match(denial.error, /С этого сетевого адреса/);
+
+  // Завершаем один скан, место освобождается
+  limiter.finish("client1", "edge1");
+  assert.strictEqual(limiter.attempt("client3", "edge1"), null);
+});

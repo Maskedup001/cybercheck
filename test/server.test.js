@@ -196,3 +196,56 @@ test("Сервер отклоняет сканирование с поддель
   const data = await res.json();
   assert.match(data.error, /Подтверждение устарело или недействительно/);
 });
+
+test("Rate limit блокирует исчерпание пула с одного IP при подмене XFF", async (t) => {
+  const { app } = createApp({
+    publicOrigin: "http://localhost:3000",
+    publicDir: "public",
+    pages: ["index.html", "legal.html", "privacy.html"],
+    isProduction: false,
+    demoMode: true,
+    trustProxy: 1,
+  });
+
+  const server = app.listen(0);
+  const port = server.address().port;
+  const url = `http://127.0.0.1:${port}/api/scan`;
+  t.after(() => server.close());
+
+  const payload = {
+    url: "http://localhost",
+    consent: true,
+    consentToken: issueConsentToken(),
+  };
+
+  const makeReq = (xff) =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": xff,
+      },
+      body: JSON.stringify(payload),
+    });
+
+  // Отправляем 3 запроса одновременно с разными XFF, но с одного сокета (127.0.0.1)
+  const results = await Promise.all([
+    makeReq("1.1.1.1"),
+    makeReq("2.2.2.2"),
+    makeReq("3.3.3.3"),
+  ]);
+
+  const statuses = results.map((r) => r.status);
+
+  // Два запроса должны пройти (или упасть с другой ошибкой), а один должен получить 429 по edge-лимиту
+  const denied = results.filter((r) => r.status === 429);
+
+  assert.strictEqual(
+    denied.length,
+    1,
+    `Один из запросов должен быть заблокирован, пришли статусы: ${statuses.join(", ")}`,
+  );
+
+  const errorData = await denied[0].json();
+  assert.match(errorData.error, /С этого сетевого адреса/);
+});
