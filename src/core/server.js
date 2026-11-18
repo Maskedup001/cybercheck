@@ -762,8 +762,34 @@ function startServer(config) {
   server.headersTimeout = 10_000;
   server.requestTimeout = 15_000;
   server.keepAliveTimeout = 5_000;
-  server.maxConnections = 500;
+
+  // Потолок сокетов поднят до 4096, чтобы один хост не забивал весь пул.
+  server.maxConnections = 4096;
   server.maxRequestsPerSocket = 100;
+
+  // Если прокси не используется, ограничиваем число сокетов с одного IP,
+  // чтобы защититься от idle-соединений и DoS-атак.
+  if (!config.trustProxy) {
+    const MAX_SOCKETS_PER_IP = 64;
+    const socketsByIp = new Map();
+
+    server.on("connection", (socket) => {
+      const ip = socket.remoteAddress || "unknown";
+      const open = socketsByIp.get(ip) || 0;
+
+      if (open >= MAX_SOCKETS_PER_IP) {
+        socket.destroy();
+        return;
+      }
+
+      socketsByIp.set(ip, open + 1);
+      socket.once("close", () => {
+        const left = (socketsByIp.get(ip) || 1) - 1;
+        if (left <= 0) socketsByIp.delete(ip);
+        else socketsByIp.set(ip, left);
+      });
+    });
+  }
 
   // Graceful shutdown (корректное завершение при SIGTERM/SIGINT)
   for (const sig of ["SIGTERM", "SIGINT"]) {
