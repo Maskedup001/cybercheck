@@ -7,7 +7,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const { checkPort } = require("../probes/ports");
 const { checkSSL } = require("../probes/tls");
-const { checkHeaders } = require("../probes/http-headers");
+const { checkHeaders, BROWSER_UA, BOT_UA } = require("../probes/http-headers");
 const { resolvePublicIps } = require("./net-guard");
 const { checkDnsSecurity } = require("../probes/dns-security");
 const { ScanLimiter } = require("../utils/rate-limit");
@@ -169,6 +169,23 @@ function clientIdentity(req, trustProxy) {
     clientKey: net.isIP(candidate) ? rateKey(candidate) : edgeKey,
     rawIp: candidate,
   };
+}
+
+// Возвращает строковую сигнатуру полей безопасности для сравнения ответов
+// при разных User-Agent (обнаружение клоакинга).
+function securitySignature(headers) {
+  if (!headers || headers.error) return null;
+  return JSON.stringify([
+    headers.hstsState,
+    headers.cspState,
+    headers.xframeState,
+    headers.xcontentState,
+    headers.referrerPolicyState,
+    headers.permissionsPolicyState,
+    headers.coopState,
+    headers.corsWildcard,
+    headers.cookieSummary,
+  ]);
 }
 
 // Собирает Express-приложение и лимитер, но ничего не слушает: так HTTP-слой
@@ -543,6 +560,7 @@ function createApp(config) {
           let bestHeaders = { error: true };
           let bestPort = availableWebPorts[0];
           let bestPortTls = false;
+          let cloaking = false;
 
           for (const wp of availableWebPorts) {
             ensureBudget();
@@ -570,6 +588,7 @@ function createApp(config) {
             if (wp === bestPort) bestPortTls = Boolean(ssl.hasSSL);
             if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
+            // Основная проверка от лица браузера, чтобы WAF не подменял ответ
             const headers = await checkHeaders(
               connectIpToUse,
               wp,
@@ -579,6 +598,7 @@ function createApp(config) {
               Boolean(ssl.hasSSL),
               budget(HEADERS_TIMEOUT_MS),
               deadline,
+              BROWSER_UA,
             );
 
             if (!headers.error) {
@@ -586,6 +606,29 @@ function createApp(config) {
               bestPort = wp;
               bestPortTls = Boolean(ssl.hasSSL);
               if (!bestSsl.hasSSL && !bestSsl.error) bestSsl = ssl;
+
+              // Контрольный запрос от лица сканера для выявления клоакинга
+              const headersBot = await checkHeaders(
+                connectIpToUse,
+                wp,
+                hostname,
+                0,
+                signal,
+                Boolean(ssl.hasSSL),
+                budget(HEADERS_TIMEOUT_MS),
+                deadline,
+                BOT_UA,
+              );
+
+              const browserSig = securitySignature(headers);
+              const botSig = securitySignature(headersBot);
+              if (
+                browserSig !== null &&
+                botSig !== null &&
+                browserSig !== botSig
+              ) {
+                cloaking = true;
+              }
               break;
             } else if (wp === 443) {
               bestSsl = ssl;
@@ -672,6 +715,7 @@ function createApp(config) {
             files,
             securityTxt,
             fingerprint,
+            cloaking,
           });
         },
         SCAN_BUDGET_MS,

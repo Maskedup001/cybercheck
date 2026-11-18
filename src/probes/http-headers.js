@@ -16,7 +16,9 @@ const {
   hasBudget,
 } = require("../utils/scan-helpers");
 
-const UA = `CyberCheck/${pkg.version}`;
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
+const BOT_UA = `CyberCheck/${pkg.version}`;
 
 // Пауза перед повтором заголовков входит в бюджет этапа.
 const RETRY_DELAY_MS = 1000;
@@ -38,6 +40,7 @@ function checkHeaders(
   hasTls = true,
   timeoutMs = 5000,
   deadline = null,
+  ua = BROWSER_UA,
 ) {
   if (!isLiteralIp(connectIp)) {
     return Promise.resolve({ error: true });
@@ -78,10 +81,7 @@ function checkHeaders(
         retried = true;
         if (signal?.aborted) return resolveOnce({ error: true });
 
-        const retryFits = hasBudget(
-          stage,
-          RETRY_DELAY_MS + MIN_ATTEMPT_MS,
-        );
+        const retryFits = hasBudget(stage, RETRY_DELAY_MS + MIN_ATTEMPT_MS);
         if (attemptsLeft > 0 && retryFits) {
           // Пауза перед повтором входит в тот же бюджет этапа.
           retryTimer = setTimeout(() => {
@@ -106,8 +106,7 @@ function checkHeaders(
             // Одноразовый сокет: глобальный keep-alive agent иначе держал бы
             // соединения со всеми просканированными хостами до таймаута.
             agent: false,
-            // Используем hostHeader и актуальную версию UA
-            headers: { Host: hostHeader, "User-Agent": UA },
+            headers: { Host: hostHeader, "User-Agent": ua },
             timeout: requestTimeout,
             signal,
           },
@@ -146,8 +145,7 @@ function checkHeaders(
             servername,
             rejectUnauthorized: false,
             agent: false,
-            // Используем hostHeader и актуальную версию UA
-            headers: { Host: hostHeader, "User-Agent": UA },
+            headers: { Host: hostHeader, "User-Agent": ua },
             timeout: requestTimeout,
             signal,
           },
@@ -203,4 +201,4 @@ function parseHeaders(h, protocol) {
   };
 }
 
-module.exports = { checkHeaders, parseHeaders };
+module.exports = { checkHeaders, parseHeaders, BROWSER_UA, BOT_UA };

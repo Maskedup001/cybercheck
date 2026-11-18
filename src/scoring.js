@@ -229,6 +229,19 @@ function calculateScore(report) {
     findings.push({ owasp: OWASP.misconfig, ...finding });
   };
 
+  if (input.cloaking) {
+    add({
+      id: "cloaking-detected",
+      title: "Цель по-разному отвечает сканеру и браузеру",
+      desc: "Набор security-заголовков зависит от User-Agent: оценка построена по ответу для браузера, но цель может подменять защиту.",
+      severity: "high",
+      weight: 0,
+      recommendation:
+        "Проверьте конфигурацию WAF/anti-bot: ответ не должен зависеть от клиента.",
+      owasp: OWASP.misconfig,
+    });
+  }
+
   // --- TLS / сертификат -----------------------------------------------------
   if (hasSSL) {
     score += WEIGHTS.ssl;
@@ -412,7 +425,11 @@ function calculateScore(report) {
       });
     }
 
-    if (/(?:^|[\s/])\d+(?:\.\d+)*/.test(typeof h.server === "string" ? h.server : "")) {
+    if (
+      /(?:^|[\s/])\d+(?:\.\d+)*/.test(
+        typeof h.server === "string" ? h.server : "",
+      )
+    ) {
       add({
         id: "server-exposed",
         title: "Раскрыт Server",
@@ -436,29 +453,40 @@ function calculateScore(report) {
       return 0;
     };
 
-    score += headerCheck(h.referrerPolicy, h.referrerPolicyState, WEIGHTS.referrer, {
-      id: "no-referrer-policy",
-      weakId: "weak-referrer-policy",
-      title: "Нет Referrer-Policy",
-      weakTitle: "Referrer-Policy не защищает",
-      desc: "Браузер может передавать полный URL во внешние ресурсы через Referer.",
-      weakDesc:
-        "Referrer-Policy задаёт unsafe-url или неизвестное значение — полный URL утекает во внешние ресурсы.",
-      severity: "low",
-      recommendation: "Добавьте Referrer-Policy: strict-origin-when-cross-origin.",
-    });
+    score += headerCheck(
+      h.referrerPolicy,
+      h.referrerPolicyState,
+      WEIGHTS.referrer,
+      {
+        id: "no-referrer-policy",
+        weakId: "weak-referrer-policy",
+        title: "Нет Referrer-Policy",
+        weakTitle: "Referrer-Policy не защищает",
+        desc: "Браузер может передавать полный URL во внешние ресурсы через Referer.",
+        weakDesc:
+          "Referrer-Policy задаёт unsafe-url или неизвестное значение — полный URL утекает во внешние ресурсы.",
+        severity: "low",
+        recommendation:
+          "Добавьте Referrer-Policy: strict-origin-when-cross-origin.",
+      },
+    );
 
-    score += headerCheck(h.permissionsPolicy, h.permissionsPolicyState, WEIGHTS.permissions, {
-      id: "no-permissions-policy",
-      weakId: "no-permissions-policy",
-      title: "Нет Permissions-Policy",
-      weakTitle: "Нет Permissions-Policy",
-      desc: "Браузерные API (камера, микрофон, геолокация) не ограничены заголовком.",
-      weakDesc:
-        "Браузерные API (камера, микрофон, геолокация) не ограничены заголовком.",
-      severity: "low",
-      recommendation: "Добавьте Permissions-Policy и отключите ненужные API.",
-    });
+    score += headerCheck(
+      h.permissionsPolicy,
+      h.permissionsPolicyState,
+      WEIGHTS.permissions,
+      {
+        id: "no-permissions-policy",
+        weakId: "no-permissions-policy",
+        title: "Нет Permissions-Policy",
+        weakTitle: "Нет Permissions-Policy",
+        desc: "Браузерные API (камера, микрофон, геолокация) не ограничены заголовком.",
+        weakDesc:
+          "Браузерные API (камера, микрофон, геолокация) не ограничены заголовком.",
+        severity: "low",
+        recommendation: "Добавьте Permissions-Policy и отключите ненужные API.",
+      },
+    );
 
     score += headerCheck(h.coop, h.coopState, WEIGHTS.coop, {
       id: "no-coop",
@@ -610,7 +638,8 @@ function calculateScore(report) {
         desc: "В TXT-записях домена больше одного v=spf1. По RFC 7208 это permerror: проверка SPF не проходит.",
         severity: "medium",
         weight: WEIGHTS.spf,
-        recommendation: "Оставьте ровно одну TXT-запись v=spf1 и перенесите в неё все include.",
+        recommendation:
+          "Оставьте ровно одну TXT-запись v=spf1 и перенесите в неё все include.",
         owasp: OWASP.auth,
       });
     } else if (spf.present && spf.weak) {
@@ -620,7 +649,8 @@ function calculateScore(report) {
         desc: "SPF разрешает отправку писем от имени домена всем (+all/?all) или не содержит механизмов.",
         severity: "medium",
         weight: WEIGHTS.spf,
-        recommendation: "Замените +all на -all и перечислите только доверенных отправителей.",
+        recommendation:
+          "Замените +all на -all и перечислите только доверенных отправителей.",
         owasp: OWASP.auth,
       });
     } else if (spf.present) {
@@ -632,7 +662,8 @@ function calculateScore(report) {
         desc: "В TXT-записях домена нет v=spf1 — письма можно подделывать от имени домена.",
         severity: "medium",
         weight: WEIGHTS.spf,
-        recommendation: "Добавьте TXT-запись v=spf1 с разрешёнными отправителями.",
+        recommendation:
+          "Добавьте TXT-запись v=spf1 с разрешёнными отправителями.",
         owasp: OWASP.auth,
       });
     } else {
@@ -649,7 +680,8 @@ function calculateScore(report) {
         desc: "В _dmarc опубликовано больше одной v=DMARC1. По RFC 7489 такие записи не применяются: политика не действует.",
         severity: "medium",
         weight: WEIGHTS.dmarc,
-        recommendation: "Оставьте ровно одну _dmarc-запись с политикой p=quarantine или p=reject.",
+        recommendation:
+          "Оставьте ровно одну _dmarc-запись с политикой p=quarantine или p=reject.",
         owasp: OWASP.auth,
       });
     } else if (dmarc.present) {
@@ -674,7 +706,8 @@ function calculateScore(report) {
           desc: "DMARC-запись есть, но политика p не распознана или отсутствует.",
           severity: "medium",
           weight: WEIGHTS.dmarc,
-          recommendation: "Укажите p=none, p=quarantine или p=reject в _dmarc-записи.",
+          recommendation:
+            "Укажите p=none, p=quarantine или p=reject в _dmarc-записи.",
           owasp: OWASP.auth,
         });
       }
@@ -685,7 +718,8 @@ function calculateScore(report) {
         desc: "Нет TXT-записи _dmarc — домен не защищён от подделки писем.",
         severity: "medium",
         weight: WEIGHTS.dmarc,
-        recommendation: "Добавьте _dmarc с политикой p=quarantine или p=reject.",
+        recommendation:
+          "Добавьте _dmarc с политикой p=quarantine или p=reject.",
         owasp: OWASP.auth,
       });
     } else {
@@ -730,8 +764,7 @@ function calculateScore(report) {
   let filesCap = 100;
 
   if (!files) {
-    score +=
-      WEIGHTS.env + WEIGHTS.git + WEIGHTS.backup + WEIGHTS.dsStore;
+    score += WEIGHTS.env + WEIGHTS.git + WEIGHTS.backup + WEIGHTS.dsStore;
   } else {
     const exposed = exposedPaths(files);
 
