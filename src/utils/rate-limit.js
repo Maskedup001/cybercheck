@@ -6,6 +6,7 @@ const DEFAULT_COOLDOWN_MS = 10_000;
 const DEFAULT_MAX_KEYS = 10_000;
 const DEFAULT_MAX_CONCURRENT = 25;
 const DEFAULT_MAX_PER_KEY = 1;
+const DEFAULT_MAX_PER_EDGE = 2; // Защита от исчерпания пула поддельными XFF-заголовками
 const DEFAULT_SWEEP_INTERVAL_MS = 30_000;
 
 // Сколько ждать после скана: Retry-After для 429 «повторный скан».
@@ -23,12 +24,12 @@ class CooldownGate {
       now = Date.now,
     } = options;
 
-    this.cooldownMs = Number.isFinite(cooldownMs) && cooldownMs >= 0
-      ? cooldownMs
-      : DEFAULT_COOLDOWN_MS;
-    this.maxKeys = Number.isInteger(maxKeys) && maxKeys > 0
-      ? maxKeys
-      : DEFAULT_MAX_KEYS;
+    this.cooldownMs =
+      Number.isFinite(cooldownMs) && cooldownMs >= 0
+        ? cooldownMs
+        : DEFAULT_COOLDOWN_MS;
+    this.maxKeys =
+      Number.isInteger(maxKeys) && maxKeys > 0 ? maxKeys : DEFAULT_MAX_KEYS;
     this.now = typeof now === "function" ? now : Date.now;
     this.entries = new Map();
   }
@@ -82,22 +83,30 @@ class ScanLimiter {
     const {
       maxConcurrent = DEFAULT_MAX_CONCURRENT,
       maxPerKey = DEFAULT_MAX_PER_KEY,
+      maxPerEdge = DEFAULT_MAX_PER_EDGE,
       cooldownMs = DEFAULT_COOLDOWN_MS,
       maxKeys = DEFAULT_MAX_KEYS,
       now = Date.now,
     } = options;
 
-    this.maxConcurrent = Number.isInteger(maxConcurrent) && maxConcurrent > 0
-      ? maxConcurrent
-      : DEFAULT_MAX_CONCURRENT;
-    this.maxPerKey = Number.isInteger(maxPerKey) && maxPerKey > 0
-      ? maxPerKey
-      : DEFAULT_MAX_PER_KEY;
+    this.maxConcurrent =
+      Number.isInteger(maxConcurrent) && maxConcurrent > 0
+        ? maxConcurrent
+        : DEFAULT_MAX_CONCURRENT;
+    this.maxPerKey =
+      Number.isInteger(maxPerKey) && maxPerKey > 0
+        ? maxPerKey
+        : DEFAULT_MAX_PER_KEY;
+    this.maxPerEdge =
+      Number.isInteger(maxPerEdge) && maxPerEdge > 0
+        ? maxPerEdge
+        : DEFAULT_MAX_PER_EDGE;
     this.now = typeof now === "function" ? now : Date.now;
     this.cooldown = new CooldownGate({ cooldownMs, maxKeys, now: this.now });
 
     this.activeScans = 0;
     this.activeByKey = new Map();
+    this.activeByEdge = new Map();
     this.sweeper = null;
   }
 
@@ -111,12 +120,22 @@ class ScanLimiter {
 
   // Пропускает скан или объясняет отказ. null — можно сканировать,
   // иначе { status, retryAfter, error } для прямого ответа клиенту.
-  attempt(key) {
+  attempt(key, edgeKey = key) {
     if (this.activeScans >= this.maxConcurrent) {
       return {
         status: 503,
         retryAfter: RETRY_AFTER_CONCURRENT,
         error: "Сервис занят, попробуй через минуту",
+      };
+    }
+
+    const edgeActive = this.activeByEdge.get(edgeKey) || 0;
+    if (edgeActive >= this.maxPerEdge) {
+      return {
+        status: 429,
+        retryAfter: RETRY_AFTER_PER_KEY,
+        error:
+          "С этого сетевого адреса уже идёт сканирование, дождись результата",
       };
     }
 
@@ -140,6 +159,7 @@ class ScanLimiter {
 
     this.activeScans += 1;
     this.activeByKey.set(key, active + 1);
+    this.activeByEdge.set(edgeKey, edgeActive + 1);
     return null;
   }
 
@@ -149,7 +169,7 @@ class ScanLimiter {
   // каждый такой запрос уже сходил в резолвер. Плюс 429 говорит, сколько
   // ждать, и валидация (400 «Некорректный адрес») до лимита не доходит,
   // поэтому опечатка в адресе кулдаун не включает.
-  finish(key) {
+  finish(key, edgeKey = key) {
     this.cooldown.touch(key);
 
     this.activeScans = Math.max(0, this.activeScans - 1);
@@ -157,6 +177,10 @@ class ScanLimiter {
     const perKey = (this.activeByKey.get(key) || 0) - 1;
     if (perKey > 0) this.activeByKey.set(key, perKey);
     else this.activeByKey.delete(key);
+
+    const perEdge = (this.activeByEdge.get(edgeKey) || 0) - 1;
+    if (perEdge > 0) this.activeByEdge.set(edgeKey, perEdge);
+    else this.activeByEdge.delete(edgeKey);
   }
 
   // Периодическая чистка истёкших записей. unref: таймер не держит процесс.

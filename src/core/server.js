@@ -314,7 +314,7 @@ function createApp(config) {
   limiter.startSweeper(30_000);
 
   app.post("/api/scan", async (req, res) => {
-    const { clientKey, rawIp } = clientIdentity(req, trustProxy);
+    const { clientKey, edgeKey, rawIp } = clientIdentity(req, trustProxy);
 
     // Сначала валидация, чтобы мусорные запросы не жгли лимит.
     // req.body может быть undefined (не-JSON Content-Type): destructuring
@@ -368,7 +368,7 @@ function createApp(config) {
     // на 10 секунд. Ключ считается по IP, а не по цели: иначе лимит обходился
     // бы сменой домена.
     const key = clientKey;
-    const denial = limiter.attempt(key);
+    const denial = limiter.attempt(key, edgeKey);
     if (denial) {
       res.set("Retry-After", String(denial.retryAfter));
       return res.status(denial.status).json({ error: denial.error });
@@ -694,7 +694,7 @@ function createApp(config) {
       // Отпускаем лимит на любом исходе: семафор не должен «течь», если скан
       // упал или клиент оборвал соединение. finish() же ставит кулдаун —
       // осознанно и для неуспешных сканов (см. комментарий в rate-limit.js).
-      limiter.finish(key);
+      limiter.finish(key, edgeKey);
 
       res.off("close", onClose);
     }
