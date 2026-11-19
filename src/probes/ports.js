@@ -16,8 +16,16 @@ const MIN_ATTEMPT_MS = 50;
 // Проверяет, открыт ли указанный порт.
 // connectIp — уже проверенный IP-адрес (не hostname!), это важно для SSRF-защиты.
 // timeoutMs — бюджет всего этапа (все попытки вместе), deadline — дедлайн
-// скана. Если соединение установилось — порт открыт. Таймаут или ошибка —
-// порт закрыт.
+// скана.
+//
+// Статусы:
+//   open     — TCP-соединение установилось;
+//   refused  — RST (ECONNREFUSED): доказано, что слушателя на порту нет;
+//   filtered — таймаут/DROP или сетевая ошибка (EACCES, EHOSTUNREACH,
+//              ETIMEDOUT, ECONNRESET): состояние порта неизвестно, пакет мог
+//              отбросить firewall;
+//   closed   — только локальный отказ до сети (невалидный IP, отмена signal,
+//              исчерпанный бюджет). Про удалённый хост это ничего не говорит.
 function checkPort(
   connectIp,
   port,
@@ -58,6 +66,10 @@ function checkPort(
 
       const socket = new net.Socket();
       let status = "closed";
+      // Быстрый сбой (не таймаут) иногда проходит со второй попытки;
+      // таймаут уже израсходовал бюджет попытки, и повтор только отнимет
+      // время у следующих портов.
+      let retryableFailure = false;
 
       const onAbort = () => {
         socket.destroy();
@@ -70,10 +82,21 @@ function checkPort(
         status = "open";
         socket.destroy();
       });
-      socket.on("timeout", () => socket.destroy());
+      socket.on("timeout", () => {
+        status = "filtered";
+        retryableFailure = false;
+        socket.destroy();
+      });
       socket.on("error", (err) => {
-        // При явном отказе ретрай бессмыслен
-        if (err.code === "ECONNREFUSED") status = "refused";
+        // При явном отказе ретрай бессмыслен: RST уже доказал отсутствие
+        // слушателя. Любая другая ошибка — неизвестность, но быстрая:
+        // повторить её имеет смысл, если на ретрай остался бюджет.
+        if (err.code === "ECONNREFUSED") {
+          status = "refused";
+        } else {
+          status = "filtered";
+          retryableFailure = true;
+        }
       });
       socket.on("close", () => {
         if (signal) signal.removeEventListener("abort", onAbort);
@@ -85,7 +108,7 @@ function checkPort(
           stage,
           RETRY_DELAY_MS + MIN_ATTEMPT_MS,
         );
-        if (status === "closed" && attemptsLeft > 0 && retryFits) {
+        if (retryableFailure && attemptsLeft > 0 && retryFits) {
           retryTimer = setTimeout(() => {
             retryTimer = null;
             attempt(attemptsLeft - 1);

@@ -25,6 +25,10 @@ const MIN_ATTEMPT_MS = 50;
 const MAX_REDIRECTS = 3;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+// Тело читается только ради CSP в <meta http-equiv>: заголовки уже описывают
+// ответ, поэтому 64 КБ достаточно, а больший лимит тянул бы трафик впустую.
+const MAX_HEADERS_BODY = 65536;
+
 function normalizeHostname(hostname) {
   return String(hostname)
     .toLowerCase()
@@ -143,6 +147,40 @@ function checkHeaders(
       let retried = false;
       let failing = false;
 
+      // Заголовки и тело уже полученного ответа. Нужны, чтобы таймаут на
+      // теле не стирал результат: статус и заголовки — основная часть
+      // отчёта, тело — только дополнительный источник CSP.
+      let gotHeaders = false;
+      let responseDone = false;
+      let responseStatus = null;
+      let responseHeaders = {};
+      let responseRawHeaders = [];
+      let responseProtocol = null;
+      let responseChunks = [];
+      let responseTotal = 0;
+
+      const readResponseBody = () =>
+        Buffer.concat(responseChunks, responseTotal).toString("utf8");
+
+      const finishResponse = () => {
+        if (responseDone) return;
+        responseDone = true;
+
+        try {
+          resolveOnce(
+            parseHeaders(
+              responseHeaders,
+              responseProtocol,
+              responseStatus,
+              responseRawHeaders,
+              readResponseBody()
+            )
+          );
+        } catch {
+          resolveOnce({ error: true });
+        }
+      };
+
       const retryOrFail = () => {
         if (settled || retried) return;
 
@@ -207,15 +245,38 @@ function checkHeaders(
           return;
         }
 
-        try {
-          resolveOnce(
-            parseHeaders(res.headers, protocol, status)
-          );
-        } catch {
-          resolveOnce({ error: true });
-        }
+        gotHeaders = true;
+        responseStatus = status;
+        responseHeaders = res.headers || {};
+        responseRawHeaders = Array.isArray(res.rawHeaders) ? res.rawHeaders : [];
+        responseProtocol = protocol;
 
-        res.destroy();
+        // CSP может прийти только в <meta>, поэтому тело дочитывается до
+        // конца (но не больше лимита). Любая ошибка чтения не отменяет уже
+        // полученные заголовки — результат отдаётся finishResponse().
+        res.on("data", (chunk) => {
+          if (responseDone) return;
+
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          const remaining = MAX_HEADERS_BODY - responseTotal;
+          if (remaining <= 0) return;
+
+          if (buf.length >= remaining) {
+            responseChunks.push(buf.subarray(0, remaining));
+            responseTotal += remaining;
+            // Лимит достигнут: дальше читать незачем, но заголовки и
+            // прочитанное тело уже есть.
+            finishResponse();
+            res.destroy();
+            return;
+          }
+
+          responseChunks.push(buf);
+          responseTotal += buf.length;
+        });
+        res.on("end", finishResponse);
+        res.on("error", finishResponse);
+        res.on("aborted", finishResponse);
       };
 
       const requestWithProtocol = (protocol) => {
@@ -259,6 +320,13 @@ function checkHeaders(
 
           failing = true;
 
+          // Заголовки уже получены: тело могло оборваться или не дочитаться
+          // за остаток бюджета, но отчёт по заголовкам всё равно нужен.
+          if (gotHeaders) {
+            finishResponse();
+            return;
+          }
+
           // HTTPS -> HTTP fallback допустим только
           // для первоначального запроса.
           if (
@@ -294,9 +362,11 @@ function checkHeaders(
 // Приводит заголовки к единому формату.
 // status и location относятся к конечному ответу,
 // если same-origin редирект удалось выполнить.
-function parseHeaders(h, protocol, status = null) {
+// rawHeaders — res.rawHeaders (несколько CSP/XFO — несколько политик),
+// body — прочитанное тело GET / для CSP в <meta>.
+function parseHeaders(h, protocol, status = null, rawHeaders = [], body = "") {
   const cookies = parseSetCookie(h["set-cookie"]);
-  const security = analyzeSecurityHeaders(h);
+  const security = analyzeSecurityHeaders(h, rawHeaders, body);
 
   return {
     protocol,

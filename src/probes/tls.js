@@ -21,13 +21,18 @@ const MIN_ATTEMPT_MS = 50;
 
 // Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1).
 // timeoutMs — остаток бюджета этапа TLS, а не фиксированные 3 секунды.
+//
+// Возвращает true (старые протоколы принимаются), false (сервер их отверг)
+// или null — «проверить не удалось»: отмена, нехватка бюджета, таймаут.
+// null нельзя трактовать как false: «не успели» и «не поддерживает» — разные
+// утверждения, и отчёт не должен выдавать одно за другое.
 function checkOldTls(connectIp, port, hostname, signal, timeoutMs) {
   return new Promise((resolve) => {
-    if (signal?.aborted) return resolve(false);
+    if (signal?.aborted) return resolve(null);
 
     // timeoutMs уже ограничен остатком бюджета этапа TLS.
     const budget = Number.isFinite(timeoutMs) ? timeoutMs : OLD_TLS_TIMEOUT_MS;
-    if (budget < MIN_ATTEMPT_MS) return resolve(false);
+    if (budget < MIN_ATTEMPT_MS) return resolve(null);
 
     const servername = net.isIP(hostname) ? undefined : hostname;
 
@@ -59,29 +64,32 @@ function checkOldTls(connectIp, port, hostname, signal, timeoutMs) {
         },
       );
     } catch {
-      return resolve(false);
+      // Соединение не удалось даже начать — это неизвестность, а не отказ
+      // сервера от старых протоколов.
+      return resolve(null);
     }
 
     // Обработчик ошибок вешаем до проверки abort: destroy() на уже
     // отменённом сигнале может породить error, который нельзя оставлять
-    // без слушателя.
+    // без слушателя. Ошибка рукопожатия — доказательство, что старый
+    // протокол отвергнут.
     socket.on("error", () => finish(false));
 
     if (signal) {
       onAbort = () => {
         socket.destroy();
-        finish(false);
+        finish(null);
       };
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) {
         socket.destroy();
-        return finish(false);
+        return finish(null);
       }
     }
 
     socket.setTimeout(budget, () => {
       socket.destroy();
-      finish(false);
+      finish(null);
     });
   });
 }
@@ -103,6 +111,11 @@ async function checkSSL(
   if (!isLiteralIp(connectIp)) {
     return { hasSSL: false, error: "INVALID_CONNECT_IP" };
   }
+  // Отмена до начала работы — локальный отказ: код должен отличаться от
+  // сетевой ошибки, иначе вызывающий не поймёт, что скан отменён.
+  if (signal?.aborted) {
+    return { hasSSL: false, error: "ABORTED" };
+  }
 
   const stage = stageDeadline(timeoutMs, deadline);
 
@@ -119,12 +132,17 @@ async function checkSSL(
     const attempt = (attemptsLeft) => {
       const attemptTimeout = timeoutFor(timeoutMs, stage);
       if (attemptTimeout < MIN_ATTEMPT_MS) {
-        return settle({ hasSSL: false, error: "HANDSHAKE_FAILED" });
+        // Бюджета нет вовсе: соединение не начиналось, и это не ошибка
+        // рукопожатия — такой же таймаут скана.
+        return settle({ hasSSL: false, error: "TIMEOUT" });
       }
 
       let settled = false;
       let mainSucceeded = false;
       let attemptFailed = false;
+      // Причина текущего сбоя: без этого все отказы выглядели одинаково,
+      // и отчёт не мог отличить таймаут от ошибки рукопожатия.
+      let timedOut = false;
       const finish = (data) => {
         if (settled) return;
         settled = true;
@@ -135,7 +153,7 @@ async function checkSSL(
         attemptFailed = true;
 
         if (signal?.aborted) {
-          return finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
+          return finish({ hasSSL: false, error: "ABORTED" });
         }
 
         const retryFits = hasBudget(stage, RETRY_DELAY_MS + MIN_ATTEMPT_MS);
@@ -145,7 +163,10 @@ async function checkSSL(
             attempt(attemptsLeft - 1);
           }, RETRY_DELAY_MS);
         } else {
-          finish({ hasSSL: false, error: "HANDSHAKE_FAILED" });
+          finish({
+            hasSSL: false,
+            error: timedOut ? "TIMEOUT" : "HANDSHAKE_FAILED",
+          });
         }
       };
 
@@ -197,16 +218,20 @@ async function checkSSL(
 
               // Старые протоколы проверяются только на остаток бюджета этапа:
               // иначе успешный хендшейк добавлял к этапу фиксированные 3 с.
-              let supportsOldTls = false;
+              // null — «не проверялось» (нет бюджета/таймаут), это НЕ
+              // «не поддерживает»: иначе отчёт молча выдавал бы неизвестность
+              // за проверенный факт.
+              let supportsOldTls = null;
               if (hasBudget(stage, OLD_TLS_MIN_MS)) {
                 try {
-                  supportsOldTls = await checkOldTls(
+                  const oldTls = await checkOldTls(
                     connectIp,
                     port,
                     hostname,
                     signal,
                     timeoutFor(OLD_TLS_TIMEOUT_MS, stage),
                   );
+                  if (typeof oldTls === "boolean") supportsOldTls = oldTls;
                 } catch (e) {}
               }
 
@@ -246,6 +271,7 @@ async function checkSSL(
 
       socket.on("error", onError);
       socket.setTimeout(attemptTimeout, () => {
+        timedOut = true;
         socket.destroy();
         onError();
       });

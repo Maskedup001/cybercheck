@@ -135,6 +135,28 @@ function cspIsRestrictive(value) {
   return !hasPermissive;
 }
 
+// frame-ancestors (CSP2) ограничивает встраивание страницы в чужой фрейм,
+// то есть закрывает кликджекинг без X-Frame-Options. Значение ограничивает,
+// только если это не wildcard и не схема без хоста: `frame-ancestors *`
+// разрешает встраивание кому угодно. 'none' и 'self' — ограничение.
+function cspFrameAncestorsRestricts(value) {
+  if (typeof value !== "string" || value.trim() === "") return false;
+
+  const directives = value
+    .split(";")
+    .map((directive) => directive.trim())
+    .filter(Boolean);
+  const sources = directiveSources(directives, "frame-ancestors");
+  if (sources === null || sources.length === 0) return false;
+
+  // 'none' действует только в одиночку: рядом с другими источниками браузер
+  // его игнорирует (CSP3).
+  const meaningful = sources.filter((source) => source !== "'none'");
+  if (meaningful.length === 0) return true;
+
+  return !meaningful.some((source) => isPermissiveCspSource(source));
+}
+
 // Permissions-Policy защищает, только если значение реально ограничивает
 // API. `camera=*` и директива без значения разрешают всё, `camera=()` —
 // запрещает, `camera=(self)` — сужает до своего origin.
@@ -175,6 +197,35 @@ function headerValue(headers, name) {
   const text = Array.isArray(raw) ? raw.join(", ") : String(raw);
   const trimmed = text.trim();
   return trimmed === "" ? null : trimmed;
+}
+
+// Значения одного заголовка из res.rawHeaders — плоского массива
+// [name, value, name, value, ...]. Node склеивает повторяющиеся заголовки
+// через ", ", и для CSP/XFO такая склейка ломает смысл: каждый экземпляр —
+// отдельная политика, а не одно значение.
+function headerValues(rawHeaders, name) {
+  const values = [];
+  if (!Array.isArray(rawHeaders)) return values;
+
+  const lower = String(name).toLowerCase();
+  for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+    if (String(rawHeaders[i]).toLowerCase() === lower) {
+      values.push(String(rawHeaders[i + 1]));
+    }
+  }
+  return values;
+}
+
+// Все значения заголовка: сначала из rawHeaders (по одному на экземпляр),
+// иначе — одно значение из headers. Пустые значения отбрасываются.
+function headerValueList(headers, rawHeaders, name) {
+  const raw = headerValues(rawHeaders, name)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (raw.length > 0) return raw;
+
+  const value = headerValue(headers, name);
+  return value === null ? [] : [value];
 }
 
 // Имена cookie в нижнем регистре — для сравнения без учёта регистра.
@@ -243,6 +294,31 @@ function hasGeneratorMeta(html, value) {
     }
   }
   return false;
+}
+
+// CSP из <meta http-equiv="Content-Security-Policy" content="...">.
+// Такую политику браузер применяет наравне с заголовком, поэтому без неё
+// отчёт называл бы защищённую страницу «без CSP». Атрибуты разбираются тем
+// же построчным парсером, что и generator: без вложенных квантификаторов.
+// frame-ancestors в meta не работает (CSP2), поэтому на кликджекинг эта
+// политика не влияет.
+function metaCspPolicies(html) {
+  if (typeof html !== "string" || html === "") return [];
+
+  const policies = [];
+  META_TAG_RE.lastIndex = 0;
+  let tag;
+  while ((tag = META_TAG_RE.exec(html)) !== null) {
+    const attrs = parseTagAttributes(tag[0]);
+    const httpEquiv = (attrs.get("http-equiv") || "").trim().toLowerCase();
+    if (httpEquiv !== "content-security-policy") continue;
+
+    const content = attrs.get("content");
+    if (typeof content === "string" && content.trim() !== "") {
+      policies.push(content);
+    }
+  }
+  return policies;
 }
 
 // Разбирает Set-Cookie. Значение cookie никогда не попадает в результат:
@@ -372,7 +448,11 @@ function summarizeCookies(cookies) {
 //   ok      — защита действительно включена.
 // Булевы поля (csp/hsts/...) означают «защита работает»: так их читают
 // scoring и UI, поэтому HSTS: max-age=0 больше не даёт баллов.
-function analyzeSecurityHeaders(headers) {
+//
+// rawHeaders — res.rawHeaders: повторяющиеся CSP/XFO/Referrer-Policy/
+// Permissions-Policy — это отдельные политики, а не одно склеенное значение.
+// body — уже прочитанное тело GET / (до 64 КБ) для CSP в <meta>.
+function analyzeSecurityHeaders(headers, rawHeaders = [], body = "") {
   const accessControlAllowOrigin = headerValue(
     headers,
     "access-control-allow-origin",
@@ -385,16 +465,37 @@ function analyzeSecurityHeaders(headers) {
     hstsState = maxAge !== null && maxAge > 0 ? "ok" : "weak";
   }
 
-  const cspValue = headerValue(headers, "content-security-policy");
+  const cspHeaderPolicies = headerValueList(
+    headers,
+    rawHeaders,
+    "content-security-policy",
+  );
+  // Тело читается только когда CSP-заголовка нет: meta-CSP — запасной
+  // источник, а не дополнение к заголовку.
+  const cspMetaPolicies =
+    body && cspHeaderPolicies.length === 0 ? metaCspPolicies(body) : [];
+  const cspPolicies =
+    cspHeaderPolicies.length > 0 ? cspHeaderPolicies : cspMetaPolicies;
   let cspState = "missing";
-  if (cspValue !== null) {
-    cspState = cspIsRestrictive(cspValue) ? "ok" : "weak";
+  if (cspPolicies.length > 0) {
+    // Каждый заголовок — отдельная политика, браузер применяет их
+    // одновременно, поэтому политика ограничивает, если ограничивает
+    // хотя бы одна. Склейка через запятую давала бы ложный «weak».
+    cspState = cspPolicies.some(cspIsRestrictive) ? "ok" : "weak";
   }
 
-  const xframeValue = headerValue(headers, "x-frame-options");
+  // frame-ancestors работает только из заголовка: браузер игнорирует его
+  // в meta, поэтому cspFrameAncestors считается до подстановки meta-CSP.
+  const cspFrameAncestors = cspHeaderPolicies.some(cspFrameAncestorsRestricts);
+
+  const xframeValues = headerValueList(headers, rawHeaders, "x-frame-options");
   let xframeState = "missing";
-  if (xframeValue !== null) {
-    xframeState = SAFE_XFRAME.has(firstToken(xframeValue)) ? "ok" : "weak";
+  if (xframeValues.length > 0) {
+    xframeState = xframeValues.some((value) =>
+      SAFE_XFRAME.has(firstToken(value)),
+    )
+      ? "ok"
+      : "weak";
   }
 
   const xcontentValue = headerValue(headers, "x-content-type-options");
@@ -403,10 +504,12 @@ function analyzeSecurityHeaders(headers) {
     xcontentState = firstToken(xcontentValue) === "nosniff" ? "ok" : "weak";
   }
 
-  const referrerValue = headerValue(headers, "referrer-policy");
+  const referrerValues = headerValueList(headers, rawHeaders, "referrer-policy");
   let referrerPolicyState = "missing";
-  if (referrerValue !== null) {
-    referrerPolicyState = SAFE_REFERRER_POLICIES.has(firstToken(referrerValue))
+  if (referrerValues.length > 0) {
+    referrerPolicyState = referrerValues.some((value) =>
+      SAFE_REFERRER_POLICIES.has(firstToken(value)),
+    )
       ? "ok"
       : "weak";
   }
@@ -418,11 +521,18 @@ function analyzeSecurityHeaders(headers) {
   }
 
   // Permissions-Policy: пустой заголовок бесполезен, но и непустой не
-  // всегда защищает — `camera=*` разрешает API всем.
-  const permissionsValue = headerValue(headers, "permissions-policy");
+  // всегда защищает — `camera=*` разрешает API всем. Несколько заголовков —
+  // несколько политик: ограничение даёт любая из них.
+  const permissionsValues = headerValueList(
+    headers,
+    rawHeaders,
+    "permissions-policy",
+  );
   let permissionsPolicyState = "missing";
-  if (permissionsValue !== null) {
-    permissionsPolicyState = permissionsPolicyIsRestrictive(permissionsValue)
+  if (permissionsValues.length > 0) {
+    permissionsPolicyState = permissionsValues.some(
+      permissionsPolicyIsRestrictive,
+    )
       ? "ok"
       : "weak";
   }
@@ -437,6 +547,7 @@ function analyzeSecurityHeaders(headers) {
     hstsState,
     csp: cspState === "ok",
     cspState,
+    cspFrameAncestors,
     xframe: xframeState === "ok",
     xframeState,
     xcontent: xcontentState === "ok",
@@ -564,6 +675,7 @@ module.exports = {
   parseSetCookie,
   summarizeCookies,
   analyzeSecurityHeaders,
+  headerValues,
   detectWaf,
   detectCms,
   sanitizeHeaderText,

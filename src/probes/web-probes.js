@@ -1,7 +1,6 @@
 const http = require("node:http");
 const https = require("node:https");
 const net = require("node:net");
-const pkg = require("../../package.json");
 const {
   parseSetCookie,
   detectWaf,
@@ -10,13 +9,24 @@ const {
 } = require("./header-analysis");
 const { SENSITIVE_FILE_PATHS } = require("../core/file-paths");
 const { hostHeaderFor } = require("../utils/scan-helpers");
+// У проб тот же браузерный User-Agent, что и у проверки заголовков: иначе
+// файлы, security.txt и фингерпринт запрашивались бы отдельным, предсказуемым
+// «CyberCheck/…», и цель могла бы отдавать им другой ответ.
+const { BROWSER_UA, sameOriginPath } = require("./http-headers");
 
-const UA = `CyberCheck/${pkg.version}`;
+const UA = BROWSER_UA;
 const DEFAULT_TIMEOUT_MS = 2000;
 const DEFAULT_MAX_BODY = 65536;
+// Редирект преследуется только в пределах того же origin и не больше трёх раз:
+// чужой хост потребовал бы нового резолва и проверки адреса (SSRF), а проба
+// соединяется с уже проверенным литеральным IP.
+const MAX_PATH_REDIRECTS = 3;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const SECURITY_TXT_PATH = "/.well-known/security.txt";
-const SECURITY_TXT_MAX_BODY = 8192;
+// security.txt — однострочные RFC 9116-записи; 32 КБ хватает с запасом.
+// Меньший лимит обрезал файл до строки Contact и давал ложное «некорректный».
+const SECURITY_TXT_MAX_BODY = 32768;
 
 // Значение заголовка строкой (первое из списка) или null.
 function headerText(headers, name) {
@@ -133,6 +143,13 @@ function request(options = {}) {
     let currentProtocol = protocols[0];
     let timer = null;
     let abortHandler = null;
+    // Путь и остаток переходов живут на всю пробу: редирект выполняется тем же
+    // соединением (тот же connectIp/порт), меняется только путь из Location.
+    let requestPath = path;
+    let redirectsLeft = MAX_PATH_REDIRECTS;
+    // Один бюджет на все переходы: иначе три хопа умножали бы таймаут на
+    // четыре и медленная цель держала бы сокет вчетверо дольше.
+    const requestDeadline = Date.now() + timeout;
 
     // SSRF-инвариант: соединение возможно только с литеральным IP. Имя хоста
     // или undefined увели бы http.request в собственный DNS-резолв (а
@@ -217,7 +234,7 @@ function request(options = {}) {
         host: connectIp,
         port,
         method,
-        path,
+        path: requestPath,
         headers: requestHeaders,
         // Одноразовые сокеты: не держим keep-alive соединения после пробы.
         agent: false,
@@ -247,6 +264,7 @@ function request(options = {}) {
         }
       }
 
+      const attemptTimeout = Math.max(0, requestDeadline - Date.now());
       timer = setTimeout(() => {
         timer = null;
         if (settled || attemptEnded) return;
@@ -270,8 +288,10 @@ function request(options = {}) {
             status: partialStatus,
             headers: partialHeaders,
             body: readPartialBody(),
+            bodyBuffer: Buffer.concat(bodyChunks, bodyTotal),
             protocol,
             error: "ETIMEDOUT",
+            truncated: false,
           });
           if (failedReq) failedReq.destroy();
           return;
@@ -279,7 +299,7 @@ function request(options = {}) {
 
         fail(protocol, { code: "ETIMEDOUT" });
         if (failedReq) failedReq.destroy();
-      }, timeout);
+      }, attemptTimeout);
 
       function readPartialBody() {
         return bodyTotal > 0
@@ -318,6 +338,28 @@ function request(options = {}) {
         const status = partialStatus;
         const responseHeaders = partialHeaders;
 
+        // same-origin редирект: повторяем запрос тем же connectIp и портом,
+        // подставляя только путь из Location. Переход на другой origin не
+        // выполняем — он требует нового резолва и проверки адреса, иначе
+        // проба стала бы SSRF-вектором.
+        const nextPath =
+          REDIRECT_STATUSES.has(status) && redirectsLeft > 0
+            ? sameOriginPath(responseHeaders.location, hostname, port, protocol)
+            : null;
+
+        if (nextPath) {
+          redirectsLeft -= 1;
+          attemptEnded = true;
+          stopTimer();
+          currentReq = null;
+          res.on("error", () => {});
+          res.resume();
+          req.destroy();
+          requestPath = nextPath;
+          attempt(protocols.indexOf(protocol));
+          return;
+        }
+
         if (!readBody) {
           attemptEnded = true;
           stopTimer();
@@ -331,7 +373,7 @@ function request(options = {}) {
         bodyTotal = 0;
         let bodyDone = false;
 
-        function finishBody() {
+        function finishBody(truncated = false) {
           if (bodyDone) return;
           bodyDone = true;
           attemptEnded = true;
@@ -340,8 +382,14 @@ function request(options = {}) {
             status,
             headers: responseHeaders,
             body: readPartialBody(),
+            // Байты тела нужны пробам файлов утечки: только сигнатура
+            // содержимого доказывает, что 200 — это файл, а не заглушка.
+            bodyBuffer: Buffer.concat(bodyChunks, bodyTotal),
             protocol,
             error: null,
+            // true — упёрлись в maxBytes, дальше тело не читалось:
+            // отсутствие строки в таком теле ничего не доказывает.
+            truncated: Boolean(truncated),
           });
         }
 
@@ -355,8 +403,10 @@ function request(options = {}) {
             status,
             headers: responseHeaders,
             body: readPartialBody(),
+            bodyBuffer: Buffer.concat(bodyChunks, bodyTotal),
             protocol,
             error: err && err.code ? String(err.code) : "ECONNRESET",
+            truncated: false,
           });
         }
 
@@ -370,7 +420,7 @@ function request(options = {}) {
               bodyChunks.push(buf.subarray(0, remaining));
               bodyTotal += remaining;
             }
-            finishBody();
+            finishBody(true);
             res.destroy();
             return;
           }
@@ -390,9 +440,45 @@ function request(options = {}) {
   });
 }
 
-// Проверка типовых файлов утечки. Только HEAD, 200 — единственный признак
-// экспозиции. 403 — это WAF/запрет, не уязвимость; 404 и прочие статусы —
-// просто данные. Ошибки не выбрасываются, а попадают в results[].error.
+// Сигнатуры содержимого для путей утечки. Список путей — общий
+// (SENSITIVE_FILE_PATHS), а сигнатура привязана к пути через Map: порядок
+// путей можно менять, не переставляя проверки.
+//
+// 200 от SPA/catch-all — это HTML-заглушка на любой путь, а не файл утечки.
+// Поэтому экспозиция подтверждается только содержимым, а не статусом.
+const DS_STORE_MAGIC = Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]);
+const FILE_SIGNATURES = new Map([
+  // .env — строки KEY=VALUE; HTML/JSON так не начинаются.
+  [
+    "/.env",
+    (buf) => /^[A-Za-z_][A-Za-z0-9_]*\s*=/m.test(buf.toString("utf8", 0, 4096)),
+  ],
+  ["/.git/config", (buf) => /^\[core\]/m.test(buf.toString("utf8", 0, 4096))],
+  // ZIP: 50 4B 03 04 (обычный), 50 4B 05 06 (пустой архив),
+  // 50 4B 07 08 (spanned).
+  [
+    "/backup.zip",
+    (buf) =>
+      buf.length >= 4 &&
+      buf[0] === 0x50 &&
+      buf[1] === 0x4b &&
+      (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07),
+  ],
+  // .DS_Store начинается с магических байтов формата, а не с текста.
+  [
+    "/.DS_Store",
+    (buf) => buf.length >= 8 && buf.subarray(0, 8).equals(DS_STORE_MAGIC),
+  ],
+]);
+
+// Пробе читается только начало файла: для сигнатуры хватает 4 КБ, а
+// выкачивать большие архивы проба не должна.
+const MAX_PROBE_BODY = 4096;
+
+// Проверка типовых файлов утечки. GET (а не HEAD) нужен, потому что 200
+// сам по себе ничего не доказывает: решение принимается по сигнатуре тела.
+// 403 — это WAF/запрет, не уязвимость; 200 без сигнатуры — «не проверено».
+// Ошибки не выбрасываются, а попадают в results[].error.
 async function checkSensitiveFiles(
   connectIp,
   port,
@@ -405,7 +491,7 @@ async function checkSensitiveFiles(
     SENSITIVE_FILE_PATHS.map(async (probePath) => {
       try {
         return await request({
-          method: "HEAD",
+          method: "GET",
           path: probePath,
           connectIp,
           port,
@@ -413,6 +499,8 @@ async function checkSensitiveFiles(
           hasTls,
           signal,
           timeoutMs,
+          readBody: true,
+          maxBody: MAX_PROBE_BODY,
         });
       } catch (err) {
         return networkError(null, err);
@@ -421,25 +509,30 @@ async function checkSensitiveFiles(
   );
 
   const results = responses.map((response, index) => {
+    const path = SENSITIVE_FILE_PATHS[index];
     const status = response.status;
+    const body = Buffer.isBuffer(response.bodyBuffer)
+      ? response.bodyBuffer
+      : Buffer.alloc(0);
 
-    // 200 от SPA/catch-all — это HTML-заглушка на любой путь, а не файл
-    // утечки. Без этой проверки /.env на сайте с client-side routing давал
-    // ложную критическую находку и потолок 40. HEAD не отдаёт тело, но
-    // Content-Type уже пришёл в заголовках.
-    const contentType = response.headers && response.headers["content-type"];
-    const htmlFallback =
+    const signature = FILE_SIGNATURES.get(path);
+    const signatureOk =
       status === 200 &&
-      typeof contentType === "string" &&
-      /^text\/html\b/i.test(contentType);
-    const exposed = status === 200 && !htmlFallback;
+      !response.error &&
+      body.length > 0 &&
+      typeof signature === "function" &&
+      signature(body);
 
     return {
-      path: SENSITIVE_FILE_PATHS[index],
+      path,
       status,
-      exposed,
+      exposed: signatureOk,
       blocked: status === 403,
-      error: response.error ?? (htmlFallback ? "SPA_HTML" : null),
+      // 200 без сигнатуры — это «не проверено», а не «открыто» и не
+      // «закрыто»: баллы за путь не начисляются, находка не создаётся.
+      error:
+        response.error ??
+        (status === 200 && !signatureOk ? "NO_SIGNATURE" : null),
     };
   });
 
@@ -454,7 +547,10 @@ async function checkSensitiveFiles(
 
 // security.txt: статус 200 сам по себе ничего не доказывает — SPA и
 // catch-all отдают 200 HTML на любой путь. Требуем text/plain и строку
-// Contact: (RFC 9116), читая не больше 8 КБ.
+// Contact: (RFC 9116), читая не больше 32 КБ.
+//
+// Обрезанное тело — отдельное состояние «не проверено»: отсутствие Contact
+// в первых 32 КБ не доказывает, что файла нет.
 async function checkSecurityTxt(
   connectIp,
   port,
@@ -479,10 +575,25 @@ async function checkSecurityTxt(
 
   const contentType = headerText(response.headers, "content-type");
   const body = typeof response.body === "string" ? response.body : "";
+  const truncated = response.truncated === true;
   // Без Content-Type не отбрасываем: часть серверов его не отдаёт.
   const plainText = contentType === null || /^text\/plain\b/i.test(contentType);
   const hasContact = /(?:^|\n)\s*Contact\s*:/i.test(body);
   const present = response.status === 200 && plainText && hasContact;
+
+  // Contact не найден, но тело обрезано лимитом — сказать «файла нет» или
+  // «файл некорректен» нельзя. Отдаём явную причину, чтобы scoring отличил
+  // это от настоящего отсутствия.
+  if (!present && response.status === 200 && truncated && !response.error) {
+    return {
+      path: SECURITY_TXT_PATH,
+      status: response.status,
+      present: false,
+      blocked: false,
+      error: "TRUNCATED",
+      truncated: true,
+    };
+  }
 
   return {
     path: SECURITY_TXT_PATH,
@@ -490,6 +601,7 @@ async function checkSecurityTxt(
     present,
     blocked: response.status === 403,
     error: response.error,
+    truncated,
   };
 }
 

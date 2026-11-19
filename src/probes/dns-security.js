@@ -31,22 +31,42 @@ function joinTxtRecords(records) {
   });
 }
 
+// redirect=<domain> — валидный механизм RFC 7208: политика домена берётся из
+// SPF другого домена. Проверяем только форму значения (непустой domain-spec,
+// допускаем макросы); DNS-резолв здесь не нужен и не делается.
+const SPF_REDIRECT_PREFIX_RE = /^redirect=/i;
+const SPF_REDIRECT_VALUE_RE = /^[a-z0-9._%{}@+-]+$/i;
+
+function isSpfRedirect(mechanism) {
+  if (!SPF_REDIRECT_PREFIX_RE.test(mechanism)) return false;
+  const domain = mechanism.slice("redirect=".length).trim();
+  return domain !== "" && SPF_REDIRECT_VALUE_RE.test(domain);
+}
+
 // SPF, который разрешает отправку всем (+all / ?all) или не содержит
 // механизмов, защитой не является: по RFC 7208 такой домен либо открыт для
 // подделки, либо получает permerror. -all и ~all считаются рабочими.
+//
+// redirect=<domain> без all — тоже полноценная политика: правила берутся из
+// SPF другого домена, поэтому неявный ?all здесь не действует.
 function spfIsWeak(record) {
   const mechanisms = String(record).trim().split(/\s+/).slice(1);
   if (mechanisms.length === 0) return true;
 
+  let hasRedirect = false;
   for (const mechanism of mechanisms) {
+    if (SPF_REDIRECT_PREFIX_RE.test(mechanism)) {
+      if (isSpfRedirect(mechanism)) hasRedirect = true;
+      continue;
+    }
     if (!/^[+\-~?]?all$/i.test(mechanism)) continue;
     const qualifier = /^[+\-~?]/.test(mechanism) ? mechanism[0] : "+";
     return qualifier === "+" || qualifier === "?";
   }
 
-  // Нет механизма all — по RFC 7208 действует неявный ?all. Это не защита:
-  // домен не сообщает получателю, что делать с чужими письмами.
-  return true;
+  // Нет ни all, ни redirect — по RFC 7208 действует неявный ?all. Это не
+  // защита: домен не сообщает получателю, что делать с чужими письмами.
+  return !hasRedirect;
 }
 
 // Ищет SPF-запись среди TXT-рекордов.
@@ -93,6 +113,9 @@ function parseDmarcTxt(records) {
       present: false,
       record: null,
       policy: null,
+      pct: null,
+      pctInvalid: false,
+      partial: false,
       strict: false,
       weak: false,
       multiple: false,
@@ -119,11 +142,35 @@ function parseDmarcTxt(records) {
       ? policy
       : null;
 
+  // pct (RFC 7489) — доля писем, к которым применяется политика. Значение вне
+  // 0..100 — мусор: отдаём null, чтобы «pct=150» не выглядел полной политикой.
+  const pctTag = tags.get("pct");
+  let pct = null;
+  if (pctTag !== undefined) {
+    const trimmedPct = pctTag.trim();
+    if (/^\d{1,3}$/.test(trimmedPct)) {
+      const value = Number(trimmedPct);
+      if (value >= 0 && value <= 100) pct = value;
+    }
+  }
+
+  // Политика reject/quarantine применяется полностью только при pct=100 или
+  // без pct: при pct<100 часть писем политику не получает. Мусорное значение
+  // (pct=150) — тоже не подтверждение полной политики.
+  const pctMissing = pctTag === undefined;
+  const pctInvalid = !pctMissing && pct === null;
+  const appliesFully = pctMissing || pct === 100;
+
   return {
     present: true,
     record,
     policy: validPolicy,
-    strict: validPolicy === "reject" || validPolicy === "quarantine",
+    pct,
+    pctInvalid,
+    partial: pct !== null && pct < 100,
+    strict:
+      (validPolicy === "reject" || validPolicy === "quarantine") &&
+      appliesFully,
     weak: validPolicy === "none",
     multiple,
     error: null,
@@ -163,6 +210,9 @@ function emptyDmarc(error = null) {
     present: false,
     record: null,
     policy: null,
+    pct: null,
+    pctInvalid: false,
+    partial: false,
     strict: false,
     weak: false,
     multiple: false,
