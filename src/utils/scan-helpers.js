@@ -167,11 +167,16 @@ function withCriticalFiles(files) {
 // extra — результаты DNS/файлов/security.txt/фингерпринта, без них карточки
 // показывали бы проверки, которые не влияют на оценку.
 function buildReport(host, ports, ssl, headers, extra = {}) {
+  // Всё, что не является отдельным блоком отчёта (признак клоакинга,
+  // подтверждённый редирект HTTP→HTTPS), уходит в скоринг как есть. Раньше
+  // cloaking терялся здесь, и находка о разном ответе сканеру и браузеру
+  // никогда не появлялась.
   const {
     dns = null,
     files = null,
     securityTxt = null,
     fingerprint = null,
+    ...scoringInput
   } = extra;
 
   const filesReport = withCriticalFiles(files);
@@ -184,6 +189,7 @@ function buildReport(host, ports, ssl, headers, extra = {}) {
     files: filesReport,
     securityTxt,
     fingerprint,
+    ...scoringInput,
   });
 
   return {

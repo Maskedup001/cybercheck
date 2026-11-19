@@ -181,6 +181,8 @@ class ScanLimiter {
     const perEdge = (this.activeByEdge.get(edgeKey) || 0) - 1;
     if (perEdge > 0) this.activeByEdge.set(edgeKey, perEdge);
     else this.activeByEdge.delete(edgeKey);
+
+    return this;
   }
 
   // Периодическая чистка истёкших записей. unref: таймер не держит процесс.
@@ -208,4 +210,5 @@ module.exports = {
   DEFAULT_MAX_KEYS,
   DEFAULT_MAX_CONCURRENT,
   DEFAULT_MAX_PER_KEY,
+  DEFAULT_MAX_PER_EDGE,
 };
