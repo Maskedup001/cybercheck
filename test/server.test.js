@@ -1,7 +1,7 @@
+const http = require("node:http");
 const test = require("node:test");
 const assert = require("node:assert");
 const {
-  createApp,
   createHttpServer,
   issueConsentToken,
   redirectsToHttps,
@@ -21,7 +21,7 @@ function testEnv(overrides = {}) {
     TRUST_PROXY: "0",
     PUBLIC_ORIGIN: "http://localhost:3000",
     PORT: "0",
-    NODE_ENV: "test",
+    NODE_ENV: "development", // Чтобы DEMO_MODE мог включиться
     DEMO_MODE: "false",
     ...overrides,
   };
@@ -54,6 +54,25 @@ function captureFailures(run) {
   return { exits, messages };
 }
 
+// Хелпер: поднимает сервер на случайном порту и возвращает url + функцию очистки.
+async function listenServer(t, config) {
+  const { server, limiter } = createHttpServer(config);
+
+  t.after(async () => {
+    limiter.stopSweeper();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const port = server.address().port;
+  return { server, limiter, port, url: `http://127.0.0.1:${port}/api/scan` };
+}
+
 test("TRUST_PROXY=0 не роняет сервер", async (t) => {
   const config = readConfig(testEnv({ TRUST_PROXY: "0" }));
   const { server, limiter } = createHttpServer(config);
@@ -70,7 +89,10 @@ test("TRUST_PROXY=0 не роняет сервер", async (t) => {
   });
 
   const address = server.address();
-  assert.ok(address && address.port > 0, "сервер должен слушать выбранный порт");
+  assert.ok(
+    address && address.port > 0,
+    "сервер должен слушать выбранный порт",
+  );
   assert.strictEqual(config.trustProxy, 0);
 
   // Свойство прежнего теста было «сервер поднимается», но полезнее проверить,
@@ -178,26 +200,20 @@ test("redirectsToHttps: только 3xx с абсолютным https Location"
     redirectsToHttps({ status: 302, location: "http://example.com/" }),
     false,
   );
-  assert.strictEqual(redirectsToHttps({ status: 302, location: "/login" }), false);
+  assert.strictEqual(
+    redirectsToHttps({ status: 302, location: "/login" }),
+    false,
+  );
   assert.strictEqual(redirectsToHttps({ status: 302 }), false);
   assert.strictEqual(redirectsToHttps({ error: true }), false);
   assert.strictEqual(redirectsToHttps(null), false);
 });
 
-test("Rate limit использует реальный IP прокси, а не подделку из X-Forwarded-For", async (t) => {
-  const { app } = createApp({
-    publicOrigin: "http://localhost:3000",
-    publicDir: "public",
-    pages: ["index.html", "legal.html", "privacy.html"],
-    isProduction: false,
-    demoMode: true,
-    trustProxy: 1,
-  });
+// --- Rate limit и доверие к X-Forwarded-For -----------------------------
 
-  const server = app.listen(0);
-  const port = server.address().port;
-  const url = `http://127.0.0.1:${port}/api/scan`;
-  t.after(() => server.close());
+test("Rate limit использует реальный IP прокси, а не подделку из X-Forwarded-For", async (t) => {
+  const config = readConfig(testEnv({ TRUST_PROXY: "1", DEMO_MODE: "true" }));
+  const { url } = await listenServer(t, config);
 
   const payload = {
     url: "http://localhost",
@@ -243,19 +259,8 @@ test("Rate limit использует реальный IP прокси, а не 
 });
 
 test("При trustProxy=0 заголовок X-Forwarded-For полностью игнорируется", async (t) => {
-  const { app } = createApp({
-    publicOrigin: "http://localhost:3000",
-    publicDir: "public",
-    pages: ["index.html", "legal.html", "privacy.html"],
-    isProduction: false,
-    demoMode: true,
-    trustProxy: 0,
-  });
-
-  const server = app.listen(0);
-  const port = server.address().port;
-  const url = `http://127.0.0.1:${port}/api/scan`;
-  t.after(() => server.close());
+  const config = readConfig(testEnv({ TRUST_PROXY: "0", DEMO_MODE: "true" }));
+  const { url } = await listenServer(t, config);
 
   const payload = {
     url: "http://localhost",
@@ -291,19 +296,8 @@ test("При trustProxy=0 заголовок X-Forwarded-For полностью 
 });
 
 test("Сервер отклоняет сканирование с поддельным токеном согласия", async (t) => {
-  const { app } = createApp({
-    publicOrigin: "http://localhost:3000",
-    publicDir: "public",
-    pages: ["index.html", "legal.html", "privacy.html"],
-    isProduction: false,
-    demoMode: true,
-    trustProxy: 0,
-  });
-
-  const server = app.listen(0);
-  const port = server.address().port;
-  const url = `http://127.0.0.1:${port}/api/scan`;
-  t.after(() => server.close());
+  const config = readConfig(testEnv({ TRUST_PROXY: "0", DEMO_MODE: "true" }));
+  const { url } = await listenServer(t, config);
 
   const res = await fetch(url, {
     method: "POST",
@@ -321,27 +315,34 @@ test("Сервер отклоняет сканирование с поддель
 });
 
 test("Rate limit блокирует исчерпание пула с одного IP при подмене XFF", async (t) => {
-  const { app } = createApp({
-    publicOrigin: "http://localhost:3000",
-    publicDir: "public",
-    pages: ["index.html", "legal.html", "privacy.html"],
-    isProduction: false,
-    demoMode: true,
-    trustProxy: 1,
+  // Создаём "висящий" сервер-цель на порту 8080 (он входит в SCAN_PORTS),
+  // чтобы сканер гарантированно подключился к нему и завис на ожидании ответа.
+  const hangingTarget = http.createServer(() => {
+    // Намеренно не отвечаем
   });
 
-  const server = app.listen(0);
-  const port = server.address().port;
-  const url = `http://127.0.0.1:${port}/api/scan`;
-  t.after(() => server.close());
+  const controllers = [new AbortController(), new AbortController()];
+  t.after(async () => {
+    controllers.forEach((c) => c.abort());
+    hangingTarget.closeAllConnections?.();
+    await new Promise((resolve) => hangingTarget.close(resolve));
+  });
+
+  await new Promise((resolve, reject) => {
+    hangingTarget.once("error", reject);
+    hangingTarget.listen(8080, "127.0.0.1", resolve);
+  });
+
+  const config = readConfig(testEnv({ TRUST_PROXY: "1", DEMO_MODE: "true" }));
+  const { url } = await listenServer(t, config);
 
   const payload = {
-    url: "http://localhost",
+    url: "http://127.0.0.1:8080",
     consent: true,
     consentToken: issueConsentToken(),
   };
 
-  const makeReq = (xff) =>
+  const makeReq = (xff, signal) =>
     fetch(url, {
       method: "POST",
       headers: {
@@ -349,26 +350,27 @@ test("Rate limit блокирует исчерпание пула с одног�
         "X-Forwarded-For": xff,
       },
       body: JSON.stringify(payload),
+      signal,
     });
 
-  // Отправляем 3 запроса одновременно с разными XFF, но с одного сокета (127.0.0.1)
-  const results = await Promise.all([
-    makeReq("1.1.1.1"),
-    makeReq("2.2.2.2"),
-    makeReq("3.3.3.3"),
-  ]);
+  const req1 = makeReq("1.1.1.1", controllers[0].signal).catch(() => {});
+  const req2 = makeReq("2.2.2.2", controllers[1].signal).catch(() => {});
 
-  const statuses = results.map((r) => r.status);
+  // Даём первым двум запросам пройти валидацию и зависнуть на проверке 8080,
+  // удерживая edge-слоты активными.
+  await new Promise((resolve) => setTimeout(resolve, 150));
 
-  // Два запроса должны пройти (или упасть с другой ошибкой), а один должен получить 429 по edge-лимиту
-  const denied = results.filter((r) => r.status === 429);
-
+  const res3 = await makeReq("3.3.3.3");
   assert.strictEqual(
-    denied.length,
-    1,
-    `Один из запросов должен быть заблокирован, пришли статусы: ${statuses.join(", ")}`,
+    res3.status,
+    429,
+    "Третий запрос должен быть заблокирован лимитом edgeKey",
   );
 
-  const errorData = await denied[0].json();
+  const errorData = await res3.json();
   assert.match(errorData.error, /С этого сетевого адреса/);
+
+  // Отменяем висящие запросы, чтобы тест не ждал таймаут
+  controllers.forEach((c) => c.abort());
+  await Promise.all([req1, req2]);
 });
