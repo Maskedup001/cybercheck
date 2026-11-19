@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
         with:
           node-version: "24"
 
@@ -64,6 +64,22 @@ jobs:
               }
             };
             walk(root);
+          '
+
+      # Синтаксический разбор не гарантирует, что модуль экспортирует нужные
+      # функции: переименование уронит app.js уже в браузере. Импортируем
+      # клиент по-настоящему и проверяем контракт экспортов.
+      - name: Check frontend module exports
+        run: |
+          node --input-type=module -e '
+            const api = await import("./public/assets/js/api/client.js");
+            for (const name of ["scanTarget", "normalizeFinding"]) {
+              if (typeof api[name] !== "function") {
+                console.error("client.js не экспортирует", name);
+                process.exit(1);
+              }
+            }
+            console.log("frontend exports OK");
           '
 
       - name: Run tests

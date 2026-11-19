@@ -10,7 +10,7 @@
 
 ---
 
-CyberCheck — сканер внешней безопасности веб-сайта. Проверяет доступность пяти портов, TLS-сертификат и его версию, security-заголовки и cookie-флаги, SPF/DMARC/CAA, HEAD-пробы типовых файлов утечки, `security.txt`, CORS и WAF/CMS-признаки, а затем превращает результат в **Risk Score** (0–100, A–F) со списком находок и рекомендаций. Написан на Node.js + Express, фронтенд — vanilla JS без сборки. Отчёт открывается прямо в браузере: кольцо оценки, вердикт словами, карточки находок и детали проверки — и печатается в A4. Скан запускается только с короткоживущим HMAC-токеном согласия (15 минут), который страница получает при загрузке.
+CyberCheck — сканер внешней безопасности веб-сайта. Проверяет доступность пяти портов, TLS-сертификат и его версию, security-заголовки и cookie-флаги, SPF/DMARC/CAA, GET-пробы типовых файлов утечки с проверкой сигнатур содержимого, `security.txt`, CORS и WAF/CMS-признаки, а затем превращает результат в **Risk Score** (0–100, A–F) со списком находок и рекомендаций. Написан на Node.js + Express, фронтенд — vanilla JS без сборки. Отчёт открывается прямо в браузере: кольцо оценки, вердикт словами, карточки находок и детали проверки — и печатается в A4. Скан запускается только с короткоживущим HMAC-токеном согласия (15 минут), который страница получает при загрузке.
 
 Документация: [архитектура и модель угроз](docs/architecture.md) · [политика безопасности](.github/SECURITY.md) · [DISCLAIMER](DISCLAIMER.md).
 
@@ -28,21 +28,21 @@ CyberCheck — сканер внешней безопасности веб-са�
 - **Доступность.** Skip-link, `aria-describedby` у поля, `aria-invalid` только на том контроле, о котором говорит ошибка, `role="alert"`/`role="status"`, `aria-pressed` у фильтров, кастомный чекбокс поверх нативного `input`, поддержка `prefers-reduced-motion` и `prefers-contrast: more`.
 - **Печать.** A4-версия отчёта: `@page`, `print-color-adjust: exact`, `break-inside: avoid`, имя файла `CyberCheck_<host>_<дата>` (небезопасные для имени файла символы, включая `:` у IPv6, заменяются). Печать всегда содержит все находки, даже если на экране включён фильтр.
 - **Надёжность.** Единый error handler последним в стеке, JSON-404, `no-store` на `/` и `/api/*` (юридические страницы — `revalidate`), ETag на статике, семафор на 25 одновременных сканов с `Retry-After: 60`, общий таймаут скана 60 с при клиентских 65 с. Обрыв соединения клиентом прерывает скан, а слот семафора освобождается в `finally`; TLS-проверка не тратится на порту 80, а при ошибке заголовков проверяется следующий веб-порт; `Host` собирается с портом для 8080; `unhandledRejection` и `uncaughtException` попадают в лог.
-- **Скоринг.** Буква A требует 95+; положительные веса дают ровно 100, старый TLS — отдельный −10; каждая находка получает OWASP-тег, а критические новые проверки имеют жёсткие потолки.
+- **Скоринг.** Буква A требует 95+; положительные веса дают ровно 100, старый TLS — отдельный −10; каждая находка получает OWASP-тег, а критические новые проверки имеют жёсткие потолки. Неизвестность не считается защитой: `filtered`-порт, непроверенный TLS 1.0/1.1, `200` без сигнатуры файла и оборванный `security.txt` баллов не дают. HSTS разделён на заголовок (5) и подтверждённый редирект с HTTP на HTTPS (3). При любой находке уровня `medium`/`high` потолок — 90, поэтому A с ней недостижима.
 - **Зависимости.** `body-parser` 1.20.9 и `qs` 6.16.1 зафиксированы через `overrides`; CI и Render ставят зависимости с `--ignore-scripts`.
 
 ## Что проверяет
 
 | Группа | Проверка | Как |
 |---|---|---|
-| Порты | 80, 443, 22, 3306, 8080 | TCP-connect, 3 с на весь этап (все попытки вместе), один retry |
+| Порты | 80, 443, 22, 3306, 8080 | TCP-connect, 3 с на весь этап (все попытки вместе), один retry; `open` — соединение прошло, `refused` — RST, `filtered` — таймаут/ошибка без ответа (состояние не измерено) |
 | TLS | наличие TLS, валидность, срок, издатель, версия протокола, поддержка TLS 1.0/1.1 | `tls.connect` с `rejectUnauthorized: false` и одним retry; отдельный probe на TLS 1.0/1.1; на 80 TLS не проверяется, на 8080 провал TLS трактуется как HTTP-порт, а не как `ssl-error` |
-| Заголовки | `Content-Security-Policy`, `X-Frame-Options`, `Strict-Transport-Security`, `X-Content-Type-Options` | `GET /` по HTTPS (на 443 — всегда, даже если TLS-хендшейк не удался); при ошибке — по HTTP; если порт не ответил, проверяется следующий из 443 → 80 → 8080; тело не скачивается |
+| Заголовки | `Content-Security-Policy`, `X-Frame-Options`, `Strict-Transport-Security`, `X-Content-Type-Options` | `GET /` по HTTPS (на 443 — всегда, даже если TLS-хендшейк не удался); при ошибке — по HTTP; если порт не ответил, проверяется следующий из 443 → 80 → 8080. Same-origin редиректы (301/302/303/307/308) преследуются до 3 хопов. Тело читается до 64 КБ только чтобы увидеть CSP в `<meta http-equiv>`; повторяющиеся CSP/XFO/Referrer-Policy/Permissions-Policy разбираются как отдельные политики |
 | Гигиена | `Server`, фактический протокол (HTTP/HTTPS) | те же заголовки ответа |
 | DNS/Email | SPF, DMARC (политика `none` / `quarantine` / `reject`), CAA | `node:dns/promises`: TXT, `_dmarc.<домен>`, CAA; ошибки DNS не роняют скан |
 | Cookie | `Secure`, `HttpOnly`, `SameSite` в `Set-Cookie` | значения cookie не сохраняются, только имя и флаги |
 | Доп. заголовки | `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy` | наличие в ответе |
-| Файлы | `/.env`, `/.git/config`, `/.DS_Store`, `/backup.zip` | `HEAD`, таймаут 2 с; `200` с не-HTML содержимым на `.env`/`.git/config`/`backup.zip` — critical, на `.DS_Store` — low; `200 text/html` — SPA-заглушка, не экспозиция; `403` — WAF/запрет, остальное — данные |
+| Файлы | `/.env`, `/.git/config`, `/.DS_Store`, `/backup.zip` | `GET`, таймаут 2 с, тело до 4 КБ; экспозиция подтверждается только сигнатурой содержимого: `KEY=VALUE` для `.env`, `[core]` для `.git/config`, ZIP-магия для `backup.zip`, магия `.DS_Store`. `200` без сигнатуры — «не проверено» (`NO_SIGNATURE`), а не экспозиция; `403` — WAF/запрет |
 | CORS/security.txt | `Access-Control-Allow-Origin: *`, `/.well-known/security.txt` | заголовок корневого ответа и GET security.txt |
 | Fingerprint | WAF (Cloudflare, Sucuri, Akamai), CMS (WordPress, Drupal, Joomla, Bitrix) | заголовки/куки и ограниченное тело HTML (до 64 КБ) |
 | Оценка | Risk Score 0–100, буква A–F, находки с важностью, рекомендацией и OWASP-тегом | `src/scoring.js`, чистая функция |
@@ -101,7 +101,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 | Сертификат истекает через ≤ 7 дней | 90 (B — не A) |
 | Любая находка `medium` или `high` | 90 (B — не A) |
 
-`files.critical` принимается и как массив строк, и как массив `{ path, severity }`; `files.exposed` тоже поддерживается. Для `/.DS_Store` отдельного потолка нет: это low-находка. `403`/`404`/ошибка HEAD и `200 text/html` (SPA-заглушка) не считаются экспозицией и потолок не включают; за `403`, ошибку, редирект и SPA-заглушку баллы не начисляются (отсутствие файла не доказано), а подтверждённый `404` считается отсутствием. Если `files` или `securityTxt` не проверялись (`null`), баллы за них начисляются: отсутствие данных не считается экспозицией. Для `security.txt` штрафует явный `404` и некорректный `200` (нет `Contact`/не `text/plain`); `403`, сетевой сбой и другие статусы нейтральны. При `headers.error` итог всё равно ограничен 60.
+`files.critical` принимается и как массив строк, и как массив `{ path, severity }`; `files.exposed` тоже поддерживается. Для `/.DS_Store` отдельного потолка нет: это low-находка. Экспозиция подтверждается только совпадением содержимого с сигнатурой; `200` без сигнатуры даёт `error: "NO_SIGNATURE"` и не считается ни открытием, ни закрытием (баллы за путь не начисляются). `403`/`404`/ошибка пробы не считаются экспозицией и потолок не включают; за `403`, ошибку, редирект и заглушку баллы не начисляются (отсутствие файла не доказано), а подтверждённый `404` считается отсутствием. Если `files` или `securityTxt` не проверялись (`null`), баллы за них начисляются: отсутствие данных не считается экспозицией. Для `security.txt` штрафует явный `404` и некорректный `200` (нет `Contact`/не `text/plain`); `403`, сетевой сбой, оборванное по лимиту тело (`TRUNCATED`) и другие статусы нейтральны. При `headers.error` или ответе `>= 300` итог ограничен 60.
 
 **Буквы:** A ≥ 95, B ≥ 75, C ≥ 60, D ≥ 40, E ≥ 20, F < 20.
 
@@ -223,8 +223,11 @@ Content-Type: application/json
   },
   "headers": {
     "protocol": "HTTPS",
+    "status": 200,
+    "location": null,
     "server": "nginx/1.18.0",
     "csp": true,
+    "cspFrameAncestors": true,
     "xframe": true,
     "hsts": true,
     "xcontent": true,
@@ -330,9 +333,9 @@ Content-Type: application/json
 }
 ```
 
-Оценка учитывает `dns`, `files`, `securityTxt` и расширенные поля `headers`; `fingerprint` даёт только информационные находки `weight: 0` и score не меняет. Каждая находка содержит `owasp`. Для `files` критичны только `200` с не-HTML содержимым на `/.env`, `/.git/config` и `/backup.zip`; `200 text/html` и `403` не считаются экспозицией.
+Оценка учитывает `dns`, `files`, `securityTxt` и расширенные поля `headers` (включая `status`, `location` и `cspFrameAncestors`); `fingerprint` даёт только информационные находки `weight: 0` и score не меняет. Каждая находка содержит `owasp`. Файл утечки считается открытым только когда `200` и содержимое совпало с сигнатурой (`KEY=VALUE` для `/.env`, `[core]` для `/.git/config`, ZIP-магия для `/backup.zip`, магия `.DS_Store`). `200` без сигнатуры — `error: "NO_SIGNATURE"`: путь не подтверждён ни как открытый, ни как закрытый, баллы за него не начисляются.
 
-Дополнительные поля контракта: у `headers` — `hstsState`, `cspState`, `xframeState`, `xcontentState`, `referrerPolicyState`, `permissionsPolicyState`, `coopState` (`ok` / `weak` / `missing`); у `ssl` — `tlsConfirmed`; у `dns.spf` — `multiple` и `weak`; у `dns.dmarc` — `multiple` и `weak`; у `dns.caa` — `restrictive`; у `cookieSummary` — `insecureNone`. Они нужны, чтобы UI отличал «заголовка нет» от «заголовок есть, но защита выключена», и не расходился со скорингом.
+Дополнительные поля контракта: у `headers` — `status`, `location`, `hstsState`, `cspState`, `xframeState`, `xcontentState`, `referrerPolicyState`, `permissionsPolicyState`, `coopState` (`ok` / `weak` / `missing`), `cspFrameAncestors`; у `ssl` — `tlsConfirmed` и `supportsOldTls` (`true` / `false` / `null` — не проверено); у портов — `status` (`open` / `refused` / `closed` / `filtered`); у `dns.spf` — `multiple` и `weak`; у `dns.dmarc` — `multiple`, `pct`, `partial`, `pctInvalid`, `strict`, `weak`; у `dns.caa` — `restrictive`; у `securityTxt` — `truncated`; у `cookieSummary` — `insecureNone`. Верхний уровень отчёта может содержать `httpRedirectsToHttps` (`true` / `false` / `null`). Они нужны, чтобы UI отличал «заголовка нет» от «заголовок есть, но защита выключена» и «проверить не удалось», и не расходился со скорингом.
 
 Ошибки — всегда JSON `{ "error": "..." }` без стека и внутренних деталей:
 
@@ -353,24 +356,25 @@ Content-Type: application/json
 npm test
 ```
 
-Запускается `node --test test/*.test.js` — **215 тестов** в двенадцати файлах:
+Запускается `npm test` → `node scripts/run-tests.js` — **290 тестов** в тринадцати файлах. Скрипт подключает файлы по очереди в одном процессе: `node --test` поднимает отдельный процесс на каждый файл, и там, где создание процессов запрещено (песочницы, Windows AppContainer), весь набор падал бы с `spawn EPERM`, хотя тесты рабочие. Классический прогон с изоляцией — `npm run test:isolated`.
 
 - `test/net-guard.test.js` — 9 тестов: 20 приватных/служебных адресов блокируются, 4 публичных разрешаются, мусорный ввод блокируется (fail-closed), инъекция резолвера, таймаут и смешанный DNS-ответ.
-- `test/scoring.test.js` — 47 тестов: сумма весов 100; `FILE_CHECKS` совпадает с путями HEAD-проб; TLS/SSL, заголовки, порты; потолки `.env`/`.git`/`backup`/CORS; DMARC `p=none`; DNS timeout и `ENODATA`; cookie-флаги; `security.txt` (404 и некорректный 200); WAF/CMS; OWASP-теги у всех находок; сортировка находок.
-- `test/checks.test.js` — 12 тестов: `checkPort` на закрытом и открытом порту, дедлайн и отказ от нелитерального `connectIp`, `checkHeaders` (CSP, X-Frame-Options, cookie-флаги, дополнительные заголовки, CORS, weak-значения, IPv6 `Host`), `checkSSL` с `HANDSHAKE_FAILED`, самоподписанным сертификатом и отменённым сигналом.
-- `test/dns-security.test.js` — 24 теста: SPF, DMARC (`reject`/`quarantine`/`none`), CAA, IP/localhost, таймауты, DNS-ошибки и abort.
-- `test/header-analysis.test.js` — 31 тест: разбор `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, ACAO `*`, WAF (Cloudflare/Sucuri/Akamai), CMS (WordPress/Drupal/Joomla/Bitrix), отсутствие ReDoS на ~58 КБ `<meta>`-текста.
-- `test/web-probes.test.js` — 12 тестов: HEAD-пробы (200/403/404/301), `security.txt`, фингерпринт, Host/connectIp, таймаут, abort и частичное тело.
+- `test/scoring.test.js` — 66 тестов: сумма весов 100; `FILE_CHECKS` совпадает с путями файловых проб; TLS/SSL, заголовки, порты; потолки `.env`/`.git`/`backup`/CORS; HSTS 5+3 и редирект HTTP→HTTPS; `filtered`-порт не даёт баллов; `supportsOldTls: null` и `daysLeft: NaN`; `status ≥ 300` — «не проверено»; DMARC `p=none` и `pct < 100`; DNS timeout и `ENODATA`; cookie-флаги; `security.txt` (404, некорректный и оборванный 200); `200` без сигнатуры файла; `frame-ancestors` вместо XFO; клоакинг доходит до оценки через `buildReport`; заморозка `WEIGHTS`; WAF/CMS; OWASP-теги; сортировка находок.
+- `test/checks.test.js` — 19 тестов: `checkPort` с состояниями `open`/`refused`/`filtered`, дедлайн и отказ от нелитерального `connectIp`, `checkHeaders` (CSP, X-Frame-Options, cookie-флаги, дополнительные заголовки, CORS, weak-значения, IPv6 `Host`, несколько CSP-заголовков, CSP в `<meta>`, `frame-ancestors`, таймаут тела, same-origin редирект), `checkSSL` с точными кодами `HANDSHAKE_FAILED`/`TIMEOUT`/`ABORTED` и поведенческими проверками вместо замеров времени.
+- `test/dns-security.test.js` — 29 тестов: SPF (включая `redirect=`), DMARC (`reject`/`quarantine`/`none`, `pct`), CAA, IP/localhost, таймауты, DNS-ошибки и abort.
+- `test/header-analysis.test.js` — 42 теста: разбор `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, несколько одноимённых заголовков, CSP из `<meta>`, `frame-ancestors`, ACAO `*`, WAF (Cloudflare/Sucuri/Akamai), CMS (WordPress/Drupal/Joomla/Bitrix), отсутствие ReDoS на ~58 КБ `<meta>`-текста.
+- `test/web-probes.test.js` — 20 тестов: GET-пробы файлов с сигнатурами содержимого (200/403/404/301), `security.txt` (включая обрезку тела), фингерпринт, браузерный `User-Agent`, Host/connectIp, same-origin и запрет cross-origin редиректов, лимит в три хопа, таймаут, abort и частичное тело.
 - `test/scan-helpers.test.js` — 22 теста: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты и дедлайны, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath` (включая NTFS ADS и обратные слэши), `isLiteralIp`.
-- `test/rate-limit.test.js` — 10 тестов: кулдаун, LRU, sweep, потолок одновременных сканов, лишний `finish`, таймер чистки.
+- `test/rate-limit.test.js` — 17 тестов: кулдаун, LRU, sweep, потолок одновременных сканов, лимит на сокет-адрес (`maxPerEdge`) и его освобождение, лишний `finish`, таймер чистки.
 - `test/report-model.test.js` — 25 тестов: `sanitizeText`, критичность путей, `filesNote`, `tlsNotice`, `caaState`, `secureContextState`, склонения, имя отчёта и `buildShareText`.
-- `test/frontend-contract.test.js` — 7 тестов: нормализация `owasp`/новых полей в `api/client.js`, мусорные `score`/`grade`/`ports`, сетевые ошибки, SVG-иконка подсказки, ENOTFOUND для SPF, безопасный DOM и экспорты `ui/render-result.js`.
-- `test/server.test.js` — 4 теста: запуск с `TRUST_PROXY=0`; ключ лимита берётся из реального IP прокси, а не из подставленного `X-Forwarded-For`; при `trustProxy=0` заголовок игнорируется полностью; сервер отклоняет скан с поддельным токеном согласия.
-- `test/server-http.test.js` — 12 тестов: `/healthz`, HTML с подставленным `BASE_URL` и security-заголовками, защита от шаблонов в статике, редирект `/index.html`, 400/415/413, 404 для неизвестного `/api/scan/*`, кулдаун 429, CORS и JSON-404.
+- `test/frontend-contract.test.js` — 12 тестов: поведенческий контракт `scanTarget` (dns/files/securityTxt/fingerprint доходят до рендера), настоящий `import()` модулей и их экспорты, нормализация `owasp`/новых полей, мусорные `score`/`grade`/`ports`, сетевые ошибки, SVG-иконка подсказки, ENOTFOUND для SPF, вызовы решений CAA/TLS, отсутствие HTML-синков и инлайн-скриптов на страницах.
+- `test/render-dom.test.js` — 1 тест: исполняемый DOM-стенд, который рендерит отчёт с XSS-payload во всех полях и проверяет, что HTML-синки не вызывались, а payload остался текстом.
+- `test/server.test.js` — 11 тестов: запуск с `TRUST_PROXY=0` в процессе (без `spawn`); ключ лимита берётся из реального IP прокси, а не из подставленного `X-Forwarded-For`; при `trustProxy=0` заголовок игнорируется полностью; сервер отклоняет скан с поддельным токеном согласия; валидация `NODE_ENV`/`PORT`/`TRUST_PROXY`; `redirectsToHttps`.
+- `test/server-http.test.js` — 17 тестов: `/healthz`, HTML с подставленным `BASE_URL` и security-заголовками, защита от шаблонов в статике, редирект `/index.html`, 400/415/413, 404 для неизвестного `/api/scan/*`, кулдаун 429, CORS и JSON-404; точные директивы CSP (без `unsafe-inline`/`unsafe-eval`/`*`) и `upgrade-insecure-requests` в production; таймауты и потолки сокетов; лимит 64 сокета на IP при прямом доступе.
 
-Не покрыто: `checkOldTls`/`supportsOldTls` (нужен TLS-стенд), 503/504, интеграция оркестрации скана в `core/server.js`, DOM-рендер карточек и печать, retry `checkHeaders`. `createApp()` уже экспортируется, поэтому HTTP-слой можно тестировать через supertest без запуска процесса. Как это закрыть — в [архитектуре](docs/architecture.md).
+Не покрыто: `checkOldTls` (нужен TLS-стенд со старым протоколом), 503/504, интеграция оркестрации скана в `core/server.js`, печать отчёта, retry `checkHeaders`. `createHttpServer()` и `applySocketLimits()` экспортируются, поэтому HTTP-слой тестируется в процессе без запуска сервера. Как это закрыть — в [архитектуре](docs/architecture.md).
 
-CI (`.github/workflows/ci.yml`, Node 24) на каждый push и PR: `npm ci --ignore-scripts` → `npm audit --audit-level=high --omit=dev` → проверка загрузки probe-модулей → `node --check` для `src/server.js` и `core/{config,server}.js` → рекурсивный разбор модулей фронтенда через `vm.SourceTextModule` → `npm test` → запуск сервера и smoke-проверка `/`.
+CI (`.github/workflows/ci.yml`, Node 24) на каждый push и PR: `npm ci --ignore-scripts` → `npm audit --audit-level=high --omit=dev` → проверка загрузки probe-модулей → `node --check` для `src/server.js` и `core/{config,server}.js` → рекурсивный разбор модулей фронтенда через `vm.SourceTextModule` → проверка реальных экспортов `api/client.js` через `import()` → `npm test` → запуск сервера и smoke-проверка `/`.
 
 ## Деплой на Render
 
@@ -466,23 +470,24 @@ cybercheck/
 │   │   ├── http-headers.js         # заголовки ответа, cookie-флаги, CORS
 │   │   ├── header-analysis.js      # разбор Set-Cookie, WAF/CMS-эвристики
 │   │   ├── dns-security.js         # SPF, DMARC, CAA
-│   │   └── web-probes.js           # HEAD-файлы, security.txt, fingerprint
+│   │   └── web-probes.js           # GET-пробы файлов, security.txt, fingerprint
 │   └── utils/
 │       ├── scan-helpers.js         # parseTarget, бюджеты, buildReport
 │       └── rate-limit.js           # кулдаун, семафор, LRU
-├── test/                           # 12 тестовых файлов + fixtures/tls
+├── test/                           # 13 тестовых файлов + fixtures/tls
 │   ├── net-guard.test.js           # 9 тестов SSRF-классификации
-│   ├── scoring.test.js             # 47 тестов скоринга
-│   ├── checks.test.js              # 12 тестов: порты, TLS, заголовки
-│   ├── dns-security.test.js        # 24 теста SPF/DMARC/CAA
-│   ├── header-analysis.test.js     # 31 тест cookie/заголовков/WAF/CMS
-│   ├── web-probes.test.js          # 12 тестов HEAD/security.txt/fingerprint
+│   ├── scoring.test.js             # 66 тестов скоринга
+│   ├── checks.test.js              # 19 тестов: порты, TLS, заголовки
+│   ├── dns-security.test.js        # 29 тестов SPF/DMARC/CAA
+│   ├── header-analysis.test.js     # 42 теста cookie/заголовков/WAF/CMS
+│   ├── web-probes.test.js          # 20 тестов GET-проб/security.txt/fingerprint
 │   ├── scan-helpers.test.js        # 22 теста бюджета и сборки отчёта
-│   ├── rate-limit.test.js          # 10 тестов лимитов
+│   ├── rate-limit.test.js          # 17 тестов лимитов
 │   ├── report-model.test.js        # 25 тестов модели отчёта
-│   ├── frontend-contract.test.js   # 7 тестов нормализации и DOM
-│   ├── server.test.js              # 4 теста: запуск, XFF, токен согласия
-│   ├── server-http.test.js         # 12 тестов HTTP-слоя
+│   ├── frontend-contract.test.js   # 12 тестов контракта и экспортов
+│   ├── render-dom.test.js          # 1 исполняемый DOM-тест рендера
+│   ├── server.test.js              # 11 тестов: запуск, XFF, конфиг, токен
+│   ├── server-http.test.js         # 17 тестов HTTP-слоя и CSP
 │   └── fixtures/tls/self-signed.js # сертификат для тестов TLS
 ├── .env.example
 ├── .gitignore
@@ -502,14 +507,14 @@ cybercheck/
 
 - **SSRF-защита** — DNS-резолв, проверка **всех** адресов на публичность (`ipaddr.js`, только `unicast`), подключение **по проверенному IP**, без повторного резолва. Блокируются loopback, private, link-local, CGNAT, multicast, ULA, 6to4, Teredo, NAT64, IPv4-mapped и `::/96`.
 - **Валидация URL** — только `http`/`https`, длина ≤ 2048, hostname ≤ 253, IDN/punycode, снятие завершающей точки и скобок IPv6, приватные адреса — через SSRF-контур.
-- **Нет эксплуатации** — TCP-connect, TLS-хендшейк (включая probe TLS 1.0/1.1), чтение заголовков и ограниченного тела HTML (до 64 КБ для фингерпринта), HEAD-пробы четырёх путей и GET `security.txt`. Это не фаззинг и не подбор.
-- **SSRF новых проб** — HEAD-файлы, `security.txt`, CORS и фингерпринт подключаются только к `connectIp`; `hostname` используется лишь в `Host` и TLS SNI. DNS-запросы SPF/DMARC/CAA идут к резолверу и не открывают сокет на цель.
+- **Нет эксплуатации** — TCP-connect, TLS-хендшейк (включая probe TLS 1.0/1.1), чтение заголовков и ограниченного тела HTML (до 64 КБ для фингерпринта и meta-CSP), GET-пробы четырёх путей с чтением до 4 КБ и GET `security.txt`. Это не фаззинг и не подбор.
+- **SSRF новых проб** — пробы файлов, `security.txt`, CORS и фингерпринт подключаются только к `connectIp`; `hostname` используется лишь в `Host` и TLS SNI. Same-origin редиректы повторяются тем же сокетом и не требуют нового резолва; переход на другой origin не выполняется. DNS-запросы SPF/DMARC/CAA идут к резолверу и не открывают сокет на цель.
 - **XSS** — рендер только через `textContent`/DOM API, `innerHTML` не используется; строгий CSP `script-src 'self'`, `object-src 'none'`, `frame-ancestors 'none'`.
 - **Токен согласия (HMAC)** — страница получает `<issuedAt>.<HMAC-SHA256(issuedAt)>` в base64url; сервер проверяет подпись через `crypto.timingSafeEqual` и TTL 15 минут. Голый `{"consent": true}` без токена отклоняется 400-й. Секрет — `CONSENT_SECRET`, обязателен в production. В production кэшируется только HTML-шаблон, а токен подставляется на каждый ответ: закэшированный токен истёк бы через 15 минут после старта и сломал бы все сканы до перезапуска.
 - **ReDoS** — данные цели разбираются за линейное время: `hasGeneratorMeta()` ищет `<meta>` без регулярок с вложенными квантификаторами, длина значений заголовков (`Server`, `issuer`) ограничена 120 символами, тело фингерпринта — 64 КБ. Тест на ~58 КБ «ядовитого» HTML требует меньше 500 мс.
 - **Ошибки** — единый обработчик, наружу только обобщённый JSON, стек — в серверный лог.
 - **CORS** — один явный origin, без `*`.
-- **Лимит тела** — 8 КБ; **таймауты** — 60 с на весь скан, 2–5 с на отдельные сетевые операции, 65 с на клиенте, 40 с на graceful shutdown.
+- **Лимит тела** — 4 КБ на файловую пробу, 32 КБ на `security.txt`, 64 КБ на фингерпринт и meta-CSP, 8 КБ на тело API-запроса; **таймауты** — 60 с на весь скан, 2–5 с на отдельные сетевые операции, 65 с на клиенте, 40 с на graceful shutdown.
 - **Кэширование** — `/` и `/api/*` отдаются с `no-store`: результат скана не оседает ни в браузере, ни в промежуточном кэше. Статика наоборот перепроверяется по ETag и отвечает 304.
 - **Ретраи** — порты, TLS и заголовки повторяются один раз; это может означать более одного запроса к цели.
 - **Ключ лимита** — берётся из правого элемента `X-Forwarded-For` (его дописывает наш прокси), а не из левого, который контролирует клиент; при `TRUST_PROXY=0` заголовок игнорируется полностью.
@@ -519,7 +524,7 @@ cybercheck/
 
 ## Ограничения
 
-1. **Лимит частоты — best effort.** 10 секунд на IP (IPv6 — на подсеть `/64`), карта в памяти процесса, `MAX_KEYS = 10 000`, LRU; фоновая чистка раз в 30 секунд, поэтому запись может жить до ~30 секунд. Обходится распределённым источником или `/48`. N реплик = N лимитов. Потолок одновременных сканов есть — 25 на процесс, сверх этого 503, — но глобального лимита по суммарной нагрузке нет. Отдельно: `TRUST_PROXY` должен совпадать с числом реальных прокси (допустимо 0–10); при завышенном значении ключ лимита берётся из подставленного `X-Forwarded-For` и окно обходится одним заголовком.
+1. **Лимит частоты — best effort.** 10 секунд на IP (IPv6 — на подсеть `/64`), карта в памяти процесса, `MAX_KEYS = 10 000`, LRU; фоновая чистка раз в 30 секунд, поэтому запись может жить до ~30 секунд. Обходится распределённым источником или `/48`. N реплик = N лимитов. Потолок одновременных сканов есть — 25 на процесс, сверх этого 503, — но глобального лимита по суммарной нагрузке нет. Дополнительно действует потолок 2 скана на сокет-адрес: он закрывает обход пула подменным `X-Forwarded-For` при прямом доступе, но за общим прокси (Render) сокет-адрес — это адрес edge, поэтому там лимит фактически ограничивает общую параллельность двумя сканами. Отдельно: `TRUST_PROXY` должен совпадать с числом реальных прокси (допустимо 0–10); при завышенном значении ключ лимита берётся из подставленного `X-Forwarded-For` и окно обходится одним заголовком.
 2. **Согласие не проверяет владение доменом.** Нужны `consent: true` и валидный `consentToken`: подпись HMAC-SHA256 сверяется через `timingSafeEqual`, просроченный (старше 15 минут) и поддельный токен дают 400. Но токен лишь подтверждает, что запрос пришёл со страницы сканера не раньше 15 минут назад: любой, кто открыл страницу, получает рабочий токен, поэтому доказательством прав на домен это не является. Verification не реализован; токен не привязан к сессии или IP и переиспользуется в пределах TTL.
 3. **Редиректы не разворачиваются.** Если 443 закрыт, а 80 отдаёт 301 на HTTPS, в отчёт попадут заголовки редиректа, а не сайта.
 4. **IPv6 без zone-id.** `http://[2606:4700::1111]` поддерживается, но link-local с zone-id (`fe80::1%eth0`) — нет: URL-парсер и `net.isIP` такой литерал не принимают. Для `DEMO_MODE` разрешены `localhost`, `127.0.0.1` и `::1`.
@@ -535,7 +540,7 @@ cybercheck/
 14. **Политика приватности есть** (`privacy.html`), но это описание фактического поведения сервиса, а не юридически выверенный документ. Для B2B по 152-ФЗ нужна отдельная проработка: согласие на обработку, сроки хранения, ответственное лицо.
 15. **Нужен современный браузер.** `:has()` (подсветка строки согласия), `conic-gradient` (кольцо оценки) и `100dvh` есть в Chrome 108+, Safari 15.4+, Firefox 121+. В старых браузерах деградация мягкая: скан и отчёт работают, подсветка согласия и `dvh` — нет.
 16. **DNS/email — по точному hostname.** SPF/CAA запрашиваются для введённого домена, DMARC — `_dmarc.<hostname>`. Для `www.example.com` запись `_dmarc.example.com` не подставляется; сканируйте apex, если нужна зона целиком.
-17. **HEAD-проба — только четыре пути.** `200` с не-HTML содержимым на `/.env`, `/.git/config` или `/backup.zip` даёт critical и потолок 40/50/50; `/.DS_Store` — low. `200 text/html` распознаётся как SPA-заглушка и не считается экспозицией, но catch-all с другим Content-Type всё ещё может дать ложное срабатывание. `403` трактуется как WAF/запрет и не является уязвимостью. Ответы `301/302/401/405` — только данные.
+17. **Файловая проба — только четыре пути.** Экспозиция подтверждается сигнатурой содержимого: `/.env` (`KEY=VALUE`), `/.git/config` (`[core]`), `/backup.zip` (ZIP-магия), `/.DS_Store` (магия). Подтверждённый `/.env`/`/.git/config`/`/backup.zip` даёт critical и потолок 40/50/50, `/.DS_Store` — low. `200` без сигнатуры — `NO_SIGNATURE`: баллы за путь не начисляются, но и находки нет; `403` трактуется как WAF/запрет. Ответы `301/302/401/405` — только данные (same-origin редиректы при этом преследуются).
 18. **Фингерпринт — эвристика.** WAF определяется по заголовкам/кукам (Cloudflare, Sucuri, Akamai), CMS — по кукам/meta/HTML (WordPress, Drupal, Joomla, Bitrix). Кастомные сборки, закрытый бэкенд и сжатый/бинарный ответ могут не определиться; тело читается не больше 64 КБ.
 19. **CORS проверяется по корню.** `Access-Control-Allow-Origin: *` смотрится в ответе `/`; отдельные API-эндпоинты не обходятся.
 20. **Копирование отчёта требует защищённого контекста.** `navigator.clipboard.writeText` доступен на HTTPS или `localhost`. На HTTP-стенде кнопка не падает, а честно сообщает, что браузер не дал доступ к буферу; текст отчёта при этом остаётся на экране.
