@@ -13,7 +13,14 @@ const { selfSignedCertificate } = require("./fixtures/tls/self-signed");
 // Локальный сервер на случайном порту: тесты не должны зависеть от внешней
 // сети и от того, свободен ли конкретный порт.
 async function listen(server) {
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve, reject) => {
+    const onError = (error) => reject(error);
+    server.once("error", onError);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", onError);
+      resolve();
+    });
+  });
   return server.address().port;
 }
 
@@ -41,14 +48,13 @@ test("checkPort: закрытый порт — refused, а не open", async () 
   assert.strictEqual(result.status, "refused");
 });
 
-test("checkPort: открытый порт определяется", async () => {
+test("checkPort: открытый порт определяется", async (t) => {
   const server = net.createServer();
   const port = await listen(server);
+  t.after(() => closeServer(server));
 
   const result = await checkPort("127.0.0.1", port, 1000, 0);
   assert.strictEqual(result.status, "open");
-
-  await closeServer(server);
 });
 
 test("checkPort: таймаут — filtered, а не closed", async (t) => {
@@ -113,7 +119,7 @@ test("checkPort: прочие сетевые ошибки — filtered, ретр
 
 // --- Заголовки -----------------------------------------------------
 
-test("checkHeaders: находит заголовки, cookie-флаги и CORS", async () => {
+test("checkHeaders: находит заголовки, cookie-флаги и CORS", async (t) => {
   const server = http.createServer((req, res) => {
     res.setHeader("Content-Security-Policy", "default-src 'self'");
     res.setHeader("X-Frame-Options", "DENY");
@@ -128,6 +134,7 @@ test("checkHeaders: находит заголовки, cookie-флаги и CORS
     res.end("ok");
   });
   const port = await listen(server);
+  t.after(() => closeServer(server));
 
   const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
   assert.strictEqual(result.csp, true);
@@ -157,11 +164,9 @@ test("checkHeaders: находит заголовки, cookie-флаги и CORS
     missingHttpOnly: 1,
     missingSameSite: 0,
   });
-
-  await closeServer(server);
 });
 
-test("checkHeaders: небезопасные значения заголовков не дают защиты", async () => {
+test("checkHeaders: небезопасные значения заголовков не дают защиты", async (t) => {
   const server = http.createServer((req, res) => {
     // Заголовки есть, но защиту не включают: max-age=0, wildcard в CSP,
     // неизвестные значения XFO/XCTO/Referrer-Policy/COOP.
@@ -174,6 +179,7 @@ test("checkHeaders: небезопасные значения заголовко
     res.end("ok");
   });
   const port = await listen(server);
+  t.after(() => closeServer(server));
 
   const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
 
@@ -199,17 +205,16 @@ test("checkHeaders: небезопасные значения заголовко
 
   // server нормализован: строка или null, без заглушки «не указан».
   assert.strictEqual(result.server, null);
-
-  await closeServer(server);
 });
 
-test("checkHeaders: IPv6 в Host-заголовке заключён в скобки", async () => {
+test("checkHeaders: IPv6 в Host-заголовке заключён в скобки", async (t) => {
   let seenHost = "";
   const server = http.createServer((req, res) => {
     seenHost = req.headers.host;
     res.end("ok");
   });
   const port = await listen(server);
+  t.after(() => closeServer(server));
 
   const result = await checkHeaders(
     "127.0.0.1",
@@ -223,8 +228,6 @@ test("checkHeaders: IPv6 в Host-заголовке заключён в скоб
 
   assert.strictEqual(result.error, undefined);
   assert.strictEqual(seenHost, `[2001:db8::1]:${port}`);
-
-  await closeServer(server);
 });
 
 test("checkHeaders: CSP из <meta> читается из тела", async (t) => {

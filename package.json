@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node scripts/run-tests.js",
-    "test:isolated": "node --test test/*.test.js"
+    "test:isolated": "node --require ./test/setup-env.js --test test/*.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

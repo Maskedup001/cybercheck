@@ -12,6 +12,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+// Тестовое окружение выставляется до загрузки тестовых файлов: они требуют
+// src/core/server.js, который в production без CONSENT_SECRET завершает
+// процесс на этапе require.
+require(path.join(__dirname, "..", "test", "setup-env.js"));
+
 const testDir = path.join(__dirname, "..", "test");
 
 const files = fs

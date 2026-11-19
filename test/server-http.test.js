@@ -46,7 +46,8 @@ function listen(overrides = {}) {
 }
 
 async function shutdown(started) {
-  if (!started) return;
+  // before() мог упасть и не создать сервер: after() не должен падать следом.
+  if (!started || !started.server) return;
 
   started.limiter.stopSweeper();
   await new Promise((resolve) => {
