@@ -134,15 +134,17 @@ function effectiveHasTls({ headers, port, portTls }) {
 
 // Веб-порты, которые реально открыты, в порядке приоритета. Отдельная
 // функция, потому что это решение оркестратора: его надо тестировать без
-// сети и без Express.
-function selectWebPorts(openPorts) {
+// сети и без Express. Порядок можно подменить (options в server.js): это
+// тестовый шов, чтобы поднять зависшую цель на случайном порту, не занимая
+// фиксированный 8080.
+function selectWebPorts(openPorts, order = WEB_PORT_ORDER) {
   const open = new Set(
     (Array.isArray(openPorts) ? openPorts : [])
       .filter((item) => item && item.status === "open")
       .map((item) => item.port),
   );
 
-  return WEB_PORT_ORDER.filter((port) => open.has(port));
+  return order.filter((port) => open.has(port));
 }
 
 // Критические пути отдаются контрактом files.critical. Здесь же решается,
@@ -248,6 +250,7 @@ module.exports = {
   clampTimeout,
   effectiveHasTls,
   selectWebPorts,
+  WEB_PORT_ORDER,
   withCriticalFiles,
   buildReport,
   isHtmlRequestPath,

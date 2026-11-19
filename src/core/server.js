@@ -21,6 +21,7 @@ const {
   effectiveHasTls,
   isHtmlRequestPath,
   selectWebPorts,
+  WEB_PORT_ORDER,
   buildReport,
 } = require("../utils/scan-helpers");
 const {
@@ -214,9 +215,15 @@ function redirectsToHttps(headers) {
 
 // Собирает Express-приложение и лимитер, но ничего не слушает: так HTTP-слой
 // можно поднять на случайном порту в тестах и переиспользовать.
-function createApp(config) {
+function createApp(config, options = {}) {
   const { publicOrigin, publicDir, pages, isProduction, demoMode, trustProxy } =
     config;
+
+  // Тестовый шов: по умолчанию набор портов и порядок веб-портов штатные.
+  // Тест лимитера подставляет сюда порт своего зависшего target-сервера,
+  // чтобы не занимать фиксированный 8080 (EADDRINUSE при параллельном
+  // запуске) и при этом прогнать настоящий скан, а не заглушку.
+  const { scanPorts = SCAN_PORTS, webPortOrder = WEB_PORT_ORDER } = options;
 
   const pageCache = new Map();
 
@@ -529,7 +536,7 @@ function createApp(config) {
           for (const ip of resolvedIps.slice(0, 3)) {
             ensureBudget();
             const ports = await Promise.all(
-              SCAN_PORTS.map((p) =>
+              scanPorts.map((p) =>
                 checkPort(ip, p, budget(PORT_TIMEOUT_MS), 1, signal, deadline),
               ),
             );
@@ -542,11 +549,11 @@ function createApp(config) {
                   openByPort.set(result.port, result);
                 }
               }
-              openPorts = SCAN_PORTS.filter((port) => openByPort.has(port)).map(
+              openPorts = scanPorts.filter((port) => openByPort.has(port)).map(
                 (port) => openByPort.get(port),
               );
 
-              if (currentOpen.some((p) => [443, 80, 8080].includes(p.port))) {
+              if (currentOpen.some((p) => webPortOrder.includes(p.port))) {
                 connectIpToUse = ip;
                 break;
               }
@@ -567,7 +574,7 @@ function createApp(config) {
             );
           }
 
-          const availableWebPorts = selectWebPorts(openPorts);
+          const availableWebPorts = selectWebPorts(openPorts, webPortOrder);
 
           if (availableWebPorts.length === 0) {
             const dns = await dnsPromise;
@@ -888,8 +895,8 @@ function applySocketLimits(server, config = {}) {
 // Создаёт Express-приложение и HTTP-сервер с лимитами, но не слушает порт и не
 // вешает обработчики сигналов: ровно такой сервер нужен тестам, чтобы жить в их
 // процессе и не завершать его по SIGTERM.
-function createHttpServer(config) {
-  const { app, limiter } = createApp(config);
+function createHttpServer(config, options = {}) {
+  const { app, limiter } = createApp(config, options);
   const server = http.createServer(app);
   applySocketLimits(server, config);
   return { app, server, limiter };
@@ -897,7 +904,7 @@ function createHttpServer(config) {
 
 // Поднимает HTTP-сервер и, по умолчанию, graceful shutdown.
 function startServer(config, options = {}) {
-  const { app, server, limiter } = createHttpServer(config);
+  const { app, server, limiter } = createHttpServer(config, options);
 
   server.listen(config.port, () => {
     const actualPort = server.address().port;
