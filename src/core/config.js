@@ -95,4 +95,11 @@ function readConfig(env = process.env) {
   };
 }
 
-module.exports = { readConfig, PUBLIC_DIR, PAGES };
+module.exports = {
+  readConfig,
+  readPort,
+  readTrustProxy,
+  readNodeEnv,
+  PUBLIC_DIR,
+  PAGES,
+};

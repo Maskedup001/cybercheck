@@ -1,5 +1,6 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 const express = require("express");
@@ -37,6 +38,15 @@ const TLS_TIMEOUT_MS = 5000;
 const HEADERS_TIMEOUT_MS = 5000;
 const DNS_SECURITY_TIMEOUT_MS = 3000;
 const PROBE_TIMEOUT_MS = 2000;
+
+// Таймауты и потолки HTTP-сервера. Держим их константами рядом: тест берёт
+// ожидаемые значения отсюда и сравнивает с реальными свойствами server.
+const SERVER_HEADERS_TIMEOUT_MS = 10_000;
+const SERVER_REQUEST_TIMEOUT_MS = 15_000;
+const SERVER_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const SERVER_MAX_CONNECTIONS = 4096;
+const SERVER_MAX_REQUESTS_PER_SOCKET = 100;
+const MAX_SOCKETS_PER_IP = 64;
 
 // Секрет для подписи токенов согласия. В продакшене должен быть задан явно.
 const CONSENT_SECRET =
@@ -186,6 +196,20 @@ function securitySignature(headers) {
     headers.corsWildcard,
     headers.cookieSummary,
   ]);
+}
+
+// Подтверждает, что порт 80 перенаправляет на HTTPS: только 3xx с https://
+// в Location. Открытый HTTP без редиректа — это false (повод снять баллы за
+// HSTS), а null остаётся для случая, когда проверка недоступна и мы не знаем.
+function redirectsToHttps(headers) {
+  if (!headers || headers.error) return false;
+
+  return (
+    typeof headers.status === "number" &&
+    headers.status >= 300 &&
+    headers.status < 400 &&
+    /^https:/i.test(headers.location || "")
+  );
 }
 
 // Собирает Express-приложение и лимитер, но ничего не слушает: так HTTP-слой
@@ -676,6 +700,28 @@ function createApp(config) {
             }
           }
 
+          // HSTS защищает только повторные заходы: первый http://-запрос
+          // уходит открытым, если порт 80 не перенаправляет на HTTPS.
+          // Проверяем это отдельным запросом и только при живом TLS и открытом
+          // 80; в остальных случаях результат null — «не проверялось».
+          let httpRedirectsToHttps = null;
+          if (hasTls && openPorts.some((port) => port.port === 80)) {
+            ensureBudget();
+            const plain = await checkHeaders(
+              connectIpToUse,
+              80,
+              hostname,
+              0,
+              signal,
+              false,
+              budget(HEADERS_TIMEOUT_MS),
+              deadline,
+            );
+            if (plain && !plain.error) {
+              httpRedirectsToHttps = redirectsToHttps(plain);
+            }
+          }
+
           // Все пробы идут на проверенный connectIp; hostname — только Host/SNI.
           ensureBudget();
           const probeTimeout = budget(PROBE_TIMEOUT_MS);
@@ -717,6 +763,7 @@ function createApp(config) {
             securityTxt,
             fingerprint,
             cloaking,
+            httpRedirectsToHttps,
           });
         },
         SCAN_BUDGET_MS,
@@ -794,38 +841,27 @@ function createApp(config) {
   return { app, limiter };
 }
 
-// Поднимает HTTP-сервер, вешает таймауты сокетов и graceful shutdown.
-function startServer(config) {
-  const { app, limiter } = createApp(config);
-  const server = app.listen(config.port, () => {
-    const actualPort = server.address().port;
-    console.log(`Сканер запущен: http://localhost:${actualPort}`);
-    console.log(`[CORS] разрешён origin: ${config.publicOrigin}`);
-    if (config.demoMode) console.log("[DEMO_MODE] localhost разрешён");
-  });
+// Ограничения HTTP-сервера: таймауты сокетов, потолок соединений и лимит
+// сокетов с одного адреса. Вынесено в отдельную функцию, чтобы тесты поднимали
+// сервер в своём процессе и проверяли реальные свойства объекта.
+function applySocketLimits(server, config = {}) {
+  // Без явных таймаутов медленный клиент (slowloris) держит соединение и тело
+  // запроса сколько угодно, а на starter-плане это исчерпывает лимит
+  // соединений.
+  server.headersTimeout = SERVER_HEADERS_TIMEOUT_MS;
+  server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;
+  server.keepAliveTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS;
 
-  // EADDRINUSE/EACCES не должны уходить в uncaughtException с сырым стеком:
-  // это штатная ошибка запуска, и сообщение должно быть понятным.
-  server.on("error", (error) => {
-    console.error(`Не удалось запустить сервер: ${error.message}`);
-    process.exit(1);
-  });
-
-  // Явные таймауты сокетов: без них медленный клиент (slowloris) держит
-  // соединение и тело запроса сколько угодно, а на starter-плане это
-  // исчерпывает лимит соединений.
-  server.headersTimeout = 10_000;
-  server.requestTimeout = 15_000;
-  server.keepAliveTimeout = 5_000;
-
-  // Потолок сокетов поднят до 4096, чтобы один хост не забивал весь пул.
-  server.maxConnections = 4096;
-  server.maxRequestsPerSocket = 100;
+  // Потолок сокетов заметно выше того, что может открыть один хост: при малом
+  // значении любой желающий idle-сокетами заставляет Node уничтожать новые
+  // соединения (полный отказ в обслуживании).
+  server.maxConnections = SERVER_MAX_CONNECTIONS;
+  server.maxRequestsPerSocket = SERVER_MAX_REQUESTS_PER_SOCKET;
 
   // Если прокси не используется, ограничиваем число сокетов с одного IP,
-  // чтобы защититься от idle-соединений и DoS-атак.
+  // чтобы защититься от idle-соединений и DoS-атак. За прокси у всех клиентов
+  // один адрес edge, и такой лимит заблокировал бы всех сразу.
   if (!config.trustProxy) {
-    const MAX_SOCKETS_PER_IP = 64;
     const socketsByIp = new Map();
 
     server.on("connection", (socket) => {
@@ -846,41 +882,80 @@ function startServer(config) {
     });
   }
 
-  // Graceful shutdown (корректное завершение при SIGTERM/SIGINT)
-  for (const sig of ["SIGTERM", "SIGINT"]) {
-    process.on(sig, () => {
-      console.log(`${sig}: останавливаюсь...`);
-      limiter.stopSweeper();
-      server.close(() => process.exit(0));
+  return server;
+}
 
-      // Закрываем "спящие" соединения (Node 18+)
-      if (server.closeIdleConnections) server.closeIdleConnections();
+// Создаёт Express-приложение и HTTP-сервер с лимитами, но не слушает порт и не
+// вешает обработчики сигналов: ровно такой сервер нужен тестам, чтобы жить в их
+// процессе и не завершать его по SIGTERM.
+function createHttpServer(config) {
+  const { app, limiter } = createApp(config);
+  const server = http.createServer(app);
+  applySocketLimits(server, config);
+  return { app, server, limiter };
+}
 
-      setTimeout(() => {
-        // Форсированно закрываем оставшиеся соединения
-        if (server.closeAllConnections) server.closeAllConnections();
-        process.exit(1);
-      }, 40_000).unref();
-    });
-  }
+// Поднимает HTTP-сервер и, по умолчанию, graceful shutdown.
+function startServer(config, options = {}) {
+  const { app, server, limiter } = createHttpServer(config);
 
-  // Страховка от необработанных ошибок в промисах
-  process.on("unhandledRejection", (reason) => {
-    console.error("Unhandled Rejection:", reason);
+  server.listen(config.port, () => {
+    const actualPort = server.address().port;
+    console.log(`Сканер запущен: http://localhost:${actualPort}`);
+    console.log(`[CORS] разрешён origin: ${config.publicOrigin}`);
+    if (config.demoMode) console.log("[DEMO_MODE] localhost разрешён");
   });
 
-  process.on("uncaughtException", (err) => {
-    console.error("Uncaught Exception:", err);
+  // EADDRINUSE/EACCES не должны уходить в uncaughtException с сырым стеком:
+  // это штатная ошибка запуска, и сообщение должно быть понятным.
+  server.on("error", (error) => {
+    console.error(`Не удалось запустить сервер: ${error.message}`);
     process.exit(1);
   });
+
+  // Обработчики сигналов и страховки от необработанных ошибок вешаются на
+  // процесс целиком: тестовому процессу они не нужны и мешают, поэтому их
+  // можно отключить. По умолчанию (в продакшене) они включены.
+  if (options.installSignalHandlers !== false) {
+    // Graceful shutdown (корректное завершение при SIGTERM/SIGINT)
+    for (const sig of ["SIGTERM", "SIGINT"]) {
+      process.on(sig, () => {
+        console.log(`${sig}: останавливаюсь...`);
+        limiter.stopSweeper();
+        server.close(() => process.exit(0));
+
+        // Закрываем "спящие" соединения (Node 18+)
+        if (server.closeIdleConnections) server.closeIdleConnections();
+
+        setTimeout(() => {
+          // Форсированно закрываем оставшиеся соединения
+          if (server.closeAllConnections) server.closeAllConnections();
+          process.exit(1);
+        }, 40_000).unref();
+      });
+    }
+
+    // Страховка от необработанных ошибок в промисах
+    process.on("unhandledRejection", (reason) => {
+      console.error("Unhandled Rejection:", reason);
+    });
+
+    process.on("uncaughtException", (err) => {
+      console.error("Uncaught Exception:", err);
+      process.exit(1);
+    });
+  }
 
   return { app, server, limiter };
 }
 
 module.exports = {
   createApp,
+  createHttpServer,
+  applySocketLimits,
   startServer,
   SCAN_PORTS,
   issueConsentToken,
   verifyConsentToken,
+  redirectsToHttps,
 };

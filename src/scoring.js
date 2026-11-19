@@ -22,7 +22,12 @@ const WEIGHTS = {
   ssl: 12,
   sslDays: 3,
   // Заголовки
-  hsts: 8,
+  // 8 баллов HSTS разделены на две проверки: заголовок на HTTPS-ответе (5) и
+  // подтверждённый редирект с открытого HTTP на HTTPS (3). Раньше 8 баллов
+  // давались за одну строку заголовка, хотя без редиректа HSTS не защищает
+  // первый запрос — и сайт без перенаправления получал высшую оценку.
+  hsts: 5,
+  hstsRedirect: 3,
   csp: 10,
   xframe: 6,
   xcontent: 6,
@@ -104,6 +109,13 @@ const FILE_CHECKS = [
     owasp: OWASP.injection,
   },
 ];
+
+// Веса и список файловых проверок — это контракт между API, интерфейсом и
+// тестами. Заморозка не даёт случайной мутации в процессе поменять оценку
+// для всех последующих отчётов: раньше любой потребитель мог изменить вес.
+Object.freeze(WEIGHTS);
+for (const check of FILE_CHECKS) Object.freeze(check);
+Object.freeze(FILE_CHECKS);
 
 // ENODATA — «записи нет» и для apex, и для _dmarc. ENOTFOUND у apex-домена,
 // у которого уже разрешились A/AAAA, означает рассинхрон/split-horizon DNS,
@@ -219,10 +231,14 @@ function calculateScore(report) {
   );
 
   const hasSSL = !!ssl.hasSSL && !!ssl.valid;
-  const daysLeft = typeof ssl.daysLeft === "number" ? ssl.daysLeft : null;
+  // NaN и Infinity не должны попадать в сравнения: это единственное число,
+  // которое приходит из сертификата, а NaN молча проходит проверку typeof.
+  const daysLeft = Number.isFinite(ssl.daysLeft) ? ssl.daysLeft : null;
   const riskyPorts = ports.filter(
     (p) => p.status === "open" && [22, 3306].includes(p.port),
   );
+  // filtered — состояние не измерено (таймаут/DROP): это не «закрыт».
+  const unverifiedPorts = ports.filter((p) => p.status === "filtered");
   const has3306 = ports.some((p) => p.port === 3306 && p.status === "open");
 
   const add = (finding) => {
@@ -319,7 +335,7 @@ function calculateScore(report) {
     });
   }
 
-  if (ssl.hasSSL && ssl.supportsOldTls) {
+  if (ssl.hasSSL && ssl.supportsOldTls === true) {
     score -= OLD_TLS_PENALTY;
     add({
       id: "old-tls",
@@ -331,17 +347,43 @@ function calculateScore(report) {
         "Отключите TLS 1.0 и 1.1 на сервере, оставьте только 1.2 и 1.3.",
       owasp: OWASP.crypto,
     });
+  } else if (ssl.hasSSL && ssl.supportsOldTls === null) {
+    // null — отдельное проверки не хватило бюджета. Это не «старые протоколы
+    // выключены»: за неизвестность баллы не начисляем и не штрафуем, но
+    // показываем, что проверка не выполнена.
+    add({
+      id: "old-tls-unchecked",
+      title: "Поддержка TLS 1.0/1.1 не проверена",
+      desc: "Не хватило времени скана на отдельное соединение с TLS 1.0/1.1: неизвестно, отключены ли устаревшие протоколы.",
+      severity: "low",
+      weight: 0,
+      recommendation:
+        "Повторите скан; проверьте TLS 1.0/1.1 вручную (nmap --script ssl-enum-ciphers).",
+      owasp: OWASP.crypto,
+    });
   }
 
   // --- HTTP-заголовки, cookie, CORS ----------------------------------------
-  if (h.error) {
+  // Оценка заголовков имеет смысл только для обычной страницы. Редирект,
+  // который не удалось пройти, челлендж WAF и страница ошибки — это не сайт:
+  // оценки «нет CSP/XFO» по ним недостоверны, поэтому считаем проверку
+  // невыполненной, а не проваленной.
+  const headersNotChecked =
+    Boolean(h.error) || (typeof h.status === "number" && h.status >= 300);
+  if (headersNotChecked) {
     add({
-      id: "headers-unavailable",
-      title: "Не удалось проверить заголовки",
-      desc: "Сервер не ответил на HTTP-запрос. Часть проверок не выполнена.",
+      id: h.error ? "headers-unavailable" : "headers-not-checked",
+      title: h.error
+        ? "Не удалось проверить заголовки"
+        : `Заголовки не проверены (HTTP ${h.status})`,
+      desc: h.error
+        ? "Сервер не ответил на HTTP-запрос. Часть проверок не выполнена."
+        : "Корневой ответ отдаёт редирект, ошибку или челлендж (WAF/авторизация): оценки «нет CSP/XFO» по такой странице недостоверны.",
       severity: "medium",
       weight: 0,
-      recommendation: "Повторите скан позже.",
+      recommendation: h.error
+        ? "Повторите скан позже."
+        : "Проверьте сайт без WAF/anti-bot (или разрешите CyberCheck в правилах) и повторите скан.",
       owasp: OWASP.misconfig,
     });
   } else {
@@ -361,10 +403,33 @@ function calculateScore(report) {
       });
     };
 
+    // Заголовок HSTS и подтверждённый редирект HTTP→HTTPS — две половины одной
+    // защиты: без редиректа первый (незашифрованный) запрос уходит до того,
+    // как браузер узнает про HSTS. Поэтому балл делится: 5 за заголовок,
+    // 3 только если с открытого порта 80 пришёл 301/308 на https.
+    const HSTS_TOTAL_WEIGHT = WEIGHTS.hsts + WEIGHTS.hstsRedirect;
+
     if (h.hsts && hasSSL) {
       score += WEIGHTS.hsts;
+
+      if (input.httpRedirectsToHttps === false) {
+        add({
+          id: "no-http-redirect",
+          title: "HTTP не перенаправляет на HTTPS",
+          desc: "Порт 80 отдаёт сайт по открытому HTTP без 301/308 на HTTPS: HSTS не защищает первый запрос, трафик можно перехватить.",
+          severity: "high",
+          weight: WEIGHTS.hstsRedirect,
+          recommendation:
+            "Настройте постоянный редирект с http:// на https:// (301/308) на порту 80.",
+          owasp: OWASP.crypto,
+        });
+      } else {
+        // true — редирект подтверждён, null — проверить не удалось (порт 80
+        // закрыт или не было бюджета). Наказывать за неизвестность не за что.
+        score += WEIGHTS.hstsRedirect;
+      }
     } else if (hasSSL) {
-      headerFinding(h.hstsState, WEIGHTS.hsts, {
+      headerFinding(h.hstsState, HSTS_TOTAL_WEIGHT, {
         id: "no-hsts",
         weakId: "weak-hsts",
         title: "Нет HSTS",
@@ -393,7 +458,9 @@ function calculateScore(report) {
       });
     }
 
-    if (h.xframe) {
+    // frame-ancestors (CSP Level 2) закрывает кликджекинг без X-Frame-Options:
+    // требовать оба заголовка — штрафовать корректно настроенный сайт.
+    if (h.xframe || h.cspFrameAncestors) {
       score += WEIGHTS.xframe;
     } else {
       headerFinding(h.xframeState, WEIGHTS.xframe, {
@@ -406,6 +473,22 @@ function calculateScore(report) {
           "X-Frame-Options есть, но значение не DENY/SAMEORIGIN — встраивание не запрещено.",
         severity: "medium",
         recommendation: "Добавьте X-Frame-Options: DENY.",
+      });
+    }
+
+    // Ответ пришёл по открытому HTTP, хотя TLS на этом же хосте работает.
+    // Раньше такой сайт молча получал высшую оценку: HSTS и HTTPS считались
+    // настроенными, а фактически страница отдавалась без шифрования.
+    if (hasSSL && h.protocol === "HTTP") {
+      add({
+        id: "no-https-first",
+        title: "Страница отдаётся по HTTP при работающем HTTPS",
+        desc: "Сканер получил ответ по открытому HTTP, хотя сертификат на этом хосте валиден. Первый запрос и весь трафик по этой схеме не шифруются.",
+        severity: "medium",
+        weight: 0,
+        recommendation:
+          "Настройте редирект на HTTPS на этом порту и убедитесь, что HTTP-версия не отдаёт контент.",
+        owasp: OWASP.crypto,
       });
     }
 
@@ -425,11 +508,15 @@ function calculateScore(report) {
       });
     }
 
-    if (
-      /(?:^|[\s/])\d+(?:\.\d+)*/.test(
-        typeof h.server === "string" ? h.server : "",
-      )
-    ) {
+    // Версия в заголовке Server — это утечка, только если это действительно
+    // версия. Простое число (`Server: 200 OK`) версией не является, а форматы
+    // `nginx/1.18.0`, `Caddy v2.7` и `envoy1.29` встречаются постоянно.
+    const serverValue = typeof h.server === "string" ? h.server : "";
+    const serverExposesVersion =
+      /[\w.-]+\/\d+(?:\.\d+)*/.test(serverValue) || // nginx/1.18.0, nginx/2
+      /\d+\.\d+(?:\.\d+)*/.test(serverValue); // Caddy v2.7, envoy1.29
+
+    if (serverExposesVersion) {
       add({
         id: "server-exposed",
         title: "Раскрыт Server",
@@ -444,10 +531,10 @@ function calculateScore(report) {
       score += WEIGHTS.server;
     }
 
-    // Дополнительные заголовки: undefined значит «не проверялось» — не
-    // штрафуем старые/частичные отчёты, false значит «проверено и отсутствует».
+    // Дополнительные заголовки: анализатор всегда возвращает булево значение,
+    // поэтому undefined здесь не может означать «проверка не выполнялась».
+    // Раньше самодельный отчёт без этих полей молча получал +6 баллов.
     const headerCheck = (value, state, weight, options) => {
-      if (value === undefined) return weight;
       if (value) return weight;
       headerFinding(state, weight, options);
       return 0;
@@ -593,19 +680,49 @@ function calculateScore(report) {
 
   // --- Порты ---------------------------------------------------------------
   if (riskyPorts.length === 0) {
-    score += WEIGHTS.riskyPorts;
-  } else {
-    riskyPorts.forEach((p) =>
+    // 10 баллов за «опасных портов нет» начисляются, только если это
+    // действительно установлено. filtered (таймаут/DROP) — состояние не
+    // измерено: по неизвестности нельзя ни награждать, ни штрафовать.
+    if (unverifiedPorts.length === 0) {
+      score += WEIGHTS.riskyPorts;
+    } else {
       add({
-        id: `port-${p.port}`,
-        title: `Открыт опасный порт ${p.port}`,
-        desc: `Порт ${p.port} доступен из интернета.`,
-        severity: "high",
-        weight: WEIGHTS.riskyPorts,
-        recommendation: `Закройте ${p.port} файрволом или ACL.`,
+        id: "ports-unverified",
+        title: "Состояние портов не проверено",
+        desc: `Нет ответа по портам: ${unverifiedPorts
+          .map((p) => p.port)
+          .sort((a, b) => a - b)
+          .join(", ")}. Оценить риск открытых портов нельзя.`,
+        severity: "low",
+        weight: 0,
+        recommendation:
+          "Повторите скан; при фильтрации SYN со стороны firewall результат всегда неполный.",
         owasp: OWASP.misconfig,
-      }),
-    );
+      });
+    }
+  } else {
+    // Одна проверка — одна находка с полным списком портов. Раньше N открытых
+    // портов давали N объектов с весом 10, и «вес находки = вклад в оценку»
+    // переставало быть правдой.
+    const portList = riskyPorts
+      .map((p) => p.port)
+      .sort((a, b) => a - b);
+    const label = portList.join(", ");
+    const plural = portList.length > 1;
+
+    add({
+      id: `port-${portList[0]}`,
+      title: plural
+        ? `Открыты опасные порты ${label}`
+        : `Открыт опасный порт ${label}`,
+      desc: plural
+        ? `Порты ${label} доступны из интернета.`
+        : `Порт ${label} доступен из интернета.`,
+      severity: "high",
+      weight: WEIGHTS.riskyPorts,
+      recommendation: `Закройте ${label} файрволом или ACL.`,
+      owasp: OWASP.misconfig,
+    });
   }
 
   if (!ports.some((p) => p.port === 8080 && p.status === "open")) {
@@ -687,8 +804,39 @@ function calculateScore(report) {
     } else if (dmarc.present) {
       const policy =
         typeof dmarc.policy === "string" ? dmarc.policy.toLowerCase() : null;
+
+      // pct — доля писем, к которым применяется политика. pct=0 значит, что
+      // она не применяется ни к кому, pct<100 — защита частичная. Раньше любое
+      // значение pct считалось полноценной строгой политикой.
+      const pct =
+        dmarc.pct === null || dmarc.pct === undefined
+          ? 100
+          : Number.isFinite(dmarc.pct)
+            ? Math.max(0, Math.min(100, dmarc.pct))
+            : 100;
+      const pctInvalid = dmarc.pctInvalid === true;
+      const partial = pct < 100 || pctInvalid;
+
       if (policy === "reject" || policy === "quarantine") {
-        score += WEIGHTS.dmarc;
+        if (partial) {
+          score += WEIGHTS.dmarc - 1;
+          add({
+            id: "dmarc-partial",
+            title: pctInvalid
+              ? "DMARC: некорректное значение pct"
+              : `DMARC применяется частично (pct=${pct})`,
+            desc: pctInvalid
+              ? `Политика DMARC задана как p=${policy}, но значение pct вне диапазона 0..100: применить её полностью нельзя.`
+              : `Политика DMARC задана как p=${policy}, но pct=${pct}: значительная часть писем не проверяется.`,
+            severity: "low",
+            weight: 1,
+            recommendation:
+              "Постепенно увеличьте pct до 100, чтобы политика применялась ко всем письмам.",
+            owasp: OWASP.auth,
+          });
+        } else {
+          score += WEIGHTS.dmarc;
+        }
       } else if (policy === "none") {
         add({
           id: "dmarc-weak",
@@ -882,7 +1030,7 @@ function calculateScore(report) {
   // --- Потолки -------------------------------------------------------------
   let cap = 100;
 
-  if (h.error) cap = Math.min(cap, 60);
+  if (headersNotChecked) cap = Math.min(cap, 60);
   // Тот же принцип: ошибка TLS режет оценку до 60 только когда HTTPS не
   // подтверждён. Если заголовки пришли по HTTPS, потолок 60 — ложный.
   if (ssl.error && ssl.tlsConfirmed !== true) cap = Math.min(cap, 60);
@@ -892,7 +1040,11 @@ function calculateScore(report) {
     cap = Math.min(cap, 40);
   }
   if (has3306) cap = Math.min(cap, 70);
-  if (ssl.supportsOldTls) cap = Math.min(cap, 85);
+  // Неизвестность трактуем консервативно: если проверку старых протоколов
+  // пропустили из-за бюджета, оценка не должна быть отличной.
+  if (ssl.supportsOldTls === true || ssl.supportsOldTls === null) {
+    cap = Math.min(cap, 85);
+  }
   if (hasSSL && daysLeft !== null && daysLeft <= 7) cap = Math.min(cap, 90);
   if (h.corsWildcard) cap = Math.min(cap, 60);
   cap = Math.min(cap, filesCap);
