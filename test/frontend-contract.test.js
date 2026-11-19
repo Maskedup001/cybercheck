@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { pathToFileURL } = require("node:url");
 
 const ROOT = path.join(__dirname, "..");
 const API_PATH = path.join(ROOT, "public/assets/js/api/client.js");
@@ -126,16 +127,36 @@ test("api.js нормализует OWASP и не теряет новые пол
   assert.strictEqual(fallback.severity, "low");
   assert.strictEqual(fallback.weight, 0);
   assert.strictEqual(fallback.owasp, "");
+});
 
-  const source = fs.readFileSync(API_PATH, "utf8");
-  for (const field of [
-    "data.dns",
-    "data.files",
-    "data.securityTxt",
-    "data.fingerprint",
-  ]) {
-    assert.ok(source.includes(field), `api.js должен сохранять ${field}`);
-  }
+// Объекты из vm-контекста имеют другой прототип, а deepStrictEqual сравнивает
+// и его. Прогон через JSON возвращает обычные объекты текущего realm.
+function plain(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+test("api.js: scanTarget доносит dns/files/securityTxt/fingerprint до рендера", async () => {
+  const payload = {
+    host: "example.com",
+    ports: [{ port: 443, status: "open" }],
+    score: 55,
+    grade: "C",
+    findings: [],
+    dns: { spf: { present: true }, dmarc: { present: false } },
+    files: { exposed: ["/.env"], critical: [{ path: "/.env" }] },
+    securityTxt: { present: true, status: 200 },
+    fingerprint: { status: 200, waf: { name: "cloudflare" } },
+  };
+
+  const { scanTarget } = loadApiWithResponse(payload);
+  const data = await scanTarget({ url: "example.com", consent: true });
+
+  // Без этих полей карточки DNS, файлов, security.txt и технологий
+  // показывают пустое состояние, хотя сервер данные прислал.
+  assert.deepStrictEqual(plain(data.dns), payload.dns);
+  assert.deepStrictEqual(plain(data.files), payload.files);
+  assert.deepStrictEqual(plain(data.securityTxt), payload.securityTxt);
+  assert.deepStrictEqual(plain(data.fingerprint), payload.fingerprint);
 });
 
 test("api.js: мусорные score/grade/ports не попадают в рендер", async () => {
@@ -207,6 +228,46 @@ test("api.js: сетевой сбой и таймаут — понятный р�
     () => hungFetch.scanTarget({ url: "example.com", consent: true }),
     /Превышено время ожидания/,
   );
+});
+
+test("client.js — настоящий ES-модуль с нужными экспортами", async () => {
+  const mod = await import(pathToFileURL(API_PATH).href);
+
+  for (const name of ["scanTarget", "normalizeFinding"]) {
+    assert.strictEqual(typeof mod[name], "function", `${name} не экспортирован`);
+  }
+});
+
+test("render-result.js — реальная линковка модуля (импорт report-model)", async () => {
+  // На загрузке модуль читает document.title и подписывается на печать,
+  // поэтому заглушки нужны до import. Поведение в браузере не меняется.
+  const saved = { document: globalThis.document, window: globalThis.window };
+  globalThis.document = {
+    title: "CyberCheck",
+    createElement() {},
+    createElementNS() {},
+  };
+  globalThis.window = { addEventListener() {} };
+
+  try {
+    const mod = await import(pathToFileURL(RENDER_PATH).href);
+    assert.strictEqual(typeof mod.renderResult, "function");
+    assert.strictEqual(typeof mod.resetReportTitle, "function");
+  } finally {
+    if (saved.document === undefined) delete globalThis.document;
+    else globalThis.document = saved.document;
+    if (saved.window === undefined) delete globalThis.window;
+    else globalThis.window = saved.window;
+  }
+});
+
+test("render-result.js: решения CAA и контекста TLS реально вызываются", () => {
+  const source = fs.readFileSync(RENDER_PATH, "utf8");
+
+  // Одного import мало: функция может быть импортирована и не вызвана, а
+  // карточка тогда покажет неверный статус. Проверяем сам вызов.
+  assert.match(source, /caaStateValue = caaState\(caa\)/);
+  assert.match(source, /secureContextState\(ssl\)/);
 });
 
 test("render-result.js: подсказка — SVG-иконка, а не текстовый символ", () => {
@@ -313,9 +374,11 @@ test("render-result.js: экспортируемые функции и безо�
   // Пути и тексты карточек больше не дублируются в рендере.
   assert.strictEqual(source.includes("files.critical"), false);
 
-  // Проверяем все HTML-синки во всех файлах фронтенда, а не только два самых частых.
+  // Синки ищем по всему тексту, включая комментарии. Шаблон описывает
+  // именно запись/вызов, а не упоминание слова: комментарий вправе писать
+  // «без innerHTML», и это не должно выглядеть как находка.
   const HTML_SINK_RE =
-    /\b(innerHTML|outerHTML|insertAdjacentHTML|srcdoc|createContextualFragment)\b|\bdocument\.write(ln)?\s*\(/;
+    /\b(?:innerHTML|outerHTML|srcdoc)\s*(?:=|\+=)|\binsertAdjacentHTML\s*\(|\bcreateContextualFragment\s*\(|\bdocument\.write(?:ln)?\s*\(/;
 
   const jsDir = path.join(ROOT, "public/assets/js");
   const jsFiles = fs
@@ -324,10 +387,7 @@ test("render-result.js: экспортируемые функции и безо�
     .map((f) => path.join(jsDir, f));
 
   for (const file of jsFiles) {
-    const code = fs
-      .readFileSync(file, "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "") // вырезаем блочные комментарии
-      .replace(/^\s*\/\/.*$/gm, ""); // вырезаем строчные комментарии
+    const code = fs.readFileSync(file, "utf8");
 
     assert.ok(!HTML_SINK_RE.test(code), `HTML-синк в ${file} — риск DOM-XSS`);
   }
@@ -356,4 +416,31 @@ test("render-result.js: экспортируемые функции и безо�
     "report-model.js читает files.critical",
   );
   assert.ok(model.includes("failed"), "report-model.js считает упавшие пробы");
+});
+
+test("HTML-страницы: нет инлайн-скриптов, обработчиков и javascript:-URL", () => {
+  const pages = ["index.html", "legal.html", "privacy.html"].map((name) =>
+    path.join(ROOT, "public", name),
+  );
+
+  for (const page of pages) {
+    const html = fs.readFileSync(page, "utf8");
+
+    // Каждый скрипт обязан быть внешним модулем: инлайн-код при строгой
+    // CSP молча не выполнится, а проверок модулей он бы обошёл.
+    const scriptTags = html.match(/<script\b[^>]*>/gi) || [];
+    for (const tag of scriptTags) {
+      assert.match(tag, /\bsrc\s*=/i, `инлайн-скрипт в ${page}: ${tag}`);
+    }
+
+    // Атрибуты-обработчики (onclick, onerror и т. п.) — тот же инлайн-JS.
+    assert.doesNotMatch(html, /\son[a-z]+\s*=/i, `inline-обработчик в ${page}`);
+
+    // javascript:-URL исполняется по клику и обходит CSP скриптов.
+    assert.doesNotMatch(
+      html,
+      /\b(?:href|src|srcdoc)\s*=\s*["']\s*javascript:/i,
+      `javascript:-URL в ${page}`,
+    );
+  }
 });

@@ -864,3 +864,277 @@ test("находки отсортированы по severity, затем по �
   }
 });
 
+// --- Проверки «неизвестно ≠ хорошо» и разделённого HSTS -------------------
+
+test("HSTS: заголовок и подтверждённый редирект HTTP→HTTPS — разные баллы", () => {
+  const withRedirect = calculateScore(report({ httpRedirectsToHttps: true }));
+  assert.strictEqual(withRedirect.score, 100);
+  assert.strictEqual(withRedirect.grade, "A");
+  assert.ok(!withRedirect.findings.some((f) => f.id === "no-http-redirect"));
+
+  // Заголовок есть, редиректа нет: 5 из 8 баллов, находка high и потолок 90.
+  const withoutRedirect = calculateScore(
+    report({ httpRedirectsToHttps: false }),
+  );
+  const finding = withoutRedirect.findings.find(
+    (f) => f.id === "no-http-redirect",
+  );
+  assert.ok(finding, "без редиректа должна быть находка");
+  assert.strictEqual(finding.severity, "high");
+  assert.strictEqual(finding.weight, WEIGHTS.hstsRedirect);
+  assert.strictEqual(withoutRedirect.score, 90);
+  assert.strictEqual(withoutRedirect.grade, "B");
+
+  // null — проверить не удалось (порт 80 закрыт): баллы как раньше.
+  const unverified = calculateScore(report({ httpRedirectsToHttps: null }));
+  assert.strictEqual(unverified.score, 100);
+});
+
+test("ports filtered: баллы за отсутствие опасных портов не начисляются", () => {
+  const r = calculateScore(
+    report({
+      ports: [
+        { port: 443, status: "open" },
+        { port: 3306, status: "filtered" },
+      ],
+    }),
+  );
+
+  const finding = r.findings.find((f) => f.id === "ports-unverified");
+  assert.ok(finding, "неизвестное состояние порта должно попадать в отчёт");
+  assert.strictEqual(finding.severity, "low");
+  assert.strictEqual(finding.weight, 0);
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "B");
+});
+
+test("ports refused и closed — доказанное состояние, баллы начисляются", () => {
+  const r = calculateScore(
+    report({
+      ports: [
+        { port: 22, status: "refused" },
+        { port: 3306, status: "closed" },
+      ],
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "ports-unverified"));
+  assert.strictEqual(r.score, 100);
+});
+
+test("несколько открытых опасных портов — одна находка с полным списком", () => {
+  const r = calculateScore(
+    report({
+      ports: [
+        { port: 3306, status: "open" },
+        { port: 22, status: "open" },
+      ],
+    }),
+  );
+
+  const portFindings = r.findings.filter(
+    (f) => f.id.startsWith("port-") && f.severity === "high",
+  );
+  assert.strictEqual(portFindings.length, 1, "вес не должен дублироваться");
+  assert.strictEqual(portFindings[0].weight, WEIGHTS.riskyPorts);
+  assert.match(portFindings[0].title, /22/);
+  assert.match(portFindings[0].title, /3306/);
+  assert.ok(r.score <= 70);
+});
+
+test("supportsOldTls=null: проверка не выполнена, потолок 85", () => {
+  const r = calculateScore(
+    report({ ssl: { ...okSSL, supportsOldTls: null } }),
+  );
+
+  const finding = r.findings.find((f) => f.id === "old-tls-unchecked");
+  assert.ok(finding, "неизвестность должна быть видна в отчёте");
+  assert.strictEqual(finding.severity, "low");
+  assert.strictEqual(finding.weight, 0);
+  assert.ok(!r.findings.some((f) => f.id === "old-tls"));
+  assert.strictEqual(r.score, 85);
+  assert.strictEqual(r.grade, "B");
+});
+
+test("daysLeft=NaN: срок сертификата не начисляется и не ломает оценку", () => {
+  const r = calculateScore(report({ ssl: { ...okSSL, daysLeft: NaN } }));
+
+  assert.strictEqual(r.score, 97);
+  assert.ok(!r.findings.some((f) => f.id === "ssl-expiring"));
+});
+
+test("HTTP 404: заголовки считаются непроверенными, а не «нет CSP/XFO»", () => {
+  const r = calculateScore(report({ headers: { ...okHeaders, status: 404 } }));
+
+  assert.ok(r.findings.some((f) => f.id === "headers-not-checked"));
+  assert.ok(!r.findings.some((f) => f.id === "no-csp"));
+  assert.ok(r.score <= 60);
+});
+
+test("HTTP 200: заголовки проверяются как обычно", () => {
+  const r = calculateScore(report({ headers: { ...okHeaders, status: 200 } }));
+
+  assert.strictEqual(r.score, 100);
+  assert.ok(!r.findings.some((f) => f.id === "headers-not-checked"));
+});
+
+test("DMARC pct<100: частичная политика даёт 2 из 3 баллов", () => {
+  for (const pct of [0, 50, 99]) {
+    const r = calculateScore(
+      report({
+        dns: {
+          ...okDns,
+          dmarc: {
+            present: true,
+            record: `v=DMARC1; p=reject; pct=${pct}`,
+            policy: "reject",
+            pct,
+            strict: false,
+            partial: true,
+            weak: false,
+            error: null,
+          },
+        },
+      }),
+    );
+
+    const finding = r.findings.find((f) => f.id === "dmarc-partial");
+    assert.ok(finding, `pct=${pct}`);
+    assert.strictEqual(finding.weight, 1);
+    assert.strictEqual(r.score, 99, `pct=${pct}`);
+  }
+});
+
+test("DMARC pct=100 и без pct — полная политика", () => {
+  for (const pct of [undefined, null, 100]) {
+    const r = calculateScore(
+      report({
+        dns: { ...okDns, dmarc: { ...okDns.dmarc, pct } },
+      }),
+    );
+
+    assert.ok(!r.findings.some((f) => f.id === "dmarc-partial"), `pct=${pct}`);
+    assert.strictEqual(r.score, 100, `pct=${pct}`);
+  }
+});
+
+test("DMARC с некорректным pct не даёт полную политику", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        dmarc: { ...okDns.dmarc, pct: null, pctInvalid: true },
+      },
+    }),
+  );
+
+  const finding = r.findings.find((f) => f.id === "dmarc-partial");
+  assert.ok(finding, "мусорный pct не должен считаться полной политикой");
+  assert.strictEqual(finding.weight, 1);
+  assert.strictEqual(r.score, 99);
+});
+
+test("security.txt с оборванным телом — «не проверено», а не «некорректно»", () => {
+  const r = calculateScore(
+    report({
+      securityTxt: { present: false, status: 200, error: "TRUNCATED" },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "security-txt-invalid"));
+  assert.strictEqual(r.score, 100);
+});
+
+test("/.env с 200 без сигнатуры содержимого — не экспозиция", () => {
+  const r = calculateScore(
+    report({
+      files: {
+        exposed: [],
+        blocked: [],
+        results: [
+          { path: "/.env", status: 200, exposed: false, error: "NO_SIGNATURE" },
+        ],
+      },
+    }),
+  );
+
+  assert.ok(!r.findings.some((f) => f.id === "exposed-env"));
+  // Баллы за путь не начисляются (состояние не проверено), но и потолка 40
+  // нет: 200 без сигнатуры — это не доказанная экспозиция.
+  assert.strictEqual(r.score, 93);
+  assert.strictEqual(r.grade, "B");
+});
+
+test("CSP frame-ancestors заменяет X-Frame-Options", () => {
+  const r = calculateScore(
+    report({
+      headers: { ...okHeaders, xframe: false, cspFrameAncestors: true },
+    }),
+  );
+
+  assert.strictEqual(r.score, 100);
+  assert.ok(!r.findings.some((f) => f.id === "no-xframe"));
+});
+
+test("cloaking — находка без штрафа, но с потолком", () => {
+  const r = calculateScore(report({ cloaking: true }));
+
+  const finding = r.findings.find((f) => f.id === "cloaking-detected");
+  assert.ok(finding);
+  assert.strictEqual(finding.severity, "high");
+  assert.strictEqual(finding.weight, 0);
+  assert.strictEqual(r.score, 90);
+});
+
+test("страница по HTTP при рабочем HTTPS — отдельная находка", () => {
+  const r = calculateScore(
+    report({ headers: { ...okHeaders, protocol: "HTTP" } }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "no-https-first"));
+  assert.ok(r.score <= 90);
+});
+
+test("Server: 200 OK — не версия, а Caddy v2.7 и envoy1.29 — версия", () => {
+  const bare = calculateScore(
+    report({ headers: { ...okHeaders, server: "200 OK" } }),
+  );
+  assert.ok(!bare.findings.some((f) => f.id === "server-exposed"));
+
+  for (const server of ["Caddy v2.7", "envoy1.29"]) {
+    const r = calculateScore(report({ headers: { ...okHeaders, server } }));
+    assert.ok(
+      r.findings.some((f) => f.id === "server-exposed"),
+      `server=${server}`,
+    );
+  }
+});
+
+test("WEIGHTS и FILE_CHECKS заморожены", () => {
+  assert.ok(Object.isFrozen(WEIGHTS));
+  assert.ok(Object.isFrozen(FILE_CHECKS));
+
+  const before = WEIGHTS.ssl;
+  try {
+    WEIGHTS.ssl = 0;
+  } catch {
+    // В strict-режиме присваивание бросит TypeError — это тоже корректно.
+  }
+  assert.strictEqual(WEIGHTS.ssl, before, "вес не должен меняться");
+});
+
+test("buildReport доносит признак клоакинга до оценки", () => {
+  const { buildReport } = require("../src/utils/scan-helpers");
+
+  const r = buildReport("example.com", [], okSSL, okHeaders, {
+    dns: okDns,
+    files: okFiles,
+    securityTxt: okSecurityTxt,
+    fingerprint: null,
+    cloaking: true,
+  });
+
+  assert.ok(r.findings.some((f) => f.id === "cloaking-detected"));
+  assert.ok(r.score <= 90);
+});
+

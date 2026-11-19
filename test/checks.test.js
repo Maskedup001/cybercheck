@@ -3,6 +3,7 @@ const assert = require("node:assert");
 const net = require("node:net");
 const http = require("node:http");
 const https = require("node:https");
+const tls = require("node:tls");
 
 const { checkPort } = require("../src/probes/ports");
 const { checkSSL } = require("../src/probes/tls");
@@ -27,16 +28,17 @@ function closeServer(server) {
 
 // --- Открытый и закрытый порт --------------------------------------
 
-test("checkPort: закрытый порт не висит вечно", async () => {
-  const result = await checkPort("127.0.0.1", 1, 500, 1);
+test("checkPort: закрытый порт — refused, а не open", async () => {
+  // Порт освобождается после закрытия локального слушателя: отказ приходит
+  // сразу и детерминированно, без похода во внешнюю сеть.
+  const server = net.createServer();
+  const port = await listen(server);
+  await closeServer(server);
 
-  assert.strictEqual(result.port, 1);
-  // В зависимости от ОС и настроек сети сервер может явно отказать (refused)
-  // или просто не ответить (closed). Важно, что он не "open".
-  assert.ok(
-    ["refused", "closed"].includes(result.status),
-    `Ожидали refused или closed, получили: ${result.status}`,
-  );
+  const result = await checkPort("127.0.0.1", port, 1000, 0);
+
+  assert.strictEqual(result.port, port);
+  assert.strictEqual(result.status, "refused");
 });
 
 test("checkPort: открытый порт определяется", async () => {
@@ -47,6 +49,66 @@ test("checkPort: открытый порт определяется", async () =
   assert.strictEqual(result.status, "open");
 
   await closeServer(server);
+});
+
+test("checkPort: таймаут — filtered, а не closed", async (t) => {
+  // Молчащий порт без внешней сети: connect не выполняется, а по таймеру
+  // приходит событие timeout — так же, как при DROP со стороны firewall.
+  const originalConnect = net.Socket.prototype.connect;
+  let connectCalls = 0;
+
+  net.Socket.prototype.connect = function () {
+    connectCalls += 1;
+    setImmediate(() => this.emit("timeout"));
+    return this;
+  };
+  t.after(() => {
+    net.Socket.prototype.connect = originalConnect;
+  });
+
+  const result = await checkPort("127.0.0.1", 65000, 1000, 1);
+
+  // Таймаут — «не измерено», а не «закрыто».
+  assert.strictEqual(result.status, "filtered");
+  // Ретрай не должен повторять таймаут и съедать бюджет: попытка одна.
+  assert.strictEqual(connectCalls, 1);
+});
+
+test("checkPort: прочие сетевые ошибки — filtered, ретрай остаётся", async (t) => {
+  // Быстрый сбой (EHOSTUNREACH/EACCES/ECONNRESET) — не доказательство
+  // закрытости и не таймаут: повтор может дать ответ.
+  const originalConnect = net.Socket.prototype.connect;
+  const sockets = [];
+  let connectCalls = 0;
+
+  net.Socket.prototype.connect = function () {
+    connectCalls += 1;
+    sockets.push(this);
+    const error = new Error("host unreachable");
+    error.code = "EHOSTUNREACH";
+    setImmediate(() => {
+      this.emit("error", error);
+      this.emit("close");
+    });
+    return this;
+  };
+  t.after(() => {
+    net.Socket.prototype.connect = originalConnect;
+    // Снимаем слушатели до destroy(): иначе искусственное close может
+    // запустить ещё один ретрай после завершения теста.
+    for (const socket of sockets) {
+      socket.removeAllListeners("close");
+      socket.removeAllListeners("error");
+      socket.removeAllListeners("timeout");
+      socket.destroy();
+    }
+  });
+
+  const result = await checkPort("127.0.0.1", 65001, 1000, 1);
+
+  assert.strictEqual(result.status, "filtered");
+  // Бюджета хватает на ретрай: быстрый сбой повторяется один раз.
+  assert.strictEqual(connectCalls, 2);
 });
 
 // --- Заголовки -----------------------------------------------------
@@ -165,6 +227,115 @@ test("checkHeaders: IPv6 в Host-заголовке заключён в скоб
   await closeServer(server);
 });
 
+test("checkHeaders: CSP из <meta> читается из тела", async (t) => {
+  const server = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.end(
+      [
+        "<!doctype html><html><head>",
+        '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'">',
+        "</head><body>ok</body></html>",
+      ].join(""),
+    );
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(result.csp, true);
+  assert.strictEqual(result.cspState, "ok");
+  // meta не может задавать frame-ancestors — XFO по-прежнему отсутствует.
+  assert.strictEqual(result.cspFrameAncestors, false);
+  assert.strictEqual(result.xframeState, "missing");
+});
+
+test("checkHeaders: несколько CSP-заголовков не склеиваются в weak", async (t) => {
+  const server = http.createServer((req, res) => {
+    // Два отдельных заголовка CSP: браузер применяет обе политики.
+    res.setHeader("Content-Security-Policy", [
+      "img-src 'self'",
+      "default-src 'self'",
+    ]);
+    res.end("ok");
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
+
+  assert.strictEqual(result.csp, true);
+  assert.strictEqual(result.cspState, "ok");
+});
+
+test("checkHeaders: CSP frame-ancestors засчитывается без X-Frame-Options", async (t) => {
+  const server = http.createServer((req, res) => {
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+    res.end("ok");
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
+
+  assert.strictEqual(result.cspFrameAncestors, true);
+  assert.strictEqual(result.xframeState, "missing");
+  assert.strictEqual(result.xframe, false);
+});
+
+test("checkHeaders: таймаут на теле не стирает заголовки", async (t) => {
+  // Заголовки уже получены, тело не завершается: отчёт по заголовкам
+  // обязан вернуться, а не превратиться в error.
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { "X-Frame-Options": "DENY" });
+    res.write("<html><body>partial");
+    // Тело намеренно не завершается.
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const result = await checkHeaders(
+    "127.0.0.1",
+    port,
+    "localhost",
+    0,
+    undefined,
+    false,
+    300,
+  );
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(result.status, 200);
+  assert.strictEqual(result.xframe, true);
+});
+
+test("checkHeaders: same-origin редирект сохраняет статус конечной страницы", async (t) => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/") {
+      res.writeHead(302, { Location: "/final" });
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "X-Frame-Options": "SAMEORIGIN",
+      "Content-Security-Policy": "default-src 'self'",
+    });
+    res.end("ok");
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const result = await checkHeaders("127.0.0.1", port, "localhost", 0);
+
+  assert.strictEqual(result.error, undefined);
+  assert.strictEqual(result.status, 200);
+  // location относится к конечному ответу, у него Location нет.
+  assert.strictEqual(result.location, null);
+  assert.strictEqual(result.xframe, true);
+  assert.strictEqual(result.cspState, "ok");
+});
+
 // --- TLS: успешный хендшейк ---------------------------------------
 
 test("checkSSL: самоподписанный сертификат читается, но помечается невалидным", async (t) => {
@@ -226,19 +397,26 @@ test("checkHeaders: по HTTPS возвращает protocol HTTPS", async (t) =
 });
 
 test("checkSSL: возвращает ошибку, если TLS не поднялся", async () => {
-  // Стучимся на заведомо HTTP-порт (1), где TLS не может подняться
-  const result = await checkSSL("127.0.0.1", 1, "localhost", null, 0);
+  // Порт закрыт (слушатель освобождён): TCP-отказ, TLS не поднимается.
+  const server = net.createServer();
+  const port = await listen(server);
+  await closeServer(server);
+
+  const result = await checkSSL("127.0.0.1", port, "localhost", null, 0);
   assert.strictEqual(result.hasSSL, false);
+  // Отказ соединения — ошибка рукопожатия, а не таймаут и не отмена.
   assert.strictEqual(result.error, "HANDSHAKE_FAILED");
 });
 
 // --- Бюджет этапа --------------------------------------------------
 
-test("checkSSL: молчащий TLS-сервер укладывается в дедлайн", async (t) => {
+test("checkSSL: молчащий TLS-сервер не повторяет попытку без бюджета", async (t) => {
   // Сервер принимает TCP-соединение и не отвечает: клиент обязан выйти по
   // остатку бюджета, а не ждать два полных таймаута с паузой.
   const sockets = new Set();
+  let connections = 0;
   const server = net.createServer((socket) => {
+    connections += 1;
     sockets.add(socket);
     socket.on("error", () => {});
     socket.on("close", () => sockets.delete(socket));
@@ -249,7 +427,6 @@ test("checkSSL: молчащий TLS-сервер укладывается в д
     await closeServer(server);
   });
 
-  const startedAt = Date.now();
   const result = await checkSSL(
     "127.0.0.1",
     port,
@@ -259,15 +436,27 @@ test("checkSSL: молчащий TLS-сервер укладывается в д
     5000,
     Date.now() + 300,
   );
-  const elapsed = Date.now() - startedAt;
 
   assert.strictEqual(result.hasSSL, false);
-  assert.strictEqual(result.error, "HANDSHAKE_FAILED");
-  assert.ok(elapsed < 1500, `этап TLS занял ${elapsed} мс`);
+  assert.strictEqual(result.error, "TIMEOUT");
+  // Дедлайн съеден первой попыткой: ретрай не имеет бюджета и не должен
+  // открывать второе соединение. Это и есть проверка «этап ограничен
+  // дедлайном» — без зависимости от скорости машины.
+  assert.strictEqual(connections, 1);
 });
 
-test("checkPort: истёкший дедлайн не открывает сокет", async () => {
-  const startedAt = Date.now();
+test("checkPort: истёкший дедлайн не открывает сокет", async (t) => {
+  const originalConnect = net.Socket.prototype.connect;
+  let connectCalls = 0;
+
+  net.Socket.prototype.connect = function () {
+    connectCalls += 1;
+    return this;
+  };
+  t.after(() => {
+    net.Socket.prototype.connect = originalConnect;
+  });
+
   const result = await checkPort(
     "127.0.0.1",
     80,
@@ -278,36 +467,54 @@ test("checkPort: истёкший дедлайн не открывает сок�
   );
 
   assert.strictEqual(result.status, "closed");
-  assert.ok(Date.now() - startedAt < 500);
+  // Локальный отказ до сети: сокет вообще не создавал соединения.
+  assert.strictEqual(connectCalls, 0);
 });
 
 // --- Инвариант SSRF ------------------------------------------------
 
 test("проверки отказываются от нелитерального connectIp", async () => {
   // Имя хоста увело бы сокет в собственный DNS-резолв Node — это обход
-  // проверки адреса, поэтому отказ должен быть мгновенным и без сети.
-  const startedAt = Date.now();
+  // проверки адреса, поэтому сокет не должен создаваться вообще.
+  const originalConnect = net.Socket.prototype.connect;
+  const originalTlsConnect = tls.connect;
+  let netConnectCalls = 0;
+  let tlsConnectCalls = 0;
 
-  const port = await checkPort("example.com", 80, 1000, 1);
-  assert.deepStrictEqual(port, { port: 80, status: "closed" });
+  net.Socket.prototype.connect = function () {
+    netConnectCalls += 1;
+    return this;
+  };
+  tls.connect = function () {
+    tlsConnectCalls += 1;
+    throw new Error("tls.connect не должен вызываться");
+  };
 
-  const ssl = await checkSSL("example.com", 443, "example.com", null, 0);
-  assert.strictEqual(ssl.hasSSL, false);
-  assert.strictEqual(ssl.error, "INVALID_CONNECT_IP");
+  try {
+    const port = await checkPort("example.com", 80, 1000, 1);
+    assert.deepStrictEqual(port, { port: 80, status: "closed" });
 
-  const headers = await checkHeaders("example.com", 443, "example.com", 0);
-  assert.deepStrictEqual(headers, { error: true });
+    const ssl = await checkSSL("example.com", 443, "example.com", null, 0);
+    assert.strictEqual(ssl.hasSSL, false);
+    assert.strictEqual(ssl.error, "INVALID_CONNECT_IP");
 
-  assert.ok(Date.now() - startedAt < 500);
+    const headers = await checkHeaders("example.com", 443, "example.com", 0);
+    assert.deepStrictEqual(headers, { error: true });
+  } finally {
+    net.Socket.prototype.connect = originalConnect;
+    tls.connect = originalTlsConnect;
+  }
+
+  assert.strictEqual(netConnectCalls, 0);
+  assert.strictEqual(tlsConnectCalls, 0);
 });
 
 // --- Устойчивость к сбоям ------------------------------------------
 
-test("checkSSL: не бросает исключение при отмененном сигнале", async () => {
+test("checkSSL: отменённый сигнал даёт код ABORTED, а не ошибку рукопожатия", async () => {
   const controller = new AbortController();
   controller.abort(); // Сигнал уже отменен
 
-  // Вызываем проверку TLS с отмененным сигналом
   const result = await checkSSL(
     "127.0.0.1",
     443,
@@ -316,6 +523,7 @@ test("checkSSL: не бросает исключение при отмененн
   );
 
   // Главное: функция не упала с throw, а вернула безопасный объект
+  // с различимой причиной — скан отменён, а не TLS сломан.
   assert.strictEqual(result.hasSSL, false);
-  assert.ok(result.error); // Должна быть ошибка (HANDSHAKE_FAILED)
+  assert.strictEqual(result.error, "ABORTED");
 });

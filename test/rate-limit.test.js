@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { CooldownGate, ScanLimiter } = require("../src/utils/rate-limit");
+const {
+  CooldownGate,
+  ScanLimiter,
+  DEFAULT_MAX_PER_EDGE,
+} = require("../src/utils/rate-limit");
 
 // Часы подменяются: кулдаун 10 секунд проверяется мгновенно, без sleep и
 // без флейков на медленном CI.
@@ -181,6 +185,8 @@ test("ScanLimiter: таймер чистки включается и выклю�
   assert.strictEqual(limiter.sweeper, null);
 });
 
+// --- Лимит на сокет-адрес: ротация XFF не расширяет пул -----------------
+
 test("ScanLimiter: лимит на edgeKey блокирует обход через смену ключа (XFF)", () => {
   const limiter = new ScanLimiter({ maxPerEdge: 2, maxConcurrent: 5 });
 
@@ -196,4 +202,93 @@ test("ScanLimiter: лимит на edgeKey блокирует обход чер�
   // Завершаем один скан, место освобождается
   limiter.finish("client1", "edge1");
   assert.strictEqual(limiter.attempt("client3", "edge1"), null);
+});
+
+test("ScanLimiter: DEFAULT_MAX_PER_EDGE — 2", () => {
+  assert.strictEqual(DEFAULT_MAX_PER_EDGE, 2);
+});
+
+test("ScanLimiter: третий параллельный скан с одного edge блокируется при разных clientKey", () => {
+  // Один и тот же сокет-адрес с тремя разными XFF: каждый clientKey проходит
+  // лимит на ключ, но edge-счётчик общий, поэтому третий уже нет.
+  const limiter = new ScanLimiter({ maxPerEdge: 2, maxConcurrent: 25 });
+
+  assert.strictEqual(limiter.attempt("1.1.1.1", "edge"), null);
+  assert.strictEqual(limiter.attempt("2.2.2.2", "edge"), null);
+
+  const denial = limiter.attempt("3.3.3.3", "edge");
+  assert.strictEqual(denial.status, 429);
+  assert.match(denial.error, /С этого сетевого адреса/);
+});
+
+test("ScanLimiter: finish освобождает edge-слот и возвращает limiter", () => {
+  const limiter = new ScanLimiter({ maxPerEdge: 1 });
+
+  assert.strictEqual(limiter.attempt("a", "edge"), null);
+  assert.strictEqual(limiter.attempt("b", "edge").status, 429);
+
+  const returned = limiter.finish("a", "edge");
+  assert.strictEqual(
+    returned,
+    limiter,
+    "finish должен быть chainable, как остальные методы",
+  );
+
+  assert.strictEqual(limiter.attempt("b", "edge"), null);
+});
+
+test("ScanLimiter: один edge не занимает больше maxPerEdge слотов при большом maxConcurrent", () => {
+  const limiter = new ScanLimiter({ maxPerEdge: 2, maxConcurrent: 25 });
+
+  assert.strictEqual(limiter.attempt("client-1", "edge"), null);
+  assert.strictEqual(limiter.attempt("client-2", "edge"), null);
+
+  for (const key of ["client-3", "client-4", "client-5"]) {
+    const denial = limiter.attempt(key, "edge");
+    assert.strictEqual(denial.status, 429, key);
+  }
+
+  // Занято ровно 2 из 25 слотов: edge-лимит срабатывает раньше общего.
+  assert.strictEqual(limiter.activeScans, 2);
+  assert.strictEqual(limiter.activeByKey.size, 2);
+
+  // Другой edge при этом не страдает.
+  assert.strictEqual(limiter.attempt("client-6", "other-edge"), null);
+  assert.strictEqual(limiter.activeScans, 3);
+});
+
+test("ScanLimiter: clientKey и edgeKey не смешиваются", () => {
+  const limiter = new ScanLimiter({ maxPerEdge: 1, maxPerKey: 1 });
+
+  assert.strictEqual(limiter.attempt("client-a", "edge-a"), null);
+
+  // Ключ, совпадающий с чужим edgeKey, — это отдельный clientKey: счётчики
+  // лежат в разных картах, и он не наследует занятый edge-слот.
+  assert.strictEqual(limiter.attempt("edge-a", "edge-b"), null);
+  assert.strictEqual(limiter.activeByKey.size, 2);
+  assert.strictEqual(limiter.activeByEdge.size, 2);
+
+  // Тот же clientKey блокируется по лимиту на ключ.
+  const keyDenial = limiter.attempt("client-a", "edge-b");
+  assert.strictEqual(keyDenial.status, 429);
+  assert.match(keyDenial.error, /уже идёт сканирование/);
+
+  // Тот же edge с новым clientKey блокируется по лимиту на сокет-адрес.
+  const edgeDenial = limiter.attempt("client-b", "edge-a");
+  assert.strictEqual(edgeDenial.status, 429);
+  assert.match(edgeDenial.error, /С этого сетевого адреса/);
+});
+
+test("ScanLimiter: без edgeKey лимит считается по самому ключу", () => {
+  const limiter = new ScanLimiter({ maxPerEdge: 1, maxPerKey: 5 });
+
+  assert.strictEqual(limiter.attempt("k"), null);
+  assert.strictEqual(limiter.activeByEdge.get("k"), 1);
+
+  const denial = limiter.attempt("k");
+  assert.strictEqual(denial.status, 429);
+  assert.match(denial.error, /С этого сетевого адреса/);
+
+  limiter.finish("k");
+  assert.strictEqual(limiter.activeByEdge.has("k"), false);
 });

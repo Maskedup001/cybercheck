@@ -43,6 +43,9 @@ const notApplicable = {
     present: false,
     record: null,
     policy: null,
+    pct: null,
+    pctInvalid: false,
+    partial: false,
     strict: false,
     weak: false,
     multiple: false,
@@ -141,6 +144,34 @@ test("parseSpfTxt: без all действует неявный ?all — это 
   }
 });
 
+test("parseSpfTxt: redirect= без all — полноценная политика, не weak", () => {
+  for (const record of [
+    "v=spf1 redirect=_spf.example.com",
+    "v=spf1 include:_spf.example.com redirect=_spf.example.com",
+    "v=spf1 redirect=%{d}.spf.example.com",
+  ]) {
+    const result = parseSpfTxt([[record]]);
+    assert.strictEqual(result.present, true, record);
+    assert.strictEqual(result.weak, false, record);
+  }
+
+  // Пустой/мусорный redirect= — не механизм: без all действует неявный ?all.
+  for (const record of ["v=spf1 redirect=", "v=spf1 redirect=;"]) {
+    assert.strictEqual(parseSpfTxt([[record]]).weak, true, record);
+  }
+});
+
+test("parseSpfTxt: redirect= не отменяет слабость +all", () => {
+  assert.strictEqual(
+    parseSpfTxt([["v=spf1 +all redirect=_spf.example.com"]]).weak,
+    true,
+  );
+  assert.strictEqual(
+    parseSpfTxt([["v=spf1 redirect=_spf.example.com -all"]]).weak,
+    false,
+  );
+});
+
 // --- DMARC ----------------------------------------------------------------
 
 test("parseDmarcTxt: p=reject считается strict", () => {
@@ -150,6 +181,9 @@ test("parseDmarcTxt: p=reject считается strict", () => {
     present: true,
     record,
     policy: "reject",
+    pct: null,
+    pctInvalid: false,
+    partial: false,
     strict: true,
     weak: false,
     multiple: false,
@@ -164,6 +198,9 @@ test("parseDmarcTxt: p=quarantine считается strict", () => {
     present: true,
     record,
     policy: "quarantine",
+    pct: 100,
+    pctInvalid: false,
+    partial: false,
     strict: true,
     weak: false,
     multiple: false,
@@ -178,6 +215,9 @@ test("parseDmarcTxt: p=none считается weak", () => {
     present: true,
     record,
     policy: "none",
+    pct: null,
+    pctInvalid: false,
+    partial: false,
     strict: false,
     weak: true,
     multiple: false,
@@ -190,6 +230,9 @@ test("parseDmarcTxt: отсутствие DMARC-записи", () => {
     present: false,
     record: null,
     policy: null,
+    pct: null,
+    pctInvalid: false,
+    partial: false,
     strict: false,
     weak: false,
     multiple: false,
@@ -219,6 +262,9 @@ test("parseDmarcTxt: некорректная политика даёт policy=n
     present: true,
     record,
     policy: null,
+    pct: null,
+    pctInvalid: false,
+    partial: false,
     strict: false,
     weak: false,
     multiple: false,
@@ -227,6 +273,52 @@ test("parseDmarcTxt: некорректная политика даёт policy=n
 
   // Без тега p политики тоже нет.
   assert.strictEqual(parseDmarcTxt([["v=DMARC1; sp=none"]]).policy, null);
+});
+
+test("parseDmarcTxt: pct=0 — partial и не strict", () => {
+  const result = parseDmarcTxt([["v=DMARC1; p=reject; pct=0"]]);
+
+  assert.strictEqual(result.policy, "reject");
+  assert.strictEqual(result.pct, 0);
+  // Политика reject не применяется ни к одному письму.
+  assert.strictEqual(result.partial, true);
+  assert.strictEqual(result.strict, false);
+  assert.strictEqual(result.weak, false);
+});
+
+test("parseDmarcTxt: pct=50 — partial, pct=100 — strict", () => {
+  const half = parseDmarcTxt([["v=DMARC1; p=quarantine; pct=50"]]);
+  assert.strictEqual(half.pct, 50);
+  assert.strictEqual(half.partial, true);
+  assert.strictEqual(half.strict, false);
+
+  const full = parseDmarcTxt([["v=DMARC1; p=quarantine; pct=100"]]);
+  assert.strictEqual(full.pct, 100);
+  assert.strictEqual(full.partial, false);
+  assert.strictEqual(full.strict, true);
+
+  const none = parseDmarcTxt([["v=DMARC1; p=none; pct=50"]]);
+  assert.strictEqual(none.policy, "none");
+  assert.strictEqual(none.weak, true);
+  assert.strictEqual(none.partial, true);
+});
+
+test("parseDmarcTxt: невалидный pct даёт null и не strict", () => {
+  for (const value of ["150", "-1", "abc", ""]) {
+    const result = parseDmarcTxt([[`v=DMARC1; p=reject; pct=${value}`]]);
+    assert.strictEqual(result.pct, null, value);
+    assert.strictEqual(result.partial, false, value);
+    // Нельзя утверждать, что reject применяется полностью.
+    assert.strictEqual(result.strict, false, value);
+    // При этом мусорное значение — не то же самое, что отсутствие pct:
+    // отчёт должен показать частичность, а не полную политику.
+    assert.strictEqual(result.pctInvalid, true, value);
+  }
+
+  // Без тега pct значение корректно отсутствует — это не ошибка.
+  const withoutPct = parseDmarcTxt([["v=DMARC1; p=reject"]]);
+  assert.strictEqual(withoutPct.pctInvalid, false);
+  assert.strictEqual(withoutPct.strict, true);
 });
 
 test("parseDmarcTxt: разбирает теги с пробелами вокруг значений", () => {
@@ -347,6 +439,9 @@ test("checkDnsSecurity: собирает SPF, DMARC и CAA", async () => {
       present: true,
       record: "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com",
       policy: "quarantine",
+      pct: null,
+      pctInvalid: false,
+      partial: false,
       strict: true,
       weak: false,
       multiple: false,
@@ -393,6 +488,9 @@ test("checkDnsSecurity: известные DNS-ошибки возвращают
         present: false,
         record: null,
         policy: null,
+        pct: null,
+        pctInvalid: false,
+        partial: false,
         strict: false,
         weak: false,
         multiple: false,
@@ -454,6 +552,9 @@ test("checkDnsSecurity: каждый запрос завершается по т
       present: false,
       record: null,
       policy: null,
+      pct: null,
+      pctInvalid: false,
+      partial: false,
       strict: false,
       weak: false,
       multiple: false,
@@ -497,6 +598,9 @@ test("checkDnsSecurity: отменённый signal даёт ABORTED, без thr
       present: false,
       record: null,
       policy: null,
+      pct: null,
+      pctInvalid: false,
+      partial: false,
       strict: false,
       weak: false,
       multiple: false,

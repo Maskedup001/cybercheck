@@ -1,64 +1,187 @@
 const test = require("node:test");
 const assert = require("node:assert");
-const { spawn } = require("node:child_process");
-const path = require("node:path");
-const { createApp, issueConsentToken } = require("../src/core/server");
+const {
+  createApp,
+  createHttpServer,
+  issueConsentToken,
+  redirectsToHttps,
+} = require("../src/core/server");
+const {
+  readConfig,
+  readNodeEnv,
+  readPort,
+  readTrustProxy,
+} = require("../src/core/config");
+
+// Валидное окружение для readConfig: любой тест, который проверяет одно поле,
+// не должен падать на соседних. Значения совпадают с тем, что раньше
+// выставлялось дочернему процессу.
+function testEnv(overrides = {}) {
+  return {
+    TRUST_PROXY: "0",
+    PUBLIC_ORIGIN: "http://localhost:3000",
+    PORT: "0",
+    NODE_ENV: "test",
+    DEMO_MODE: "false",
+    ...overrides,
+  };
+}
+
+// fail() в config.js печатает ошибку и завершает процесс. Подменяем оба выхода
+// наружу, чтобы проверить реакцию на плохое значение в том же процессе: spawn
+// в песочнице запрещён, а дочерний процесс к тому же скрыл бы сам вызов.
+function captureFailures(run) {
+  const originalExit = process.exit;
+  const originalError = console.error;
+  const exits = [];
+  const messages = [];
+
+  process.exit = (code) => {
+    exits.push(code);
+  };
+  console.error = (message) => {
+    messages.push(String(message));
+  };
+
+  try {
+    run();
+  } finally {
+    process.exit = originalExit;
+    console.error = originalError;
+  }
+
+  assert.ok(messages.length > 0, "fail() должен написать понятную ошибку");
+  return { exits, messages };
+}
 
 test("TRUST_PROXY=0 не роняет сервер", async (t) => {
-  const child = spawn(
-    process.execPath,
-    [path.join(__dirname, "../src/server.js")],
-    {
-      env: {
-        ...process.env,
-        TRUST_PROXY: "0",
-        PUBLIC_ORIGIN: "http://localhost:3000",
-        PORT: "0",
-        NODE_ENV: "test",
-        DEMO_MODE: "false",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
+  const config = readConfig(testEnv({ TRUST_PROXY: "0" }));
+  const { server, limiter } = createHttpServer(config);
 
-  t.after(() => child.kill());
-
-  let stdout = "";
-  let stderr = "";
-
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString();
+  t.after(async () => {
+    limiter.stopSweeper();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
   });
 
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(
-        new Error(
-          `Сервер не запустился за 10 с: stdout=${stdout}, stderr=${stderr}`,
-        ),
-      );
-    }, 10_000);
-
-    const finish = (error) => {
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve();
-    };
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-      if (stdout.includes("Сканер запущен")) finish();
-    });
-
-    child.on("exit", (code) => {
-      if (code === 1) {
-        finish(new Error(`Сервер упал с кодом 1: ${stderr}`));
-      }
-    });
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
   });
 
-  assert.match(stdout, /Сканер запущен/);
-  assert.strictEqual(stderr.includes("ОШИБКА"), false, stderr);
+  const address = server.address();
+  assert.ok(address && address.port > 0, "сервер должен слушать выбранный порт");
+  assert.strictEqual(config.trustProxy, 0);
+
+  // Свойство прежнего теста было «сервер поднимается», но полезнее проверить,
+  // что он ещё и отвечает: иначе успешный listen ничего не доказывает.
+  const res = await fetch(`http://127.0.0.1:${address.port}/healthz`);
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual((await res.json()).ok, true);
+});
+
+// --- NODE_ENV, PORT и TRUST_PROXY: валидация конфигурации ---------------
+
+test("readNodeEnv: development, production и test допустимы", () => {
+  for (const value of ["development", "production", "test"]) {
+    assert.strictEqual(readNodeEnv(value), value);
+  }
+
+  // Незаданный NODE_ENV — штатный локальный запуск, а не ошибка.
+  assert.strictEqual(readNodeEnv(undefined), undefined);
+  assert.strictEqual(readNodeEnv(""), undefined);
+});
+
+test("readNodeEnv: prod, Production, staging и foo останавливают запуск", () => {
+  // Раньше неизвестное значение молча выключало прод-контроли (CONSENT_SECRET,
+  // upgrade-insecure-requests), поэтому теперь это отказ старта.
+  for (const value of ["prod", "Production", "staging", "foo"]) {
+    const { exits, messages } = captureFailures(() => readNodeEnv(value));
+
+    assert.deepStrictEqual(exits, [1], `${value}: ожидался process.exit(1)`);
+    assert.ok(
+      messages.some((message) => message.includes("NODE_ENV")),
+      `${value}: сообщение должно объяснять NODE_ENV, пришло: ${messages.join(" | ")}`,
+    );
+  }
+});
+
+test("readConfig: недопустимый NODE_ENV — exit(1) с объяснением", () => {
+  const { exits, messages } = captureFailures(() =>
+    readConfig(testEnv({ NODE_ENV: "Production" })),
+  );
+
+  assert.deepStrictEqual(exits, [1]);
+  assert.ok(
+    messages.some((message) => message.includes("NODE_ENV")),
+    messages.join(" | "),
+  );
+});
+
+test("readPort: целое число от 0 до 65535, пустое значение — 3000", () => {
+  assert.strictEqual(readPort("3000"), 3000);
+  assert.strictEqual(readPort("0"), 0);
+  assert.strictEqual(readPort("65535"), 65535);
+  assert.strictEqual(readPort(undefined), 3000);
+  assert.strictEqual(readPort(""), 3000);
+
+  for (const invalid of ["-1", "65536", "3.5", "abc", "3000abc"]) {
+    const { exits, messages } = captureFailures(() => readPort(invalid));
+
+    assert.deepStrictEqual(exits, [1], `${invalid}: ожидался exit(1)`);
+    assert.ok(
+      messages.some((message) => message.includes("PORT")),
+      `${invalid}: сообщение должно объяснять PORT`,
+    );
+  }
+});
+
+test("readTrustProxy: только целое 0..10", () => {
+  assert.strictEqual(readTrustProxy(undefined), 0);
+  assert.strictEqual(readTrustProxy(""), 0);
+  assert.strictEqual(readTrustProxy("1"), 1);
+  assert.strictEqual(readTrustProxy(" 10 "), 10);
+
+  for (const invalid of ["true", "-1", "11", "1.5", "abc"]) {
+    const { exits, messages } = captureFailures(() => readTrustProxy(invalid));
+
+    // «true» и дробь проваливают и проверку формата, и проверку диапазона,
+    // поэтому fail() может вызваться дважды — важен только код выхода.
+    assert.ok(exits.length >= 1, `${invalid}: ожидался process.exit(1)`);
+    assert.ok(
+      exits.every((code) => code === 1),
+      `${invalid}: ожидался только код 1, пришли: ${exits.join(", ")}`,
+    );
+    assert.ok(
+      messages.some((message) => message.includes("TRUST_PROXY")),
+      `${invalid}: сообщение должно объяснять TRUST_PROXY`,
+    );
+  }
+});
+
+// --- Признак редиректа 80 → 443 (HSTS имеет смысл только с ним) ---------
+
+test("redirectsToHttps: только 3xx с абсолютным https Location", () => {
+  assert.strictEqual(
+    redirectsToHttps({ status: 301, location: "https://example.com/" }),
+    true,
+  );
+  assert.strictEqual(
+    redirectsToHttps({ status: 308, location: "HTTPS://example.com/" }),
+    true,
+  );
+
+  // Открытый HTTP на порту 80 — не «неизвестно», а подтверждённое отсутствие
+  // редиректа.
+  assert.strictEqual(redirectsToHttps({ status: 200, location: "" }), false);
+  assert.strictEqual(
+    redirectsToHttps({ status: 302, location: "http://example.com/" }),
+    false,
+  );
+  assert.strictEqual(redirectsToHttps({ status: 302, location: "/login" }), false);
+  assert.strictEqual(redirectsToHttps({ status: 302 }), false);
+  assert.strictEqual(redirectsToHttps({ error: true }), false);
+  assert.strictEqual(redirectsToHttps(null), false);
 });
 
 test("Rate limit использует реальный IP прокси, а не подделку из X-Forwarded-For", async (t) => {

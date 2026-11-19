@@ -4,6 +4,7 @@ const {
   parseSetCookie,
   summarizeCookies,
   analyzeSecurityHeaders,
+  headerValues,
   detectWaf,
   detectCms,
 } = require("../src/probes/header-analysis");
@@ -551,4 +552,215 @@ test("detectCms не деградирует на длинных meta-тегах"
     elapsed < 500,
     "возможен ReDoS: detectCms занял " + elapsed + " мс",
   );
+});
+
+// --- Несколько заголовков одной политики ----------------------------------
+
+test("headerValues: разбирает rawHeaders без учёта регистра", () => {
+  const raw = [
+    "Content-Security-Policy",
+    "script-src 'self'",
+    "content-security-policy",
+    "frame-ancestors 'none'",
+    "X-Frame-Options",
+    "DENY",
+  ];
+
+  assert.deepStrictEqual(headerValues(raw, "content-security-policy"), [
+    "script-src 'self'",
+    "frame-ancestors 'none'",
+  ]);
+  assert.deepStrictEqual(headerValues(raw, "x-frame-options"), ["DENY"]);
+  assert.deepStrictEqual(headerValues(raw, "referrer-policy"), []);
+  assert.deepStrictEqual(headerValues(undefined, "x"), []);
+  // Непарный хвост (имя без значения) не должен читаться как значение.
+  assert.deepStrictEqual(headerValues(["x"], "x"), []);
+});
+
+test("analyzeSecurityHeaders: несколько CSP-заголовков оцениваются по отдельности", () => {
+  // Склейка через ", " дала бы одну строку, где второй политике «не хватает»
+  // директив, и сайт получил бы weak при рабочей политике. Браузер применяет
+  // все политики одновременно, поэтому ограничивает любая из них.
+  const raw = [
+    "Content-Security-Policy",
+    "img-src 'self'",
+    "Content-Security-Policy",
+    "default-src 'self'",
+  ];
+  const result = analyzeSecurityHeaders(
+    {
+      "content-security-policy": "img-src 'self', default-src 'self'",
+    },
+    raw,
+  );
+  assert.strictEqual(result.cspState, "ok");
+  assert.strictEqual(result.csp, true);
+
+  const weakOnly = analyzeSecurityHeaders(
+    { "content-security-policy": "default-src *, script-src *" },
+    [
+      "content-security-policy",
+      "default-src *",
+      "content-security-policy",
+      "script-src *",
+    ],
+  );
+  assert.strictEqual(weakOnly.cspState, "weak");
+  assert.strictEqual(weakOnly.csp, false);
+});
+
+test("analyzeSecurityHeaders: несколько XFO/Referrer-Policy/Permissions-Policy", () => {
+  const raw = [
+    "X-Frame-Options",
+    "ALLOW-FROM https://example.com",
+    "X-Frame-Options",
+    "DENY",
+    "Referrer-Policy",
+    "unsafe-url",
+    "Referrer-Policy",
+    "no-referrer",
+    "Permissions-Policy",
+    "camera=*",
+    "Permissions-Policy",
+    "geolocation=()",
+  ];
+  const result = analyzeSecurityHeaders(
+    {
+      "x-frame-options": "ALLOW-FROM https://example.com, DENY",
+      "referrer-policy": "unsafe-url, no-referrer",
+      "permissions-policy": "camera=*, geolocation=()",
+    },
+    raw,
+  );
+
+  assert.strictEqual(result.xframeState, "ok");
+  assert.strictEqual(result.xframe, true);
+  assert.strictEqual(result.referrerPolicyState, "ok");
+  assert.strictEqual(result.referrerPolicy, true);
+  assert.strictEqual(result.permissionsPolicyState, "ok");
+  assert.strictEqual(result.permissionsPolicy, true);
+
+  // Если ограничивающих значений нет ни в одном заголовке — weak.
+  const weak = analyzeSecurityHeaders(
+    { "x-frame-options": "ALLOW-FROM https://example.com, SAMEORIGIN" },
+    ["X-Frame-Options", "ALLOW-FROM https://example.com"],
+  );
+  assert.strictEqual(weak.xframeState, "weak");
+});
+
+// --- CSP frame-ancestors вместо X-Frame-Options ---------------------------
+
+test("analyzeSecurityHeaders: cspFrameAncestors закрывает кликджекинг без XFO", () => {
+  const none = analyzeSecurityHeaders({
+    "content-security-policy": "frame-ancestors 'none'",
+  });
+  assert.strictEqual(none.cspFrameAncestors, true);
+  // X-Frame-Options при этом отсутствует: scoring должен зачесть CSP.
+  assert.strictEqual(none.xframeState, "missing");
+  assert.strictEqual(none.xframe, false);
+
+  const self = analyzeSecurityHeaders({
+    "content-security-policy": "script-src 'self'; frame-ancestors 'self'",
+  });
+  assert.strictEqual(self.cspFrameAncestors, true);
+
+  const host = analyzeSecurityHeaders({
+    "content-security-policy": "frame-ancestors https://example.com",
+  });
+  assert.strictEqual(host.cspFrameAncestors, true);
+});
+
+test("analyzeSecurityHeaders: cspFrameAncestors не засчитывает wildcard и схемы", () => {
+  for (const value of [
+    "frame-ancestors *",
+    "frame-ancestors https:",
+    "frame-ancestors http:",
+    "frame-ancestors https://*",
+    // 'none' рядом с другими источниками браузер игнорирует.
+    "frame-ancestors 'none' https:",
+    "frame-ancestors",
+    "script-src 'self'",
+  ]) {
+    assert.strictEqual(
+      analyzeSecurityHeaders({ "content-security-policy": value })
+        .cspFrameAncestors,
+      false,
+      value,
+    );
+  }
+});
+
+test("analyzeSecurityHeaders: несколько CSP-заголовков дают frame-ancestors", () => {
+  const raw = [
+    "Content-Security-Policy",
+    "default-src 'self'",
+    "Content-Security-Policy",
+    "frame-ancestors 'none'",
+  ];
+  const result = analyzeSecurityHeaders(
+    { "content-security-policy": "default-src 'self', frame-ancestors 'none'" },
+    raw,
+  );
+  assert.strictEqual(result.cspFrameAncestors, true);
+});
+
+// --- CSP из <meta http-equiv> ---------------------------------------------
+
+test("analyzeSecurityHeaders: CSP из meta засчитывается, когда заголовка нет", () => {
+  const html = [
+    "<!doctype html><html><head>",
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'">',
+    "</head><body>ok</body></html>",
+  ].join("");
+
+  const result = analyzeSecurityHeaders({}, [], html);
+  assert.strictEqual(result.cspState, "ok");
+  assert.strictEqual(result.csp, true);
+});
+
+test("analyzeSecurityHeaders: meta-CSP с weak-политикой даёт weak, а не missing", () => {
+  const html =
+    '<meta http-equiv="content-security-policy" content="script-src *">';
+  const result = analyzeSecurityHeaders({}, [], html);
+  assert.strictEqual(result.cspState, "weak");
+  assert.strictEqual(result.csp, false);
+});
+
+test("analyzeSecurityHeaders: meta не задаёт frame-ancestors", () => {
+  // CSP2: frame-ancestors в meta игнорируется браузером, поэтому кликджекинг
+  // такая директива не закрывает.
+  const html =
+    '<meta http-equiv="Content-Security-Policy" content="frame-ancestors \'none\'">';
+  const result = analyzeSecurityHeaders({}, [], html);
+  assert.strictEqual(result.cspFrameAncestors, false);
+});
+
+test("analyzeSecurityHeaders: заголовок CSP приоритетнее meta", () => {
+  const html =
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'self\'">';
+  const result = analyzeSecurityHeaders(
+    { "content-security-policy": "script-src *" },
+    [],
+    html,
+  );
+  // Заголовок есть — meta не подменяет его и не улучшает оценку.
+  assert.strictEqual(result.cspState, "weak");
+});
+
+test("analyzeSecurityHeaders: meta-CSP в разных регистрах и порядке атрибутов", () => {
+  const html = [
+    '<meta content="default-src \'self\'" HTTP-EQUIV="Content-Security-Policy">',
+    "<meta http-equiv=\"X-UA-Compatible\" content=\"default-src *\">",
+    "<meta name=\"generator\" content=\"WordPress\">",
+  ].join("");
+  const result = analyzeSecurityHeaders({}, [], html);
+  assert.strictEqual(result.cspState, "ok");
+
+  // content без http-equiv не считается CSP.
+  const notCsp = analyzeSecurityHeaders(
+    {},
+    [],
+    '<meta content="default-src \'self\'">',
+  );
+  assert.strictEqual(notCsp.cspState, "missing");
 });

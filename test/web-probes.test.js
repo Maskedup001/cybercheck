@@ -1,13 +1,13 @@
 const http = require("node:http");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const pkg = require("../package.json");
 const {
   request,
   checkSensitiveFiles,
   checkSecurityTxt,
   checkFingerprint,
 } = require("../src/probes/web-probes");
+const { BROWSER_UA } = require("../src/probes/http-headers");
 
 // Локальный сервер только на 127.0.0.1; порт всегда случайный.
 // Уничтожаем открытые сокеты перед close(), иначе keep-alive/зависшие
@@ -39,17 +39,18 @@ async function startServer(handler) {
   };
 }
 
-test("checkSensitiveFiles: 200 — exposed, 403 — blocked, 404 — ни то ни другое", async (t) => {
+test("checkSensitiveFiles: 200 с сигнатурой — exposed, 403 — blocked, 404 — ни то ни другое", async (t) => {
   const statusByPath = new Map([
     ["/.env", 200],
     ["/.git/config", 403],
     ["/.DS_Store", 404],
     ["/backup.zip", 301],
   ]);
+  const bodyByPath = new Map([["/.env", "APP_KEY=secret\nDEBUG=false\n"]]);
 
   const server = await startServer((req, res) => {
     res.statusCode = statusByPath.get(req.url) ?? 404;
-    res.end();
+    res.end(bodyByPath.get(req.url) ?? "");
   });
   t.after(() => server.close());
 
@@ -97,7 +98,75 @@ test("checkSensitiveFiles: 200 — exposed, 403 — blocked, 404 — ни то �
   }
 });
 
-test("checkSensitiveFiles: использует HEAD для всех путей", async (t) => {
+test("checkSensitiveFiles: экспозиция подтверждается сигнатурой каждого файла", async (t) => {
+  // 200 сам по себе ничего не доказывает: тело должно быть настоящим
+  // файлом утечки, а не HTML-заглушкой SPA.
+  const bodyByPath = new Map([
+    ["/.env", "DB_HOST=localhost\nDB_USER=root\n"],
+    ["/.git/config", "[core]\n\trepositoryformatversion = 0\n"],
+    ["/backup.zip", Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])],
+    [
+      "/.DS_Store",
+      Buffer.concat([
+        Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31]),
+        Buffer.from([0, 0, 0, 0]),
+      ]),
+    ],
+  ]);
+
+  const server = await startServer((req, res) => {
+    res.statusCode = 200;
+    res.end(bodyByPath.get(req.url) ?? "");
+  });
+  t.after(() => server.close());
+
+  const result = await checkSensitiveFiles(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.deepEqual(result.exposed, [
+    "/.env",
+    "/.git/config",
+    "/.DS_Store",
+    "/backup.zip",
+  ]);
+  assert.deepEqual(result.blocked, []);
+  for (const item of result.results) {
+    assert.equal(item.status, 200, item.path);
+    assert.equal(item.exposed, true, item.path);
+    assert.equal(item.error, null, item.path);
+  }
+});
+
+test("checkSensitiveFiles: 200 без сигнатуры — NO_SIGNATURE, а не exposed", async (t) => {
+  // SPA/catch-all отдаёт 200 HTML на любой путь: это «не проверено», а не
+  // «открыто» и не «закрыто».
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end("<!doctype html><html><body><input value=\"x\"></body></html>");
+  });
+  t.after(() => server.close());
+
+  const result = await checkSensitiveFiles(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.deepEqual(result.exposed, []);
+  assert.deepEqual(result.blocked, []);
+  for (const item of result.results) {
+    assert.equal(item.status, 200, item.path);
+    assert.equal(item.exposed, false, item.path);
+    assert.equal(item.error, "NO_SIGNATURE", item.path);
+  }
+});
+
+test("checkSensitiveFiles: использует GET для всех путей", async (t) => {
   const seen = [];
   const server = await startServer((req, res) => {
     seen.push({ method: req.method, url: req.url });
@@ -110,8 +179,8 @@ test("checkSensitiveFiles: использует HEAD для всех путей"
 
   assert.equal(seen.length, 4);
   assert.ok(
-    seen.every((entry) => entry.method === "HEAD"),
-    `Ожидали только HEAD, получили: ${seen.map((entry) => entry.method).join(", ")}`,
+    seen.every((entry) => entry.method === "GET"),
+    `Ожидали только GET, получили: ${seen.map((entry) => entry.method).join(", ")}`,
   );
   assert.deepEqual(
     seen.map((entry) => entry.url).sort(),
@@ -147,6 +216,7 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
     present: true,
     blocked: false,
     error: null,
+    truncated: false,
   });
 
   status = 404;
@@ -162,6 +232,7 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
     present: false,
     blocked: false,
     error: null,
+    truncated: false,
   });
 
   status = 403;
@@ -177,6 +248,7 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
     present: false,
     blocked: true,
     error: null,
+    truncated: false,
   });
 
   assert.deepEqual(accepts, ["text/plain", "text/plain", "text/plain"]);
@@ -219,6 +291,53 @@ test("checkSecurityTxt: 200 text/plain без Contact тоже не security.txt
 
   assert.equal(result.status, 200);
   assert.equal(result.present, false);
+  assert.equal(result.error, null);
+  assert.equal(result.truncated, false);
+});
+
+test("checkSecurityTxt: обрезанное тело без Contact — TRUNCATED, не «нет»", async (t) => {
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/plain");
+    // 40 КБ > лимита 32 КБ, Contact в прочитанную часть не попадает.
+    res.end("padding ".repeat(5000));
+  });
+  t.after(() => server.close());
+
+  const result = await checkSecurityTxt(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(result.present, false);
+  assert.equal(result.blocked, false);
+  // Обрезка — «не проверено», а не «файла нет» и не «файл некорректен».
+  assert.equal(result.error, "TRUNCATED");
+  assert.equal(result.truncated, true);
+});
+
+test("checkSecurityTxt: Contact в начале обрезанного тела даёт present", async (t) => {
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/plain");
+    res.end(
+      "Contact: mailto:security@example.com\n" + "padding ".repeat(5000),
+    );
+  });
+  t.after(() => server.close());
+
+  const result = await checkSecurityTxt(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.equal(result.status, 200);
+  assert.equal(result.present, true);
+  assert.equal(result.error, null);
+  assert.equal(result.truncated, true);
 });
 
 test("checkFingerprint: находит WordPress и Cloudflare и не даёт ложных срабатываний", async (t) => {
@@ -332,7 +451,10 @@ test("request: Host содержит порт, подключение идёт �
   assert.equal(captured.method, "GET");
   assert.equal(captured.url, "/probe");
   assert.equal(captured.host, `example.test:${server.port}`);
-  assert.equal(captured.userAgent, `CyberCheck/${pkg.version}`);
+  // Проба обязана представляться браузером: предсказуемый UA сканера
+  // позволяет цели отдавать ей другой ответ (клоакинг).
+  assert.equal(captured.userAgent, BROWSER_UA);
+  assert.ok(!captured.userAgent.includes("CyberCheck"));
   assert.match(captured.remoteAddress, /127\.0\.0\.1$/);
 });
 
@@ -439,4 +561,140 @@ test("request: таймаут тела сохраняет статус и заг
   assert.equal(result.headers["cf-ray"], "8f2a1b3c4d5e6f70-FRA");
   assert.match(result.body, /partial/);
   assert.equal(result.error, "ETIMEDOUT");
+});
+
+test("request: bodyBuffer содержит ровно прочитанные байты и признак обрезки", async (t) => {
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/plain");
+    res.end("abcdefgh");
+  });
+  t.after(() => server.close());
+
+  const result = await request({
+    method: "GET",
+    path: "/",
+    connectIp: "127.0.0.1",
+    port: server.port,
+    hostname: "localhost",
+    hasTls: false,
+    readBody: true,
+    maxBody: 5,
+    timeoutMs: 2000,
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(result.body, "abcde");
+  // Байты, а не строка: сигнатуры файлов сравнивают бинарные начала.
+  assert.ok(Buffer.isBuffer(result.bodyBuffer));
+  assert.deepEqual(result.bodyBuffer, Buffer.from("abcde"));
+  assert.equal(result.bodyBuffer.length, 5);
+  assert.equal(result.truncated, true);
+});
+
+test("request: полное тело не помечается обрезанным", async (t) => {
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/plain");
+    res.end("hello");
+  });
+  t.after(() => server.close());
+
+  const result = await request({
+    method: "GET",
+    path: "/",
+    connectIp: "127.0.0.1",
+    port: server.port,
+    hostname: "localhost",
+    hasTls: false,
+    readBody: true,
+    maxBody: 1024,
+    timeoutMs: 2000,
+  });
+
+  assert.equal(result.error, null);
+  assert.equal(result.body, "hello");
+  assert.deepEqual(result.bodyBuffer, Buffer.from("hello"));
+  assert.equal(result.truncated, false);
+});
+
+test("request: same-origin редирект преследуется, чужой origin — нет", async (t) => {
+  const visited = [];
+
+  const server = await startServer((req, res) => {
+    visited.push(req.url);
+
+    if (req.url === "/start") {
+      res.statusCode = 302;
+      res.setHeader("Location", "/final");
+      res.end();
+      return;
+    }
+
+    if (req.url === "/final") {
+      res.statusCode = 200;
+      res.end("final-body");
+      return;
+    }
+
+    // Уводит на другой хост: такой переход выполнять нельзя.
+    res.statusCode = 301;
+    res.setHeader("Location", "http://example.test/elsewhere");
+    res.end();
+  });
+  t.after(() => server.close());
+
+  const followed = await request({
+    path: "/start",
+    connectIp: "127.0.0.1",
+    port: server.port,
+    hostname: "localhost",
+    hasTls: false,
+    readBody: true,
+    timeoutMs: 2000,
+  });
+
+  assert.equal(followed.status, 200);
+  assert.equal(followed.body, "final-body");
+  assert.deepEqual(visited, ["/start", "/final"]);
+
+  visited.length = 0;
+  const crossOrigin = await request({
+    path: "/offsite",
+    connectIp: "127.0.0.1",
+    port: server.port,
+    hostname: "localhost",
+    hasTls: false,
+    timeoutMs: 2000,
+  });
+
+  // На чужой origin запрос не уходит: отдаётся сам редирект.
+  assert.equal(crossOrigin.status, 301);
+  assert.deepEqual(visited, ["/offsite"]);
+});
+
+test("request: не больше трёх переходов, цикл не зацикливает пробу", async (t) => {
+  const visited = [];
+
+  const server = await startServer((req, res) => {
+    visited.push(req.url);
+    // Бесконечная цепочка: каждый путь ведёт на следующий.
+    const n = Number(/\d+/.exec(req.url)?.[0] || 0);
+    res.statusCode = 302;
+    res.setHeader("Location", `/hop-${n + 1}`);
+    res.end();
+  });
+  t.after(() => server.close());
+
+  const result = await request({
+    path: "/hop-0",
+    connectIp: "127.0.0.1",
+    port: server.port,
+    hostname: "localhost",
+    hasTls: false,
+    timeoutMs: 2000,
+  });
+
+  // Четыре запроса: исходный и три разрешённых перехода.
+  assert.deepEqual(visited, ["/hop-0", "/hop-1", "/hop-2", "/hop-3"]);
+  assert.equal(result.status, 302);
+  assert.equal(result.error, null);
 });
