@@ -165,6 +165,23 @@ test("selectWebPorts: только открытые веб-порты в пор�
   );
 });
 
+test("selectWebPorts: тестовый шов подменяет порядок веб-портов", () => {
+  // server.js передаёт сюда options.webPortOrder, чтобы интеграционный тест
+  // лимитера мог зависнуть на случайном порту, не занимая 8080.
+  assert.deepStrictEqual(
+    selectWebPorts(
+      [
+        { port: 49152, status: "open" },
+        { port: 443, status: "open" },
+        { port: 8080, status: "open" },
+      ],
+      [49152],
+    ),
+    [49152],
+  );
+  assert.deepStrictEqual(selectWebPorts([], [49152]), []);
+});
+
 // --- Критические файлы и сборка отчёта ----------------------------
 
 test("withCriticalFiles: critical только для реально критичных путей", () => {

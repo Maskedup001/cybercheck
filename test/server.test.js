@@ -1,4 +1,4 @@
-const http = require("node:http");
+const net = require("node:net");
 const test = require("node:test");
 const assert = require("node:assert");
 const {
@@ -55,8 +55,10 @@ function captureFailures(run) {
 }
 
 // Хелпер: поднимает сервер на случайном порту и возвращает url + функцию очистки.
-async function listenServer(t, config) {
-  const { server, limiter } = createHttpServer(config);
+// options — тестовый шов createHttpServer (scanPorts/webPortOrder), по умолчанию
+// поведение штатное.
+async function listenServer(t, config, options = {}) {
+  const { server, limiter } = createHttpServer(config, options);
 
   t.after(async () => {
     limiter.stopSweeper();
@@ -71,6 +73,16 @@ async function listenServer(t, config) {
 
   const port = server.address().port;
   return { server, limiter, port, url: `http://127.0.0.1:${port}/api/scan` };
+}
+
+// Ждём условие с таймаутом вместо фиксированного sleep: на медленной машине
+// 150 мс могло не хватить, а на быстрой мы зря тратили бы время.
+async function waitFor(predicate, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 test("TRUST_PROXY=0 не роняет сервер", async (t) => {
@@ -315,29 +327,40 @@ test("Сервер отклоняет сканирование с поддель
 });
 
 test("Rate limit блокирует исчерпание пула с одного IP при подмене XFF", async (t) => {
-  // Создаём "висящий" сервер-цель на порту 8080 (он входит в SCAN_PORTS),
-  // чтобы сканер гарантированно подключился к нему и завис на ожидании ответа.
-  const hangingTarget = http.createServer(() => {
-    // Намеренно не отвечаем
+  // Зависшая цель на случайном порту: скан подключается к ней как к веб-порту
+  // и висит на TLS/HTTP-пробе, удерживая edge-слоты. Фиксированный 8080 не
+  // занимаем: при параллельном запуске или чужом процессе на этом порту тест
+  // получал бы EADDRINUSE. Порт передаём серверу через options (scanPorts/
+  // webPortOrder) — настоящие пробы и настоящий скан при этом сохраняются.
+  const hangingSockets = new Set();
+  const hangingTarget = net.createServer((socket) => {
+    // Намеренно не отвечаем: любой ответ завершил бы скан.
+    hangingSockets.add(socket);
+    socket.on("close", () => hangingSockets.delete(socket));
+    socket.on("error", () => {});
   });
 
   const controllers = [new AbortController(), new AbortController()];
   t.after(async () => {
     controllers.forEach((c) => c.abort());
-    hangingTarget.closeAllConnections?.();
+    for (const socket of hangingSockets) socket.destroy();
     await new Promise((resolve) => hangingTarget.close(resolve));
   });
 
   await new Promise((resolve, reject) => {
     hangingTarget.once("error", reject);
-    hangingTarget.listen(8080, "127.0.0.1", resolve);
+    hangingTarget.listen(0, "127.0.0.1", resolve);
   });
+  const targetPort = hangingTarget.address().port;
 
   const config = readConfig(testEnv({ TRUST_PROXY: "1", DEMO_MODE: "true" }));
-  const { url } = await listenServer(t, config);
+  const { url, limiter } = await listenServer(t, config, {
+    scanPorts: [targetPort],
+    webPortOrder: [targetPort],
+  });
 
   const payload = {
-    url: "http://127.0.0.1:8080",
+    url: `http://127.0.0.1:${targetPort}`,
     consent: true,
     consentToken: issueConsentToken(),
   };
@@ -356,9 +379,14 @@ test("Rate limit блокирует исчерпание пула с одног�
   const req1 = makeReq("1.1.1.1", controllers[0].signal).catch(() => {});
   const req2 = makeReq("2.2.2.2", controllers[1].signal).catch(() => {});
 
-  // Даём первым двум запросам пройти валидацию и зависнуть на проверке 8080,
-  // удерживая edge-слоты активными.
-  await new Promise((resolve) => setTimeout(resolve, 150));
+  // Дожидаемся, пока оба скана реально займут edge-слоты (фиксированный sleep
+  // мог не хватить на медленной машине). Заодно проверяем, что XFF дал два
+  // разных clientKey при одном edgeKey.
+  await waitFor(
+    () => limiter.activeScans === 2 && limiter.activeKeys === 2,
+    2000,
+    "первые два запроса не заняли два edge-слота",
+  );
 
   const res3 = await makeReq("3.3.3.3");
   assert.strictEqual(
@@ -373,4 +401,13 @@ test("Rate limit блокирует исчерпание пула с одног�
   // Отменяем висящие запросы, чтобы тест не ждал таймаут
   controllers.forEach((c) => c.abort());
   await Promise.all([req1, req2]);
+
+  // Слоты освобождаются на любом исходе скана (finally в роуте): утечка
+  // навсегда съедала бы ёмкость лимитера.
+  await waitFor(
+    () => limiter.activeScans === 0,
+    2000,
+    "edge-слоты не освободились после отмены запросов",
+  );
+  assert.strictEqual(limiter.activeByEdge.size, 0);
 });
