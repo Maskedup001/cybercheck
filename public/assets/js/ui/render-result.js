@@ -621,10 +621,23 @@ function createTlsCard(ssl, ports) {
   const tlsVersion = sanitizeText(ssl.tlsVersion, 32);
   if (tlsVersion) rows.push({ label: "Версия TLS", value: tlsVersion });
 
-  if (ssl.supportsOldTls) {
+  // Три состояния, а не два: true — старые протоколы принимаются, false —
+  // проверено и отключены, null — проверить не успели. Молчать про последнее
+  // нельзя: пользователь прочитает пустую строку как «всё хорошо».
+  if (ssl.supportsOldTls === true) {
     rows.push({
       label: "Старые протоколы",
       value: createBadge("warn", "TLS 1.0/1.1"),
+    });
+  } else if (ssl.supportsOldTls === false) {
+    rows.push({
+      label: "Старые протоколы",
+      value: createBadge("ok", "Отключены"),
+    });
+  } else if (ssl.supportsOldTls === null) {
+    rows.push({
+      label: "Старые протоколы",
+      value: createBadge("muted", "не проверено"),
     });
   }
 
