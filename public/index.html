@@ -67,6 +67,8 @@
 		<div class="scan-status" data-js="scan-status" hidden>
 			<span class="scan-status__spinner" aria-hidden="true"></span>
 			<p class="scan-status__text" data-js="scan-status-text">Проверяем порты, TLS и заголовки…</p>
+			<button class="button button--secondary scan-status__cancel" type="button" data-js="scan-cancel"
+				hidden>Отменить</button>
 		</div>
 
 		<section class="result" data-js="result" aria-label="Результаты проверки" hidden>
@@ -86,7 +88,7 @@
 					</dl>
 				</div>
 				<div class="result__actions">
-					<button class="button button--secondary result__copy" type="button" data-js="copy">Скопировать отчёт</button>
+					<button class="button button--secondary result__copy" type="button" data-js="copy">Скопировать краткий отчёт</button>
 					<button class="button button--secondary result__download" type="button" data-js="print">Скачать PDF</button>
 				</div>
 				<p class="u-visually-hidden" role="status" data-js="copy-status"></p>

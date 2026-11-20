@@ -16,11 +16,15 @@ const copyBtn = document.querySelector('[data-js="copy"]');
 const copyStatus = document.querySelector('[data-js="copy-status"]');
 const scanStatus = document.querySelector('[data-js="scan-status"]');
 const scanStatusText = document.querySelector('[data-js="scan-status-text"]');
+const cancelBtn = document.querySelector('[data-js="scan-cancel"]');
 
 const SCAN_IDLE_TEXT = "Проверяем порты, TLS и заголовки…";
-const COPY_IDLE_TEXT = "Скопировать отчёт";
+const COPY_IDLE_TEXT = "Скопировать краткий отчёт";
 let elapsedTimer = 0;
 let feedbackTimer = 0;
+// Активный скан: кнопка «Отменить» прерывает fetch, а сервер по закрытому
+// соединению прекращает пробы.
+let activeScanController = null;
 // Последний удачный отчёт: копирование не должно зависеть от DOM и от того,
 // какая вкладка фильтра открыта.
 let lastReport = null;
@@ -118,6 +122,44 @@ async function copyReport() {
   }
 }
 
+// Токен согласия живёт 15 минут и вшит в HTML. Вкладка, открытая дольше,
+// получает 400 «Подтверждение устарело»; вместо требования перезагрузки
+// (с потерей введённого адреса) перечитываем страницу и пробуем ещё раз.
+async function refreshConsentToken() {
+  try {
+    const response = await fetch(window.location.pathname, {
+      headers: { Accept: "text/html" },
+      cache: "no-store",
+    });
+    if (!response.ok) return null;
+
+    const html = await response.text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const field = doc.querySelector('[data-js="consent-token"]');
+    return field && typeof field.value === "string" && field.value
+      ? field.value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function scanWithFreshConsent(payload, signal) {
+  try {
+    return await scanTarget({ ...payload, signal });
+  } catch (error) {
+    const stale =
+      error instanceof Error && /Подтверждение устарело/.test(error.message);
+    if (!stale || !consentTokenInput) throw error;
+
+    const fresh = await refreshConsentToken();
+    if (!fresh) throw error;
+
+    consentTokenInput.value = fresh;
+    return scanTarget({ ...payload, consentToken: fresh, signal });
+  }
+}
+
 async function handleSubmit(event) {
   event.preventDefault();
 
@@ -152,17 +194,19 @@ async function handleSubmit(event) {
   form.setAttribute("aria-busy", "true");
   if (copyBtn) copyBtn.textContent = COPY_IDLE_TEXT;
   if (copyStatus) copyStatus.textContent = "";
+  if (cancelBtn) cancelBtn.hidden = false;
+
+  const controller = new AbortController();
+  activeScanController = controller;
   startScanStatus();
 
   try {
     const token = consentTokenInput ? consentTokenInput.value : null;
 
-    // Передаем токен на сервер
-    const data = await scanTarget({
-      url,
-      consent: isConsent,
-      consentToken: token,
-    });
+    const data = await scanWithFreshConsent(
+      { url, consent: isConsent, consentToken: token },
+      controller.signal,
+    );
 
     // Сначала убираем индикатор, потом показываем отчёт:
     // иначе страница дёргается уже после переноса фокуса.
@@ -194,12 +238,19 @@ async function handleSubmit(event) {
 
     const message =
       error instanceof Error ? error.message : "неизвестная ошибка";
+    const cancelled = message === "Сканирование отменено.";
 
     // Сетевой сбой, таймаут и 429 к содержимому поля отношения не имеют:
     // aria-invalid на адресе только сбивал бы с толку.
-    showError(`Ошибка: ${message}`);
-    statusRegion.textContent = "Ошибка сканирования";
+    if (cancelled) {
+      statusRegion.textContent = "Сканирование отменено";
+    } else {
+      showError(`Ошибка: ${message}`);
+      statusRegion.textContent = "Ошибка сканирования";
+    }
   } finally {
+    activeScanController = null;
+    if (cancelBtn) cancelBtn.hidden = true;
     stopScanStatus();
     submitBtn.disabled = false;
     submitBtn.textContent = "Проверить";
@@ -215,6 +266,11 @@ async function handleSubmit(event) {
 }
 
 form.addEventListener("submit", handleSubmit);
+if (cancelBtn) {
+  cancelBtn.addEventListener("click", () => {
+    if (activeScanController) activeScanController.abort();
+  });
+}
 printBtn.addEventListener("click", () => window.print());
 
 if (copyBtn) {
