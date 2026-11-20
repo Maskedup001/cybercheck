@@ -113,6 +113,7 @@ function parseDmarcTxt(records) {
       present: false,
       record: null,
       policy: null,
+      sp: null,
       pct: null,
       pctInvalid: false,
       partial: false,
@@ -142,6 +143,19 @@ function parseDmarcTxt(records) {
       ? policy
       : null;
 
+  // sp — политика для поддоменов (RFC 7489 §6.3). Нужна, когда запись
+  // находится на организационном домене, а сканируется поддомен.
+  const rawSubdomainPolicy = tags.get("sp");
+  const subdomainPolicy = rawSubdomainPolicy
+    ? rawSubdomainPolicy.toLowerCase()
+    : null;
+  const validSubdomainPolicy =
+    subdomainPolicy === "none" ||
+    subdomainPolicy === "quarantine" ||
+    subdomainPolicy === "reject"
+      ? subdomainPolicy
+      : null;
+
   // pct (RFC 7489) — доля писем, к которым применяется политика. Значение вне
   // 0..100 — мусор: отдаём null, чтобы «pct=150» не выглядел полной политикой.
   const pctTag = tags.get("pct");
@@ -165,6 +179,7 @@ function parseDmarcTxt(records) {
     present: true,
     record,
     policy: validPolicy,
+    sp: validSubdomainPolicy,
     pct,
     pctInvalid,
     partial: pct !== null && pct < 100,
@@ -210,6 +225,7 @@ function emptyDmarc(error = null) {
     present: false,
     record: null,
     policy: null,
+    sp: null,
     pct: null,
     pctInvalid: false,
     partial: false,
@@ -288,6 +304,90 @@ function abortedResult() {
   };
 }
 
+// Распространённые многоуровневые публичные суффиксы (приближение PSL без
+// внешней зависимости). Для остальных доменов организационный домен — две
+// последние метки. Этого достаточно, чтобы `www.example.com` и
+// `www.example.co.uk` проверялись по `example.com` / `example.co.uk`, а не
+// получали ложное «нет DMARC/CAA» на поддомене.
+const MULTI_LABEL_SUFFIXES = new Set([
+  "co.uk",
+  "org.uk",
+  "ac.uk",
+  "gov.uk",
+  "co.jp",
+  "ne.jp",
+  "or.jp",
+  "com.au",
+  "net.au",
+  "org.au",
+  "co.nz",
+  "com.br",
+  "com.cn",
+  "com.tw",
+  "com.hk",
+  "co.kr",
+  "co.in",
+  "co.za",
+  "com.mx",
+  "com.ar",
+  "com.tr",
+  "com.sg",
+  "com.my",
+  "co.id",
+  "co.th",
+  "com.vn",
+  "com.ph",
+  "com.pk",
+  "com.ua",
+  "com.pl",
+  "co.il",
+  "com.sa",
+  "com.eg",
+  "com.ng",
+  "co.ke",
+  "github.io",
+  "pages.dev",
+  "vercel.app",
+  "netlify.app",
+  "herokuapp.com",
+  "azurewebsites.net",
+  "cloudfront.net",
+  "blogspot.com",
+  "wordpress.com",
+]);
+
+function registrableDomain(host) {
+  const value = typeof host === "string" ? host.trim().toLowerCase() : "";
+  if (!value || net.isIP(value)) return null;
+
+  const labels = value.replace(/\.$/, "").split(".").filter(Boolean);
+  if (labels.length < 2) return null;
+
+  const lastTwo = labels.slice(-2).join(".");
+  const take = MULTI_LABEL_SUFFIXES.has(lastTwo) ? 3 : 2;
+  return labels.slice(Math.max(0, labels.length - take)).join(".");
+}
+
+// Кандидаты для CAA: подъём по дереву от хоста до организационного домена
+// (RFC 8659). Именно так поступает удостоверяющий центр: CAA на example.com
+// действует и для www.example.com.
+function caaLookups(host, orgDomain) {
+  const labels = host.replace(/\.$/, "").toLowerCase().split(".").filter(Boolean);
+  const candidates = [];
+
+  for (let index = 0; index <= labels.length - 2; index += 1) {
+    const candidate = labels.slice(index).join(".");
+    candidates.push(candidate);
+    if (orgDomain && candidate === orgDomain) break;
+  }
+
+  return candidates.length > 0 ? candidates : [host];
+}
+
+function isMissingDnsError(error) {
+  return error === "ENODATA" || error === "ENOTFOUND";
+}
+
 // Проверяет SPF, DMARC и CAA для домена.
 //
 // ВАЖНО: это DNS-запросы к резолверу, а не соединения с целевым хостом.
@@ -314,27 +414,138 @@ async function checkDnsSecurity(hostname, options = {}) {
 
   if (signal?.aborted) return abortedResult();
 
-  // Все три запроса идут параллельно, у каждого свой таймаут.
-  const [spfResult, dmarcResult, caaResult] = await Promise.all([
-    runDnsQuery(() => resolver.resolveTxt(host), timeoutMs, signal),
-    runDnsQuery(() => resolver.resolveTxt(`_dmarc.${host}`), timeoutMs, signal),
-    runDnsQuery(() => resolver.resolveCaa(host), timeoutMs, signal),
-  ]);
+  const orgDomain = registrableDomain(host);
+  const inherited = orgDomain && orgDomain !== host ? orgDomain : null;
+  const caaCandidates = caaLookups(host, orgDomain);
+
+  // Все запросы идут параллельно, у каждого свой таймаут. Для поддомена
+  // дополнительно проверяются SPF/DMARC организационного домена и CAA
+  // каждого родителя.
+  const spfHostPromise = runDnsQuery(
+    () => resolver.resolveTxt(host),
+    timeoutMs,
+    signal,
+  );
+  const dmarcHostPromise = runDnsQuery(
+    () => resolver.resolveTxt(`_dmarc.${host}`),
+    timeoutMs,
+    signal,
+  );
+  const spfOrgPromise = inherited
+    ? runDnsQuery(() => resolver.resolveTxt(inherited), timeoutMs, signal)
+    : Promise.resolve(null);
+  const dmarcOrgPromise = inherited
+    ? runDnsQuery(
+        () => resolver.resolveTxt(`_dmarc.${inherited}`),
+        timeoutMs,
+        signal,
+      )
+    : Promise.resolve(null);
+  const caaPromises = caaCandidates.map((candidate) =>
+    runDnsQuery(() => resolver.resolveCaa(candidate), timeoutMs, signal),
+  );
+
+  const [spfHost, dmarcHost, spfOrg, dmarcOrg, ...caaResults] =
+    await Promise.all([
+      spfHostPromise,
+      dmarcHostPromise,
+      spfOrgPromise,
+      dmarcOrgPromise,
+      ...caaPromises,
+    ]);
 
   // Если сигнал отменили, пока запросы летели, все секции помечаем ABORTED.
   if (signal?.aborted) return abortedResult();
 
-  const spf = spfResult.ok
-    ? { ...parseSpfTxt(spfResult.value), error: null }
-    : emptySpf(spfResult.error);
+  let spf;
+  if (spfHost.ok) {
+    spf = { ...parseSpfTxt(spfHost.value), error: null };
+  } else if (isMissingDnsError(spfHost.error) && spfOrg && spfOrg.ok) {
+    const parent = parseSpfTxt(spfOrg.value);
+    // SPF не наследуется поддоменами: запись example.com не разрешает
+    // отправку от www.example.com. Поэтому present остаётся false, но
+    // сохраняем контекст, чтобы отчёт не выглядел как «у домена вообще нет
+    // SPF» и не советовал чинить уже настроенный родительский домен.
+    spf = parent.present
+      ? {
+          ...emptySpf(null),
+          inheritedFrom: inherited,
+          parentPresent: true,
+        }
+      : emptySpf(spfHost.error);
+  } else {
+    spf = emptySpf(spfHost.error);
+  }
 
-  const dmarc = dmarcResult.ok
-    ? { ...parseDmarcTxt(dmarcResult.value), error: null }
-    : emptyDmarc(dmarcResult.error);
+  let dmarc;
+  if (dmarcHost.ok) {
+    const parsed = parseDmarcTxt(dmarcHost.value);
+    // TXT-записи на _dmarc.<host> могут быть, но без v=DMARC1: это всё равно
+    // «своей политики нет», поэтому смотрим организационный домен.
+    if (!parsed.present && dmarcOrg && dmarcOrg.ok) {
+      const parent = parseDmarcTxt(dmarcOrg.value);
+      if (parent.present) {
+        const effectivePolicy = parent.sp || parent.policy;
+        dmarc = {
+          ...parent,
+          policy: effectivePolicy,
+          error: null,
+          inheritedFrom: inherited,
+          spApplied: Boolean(parent.sp),
+        };
+      } else {
+        dmarc = { ...parsed, error: null };
+      }
+    } else {
+      dmarc = { ...parsed, error: null };
+    }
+  } else if (isMissingDnsError(dmarcHost.error) && dmarcOrg) {
+    if (dmarcOrg.ok) {
+      const parent = parseDmarcTxt(dmarcOrg.value);
+      if (parent.present) {
+        // Для поддомена действует sp (если задана), иначе p родительского
+        // домена. Это то, что реально применит почтовый сервер получателя.
+        const effectivePolicy = parent.sp || parent.policy;
+        dmarc = {
+          ...parent,
+          policy: effectivePolicy,
+          error: null,
+          inheritedFrom: inherited,
+          spApplied: Boolean(parent.sp),
+        };
+      } else {
+        dmarc = emptyDmarc(dmarcHost.error);
+      }
+    } else if (!isMissingDnsError(dmarcOrg.error)) {
+      // Своей записи нет, а родительскую проверить не удалось: «DMARC нет»
+      // было бы ложью — политику родителя мы не видели.
+      dmarc = emptyDmarc(dmarcOrg.error);
+    } else {
+      dmarc = emptyDmarc(dmarcHost.error);
+    }
+  } else {
+    dmarc = emptyDmarc(dmarcHost.error);
+  }
 
-  const caa = caaResult.ok
-    ? { ...parseCaaRecords(caaResult.value), error: null }
-    : emptyCaa(caaResult.error);
+  let caa = null;
+  for (let index = 0; index < caaResults.length; index += 1) {
+    const result = caaResults[index];
+    if (result.ok && Array.isArray(result.value) && result.value.length > 0) {
+      caa = {
+        ...parseCaaRecords(result.value),
+        error: null,
+        foundAt: caaCandidates[index],
+      };
+      break;
+    }
+  }
+
+  if (!caa) {
+    const failed = caaResults.find(
+      (result) => !result.ok && !isMissingDnsError(result.error),
+    );
+    caa = emptyCaa(failed ? failed.error : caaResults[0]?.error || "ENODATA");
+  }
 
   return { applicable: true, spf, dmarc, caa };
 }
@@ -343,5 +554,6 @@ module.exports = {
   parseSpfTxt,
   parseDmarcTxt,
   parseCaaRecords,
+  registrableDomain,
   checkDnsSecurity,
 };

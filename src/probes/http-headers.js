@@ -19,6 +19,9 @@ const {
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 const BOT_UA = `CyberCheck/${pkg.version}`;
+// Origin для проверки CORS: зарезервированный .invalid не принадлежит никому,
+// поэтому отражение этого значения — доказательство отражения любого Origin.
+const PROBE_ORIGIN = "https://cybercheck.invalid";
 
 const RETRY_DELAY_MS = 1000;
 const MIN_ATTEMPT_MS = 50;
@@ -280,12 +283,16 @@ function checkHeaders(
       };
 
       const requestWithProtocol = (protocol) => {
-        const requestTimeout = timeoutFor(
-          timeoutMs,
-          stage
+        // Делим остаток этапа на попытки: раньше первый запрос забирал все
+        // 5 секунд, таймаут съедал бюджет, и ретрай уже не запускался.
+        const remaining = timeoutFor(timeoutMs, stage);
+        const attemptSlots = Math.max(1, attemptsLeft + 1);
+        const requestTimeout = Math.max(
+          MIN_ATTEMPT_MS,
+          Math.floor(remaining / attemptSlots),
         );
 
-        if (requestTimeout < MIN_ATTEMPT_MS) {
+        if (remaining < MIN_ATTEMPT_MS) {
           return retryOrFail();
         }
 
@@ -297,6 +304,7 @@ function checkHeaders(
           headers: {
             Host: hostHeader,
             "User-Agent": ua,
+            Origin: PROBE_ORIGIN,
           },
           timeout: requestTimeout,
           signal,
@@ -327,13 +335,18 @@ function checkHeaders(
             return;
           }
 
-          // HTTPS -> HTTP fallback допустим только
-          // для первоначального запроса.
+          // HTTPS -> HTTP fallback допустим только для первоначального
+          // запроса и только не на 443: на 443 открытый HTTP заведомо не
+          // ответит (там ждёт TLS), а время на него тратится.
           if (
             isHttps &&
+            port !== 443 &&
             !forcedProtocol &&
             !signal?.aborted
           ) {
+            // Это новый запрос, а не продолжение упавшего: сбрасываем guard,
+            // иначе его ошибка игнорировалась и проба зависала без ретрая.
+            failing = false;
             requestWithProtocol("HTTP");
           } else {
             retryOrFail();
@@ -366,7 +379,9 @@ function checkHeaders(
 // body — прочитанное тело GET / для CSP в <meta>.
 function parseHeaders(h, protocol, status = null, rawHeaders = [], body = "") {
   const cookies = parseSetCookie(h["set-cookie"]);
-  const security = analyzeSecurityHeaders(h, rawHeaders, body);
+  const security = analyzeSecurityHeaders(h, rawHeaders, body, {
+    probeOrigin: PROBE_ORIGIN,
+  });
 
   return {
     protocol,

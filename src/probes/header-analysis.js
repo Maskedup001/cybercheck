@@ -20,6 +20,24 @@ const SAFE_REFERRER_POLICIES = new Set([
 const SAFE_COOP = new Set(["same-origin", "same-origin-allow-popups"]);
 const SAFE_XFRAME = new Set(["deny", "sameorigin"]);
 
+// HSTS с max-age в секунды: 180 дней — практический минимум, ниже браузер
+// почти не успевает защитить повторные заходы. max-age=1 формально HSTS,
+// но защитой не является.
+const HSTS_MIN_MAX_AGE = 15_552_000;
+
+// Последняя распознанная политика Referrer-Policy применяется браузером:
+// `no-referrer, unsafe-url` — это unsafe-url. Набор включает и небезопасное
+// значение, чтобы отличить «явно слабо» от «неизвестное значение».
+const RECOGNIZED_REFERRER_POLICIES = new Set([
+  ...SAFE_REFERRER_POLICIES,
+  "unsafe-url",
+]);
+
+// Permissions-Policy ограничивает API, только если хотя бы одна значимая
+// фича реально запрещена/сужена. Одного interest-cohort=() (opt-out FLoC)
+// недостаточно: камера, микрофон и геолокация остаются разрешены всем.
+const SENSITIVE_PERMISSIONS = ["camera", "microphone", "geolocation"];
+
 // Максимальная длина недоверенного заголовка в отчёте (Server, issuer).
 const MAX_HEADER_TEXT = 120;
 
@@ -169,21 +187,56 @@ function permissionsPolicyIsRestrictive(value) {
     .filter(Boolean);
   if (directives.length === 0) return false;
 
-  return directives.some((directive) => {
+  let restrictedSensitive = false;
+
+  for (const directive of directives) {
     const separator = directive.indexOf("=");
-    if (separator === -1) return false; // без allowlist — как "*"
+    if (separator === -1) continue;
+    const name = directive.slice(0, separator).trim().toLowerCase();
+    if (!SENSITIVE_PERMISSIONS.includes(name)) continue;
+
     const allowlist = directive.slice(separator + 1).trim();
-    if (!allowlist.startsWith("(") || !allowlist.endsWith(")")) return false;
+    if (!allowlist.startsWith("(") || !allowlist.endsWith(")")) continue;
 
     const inner = allowlist.slice(1, -1).trim();
-    // Пустой allowlist camera=() запрещает API всем — это ограничение.
-    if (inner === "") return true;
+    // camera=() запрещает API всем — это ограничение.
+    if (inner === "") {
+      restrictedSensitive = true;
+      continue;
+    }
 
-    // camera=(*) формально в скобках, но разрешает API любому origin.
-    return !inner
+    // camera=(*) разрешает API любому origin — это не ограничение.
+    const allowsAll = inner
       .split(/\s+/)
       .some((token) => token === "*" || token === '"*"');
-  });
+    if (!allowsAll) restrictedSensitive = true;
+  }
+
+  return restrictedSensitive;
+}
+
+// Последнее распознанное значение Referrer-Policy. Браузер применяет именно
+// его: при `no-referrer, unsafe-url` действует unsafe-url, а не первый токен.
+function referrerPolicyStateFrom(values) {
+  // При нескольких заголовках действует последний, внутри значения —
+  // последняя распознанная политика. Поэтому идём с конца.
+  for (let valueIndex = values.length - 1; valueIndex >= 0; valueIndex -= 1) {
+    const value = values[valueIndex];
+    if (typeof value !== "string") continue;
+    const tokens = value
+      .split(",")
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean);
+
+    for (let index = tokens.length - 1; index >= 0; index -= 1) {
+      const token = tokens[index];
+      if (RECOGNIZED_REFERRER_POLICIES.has(token)) {
+        return SAFE_REFERRER_POLICIES.has(token) ? "ok" : "weak";
+      }
+    }
+  }
+
+  return values.length > 0 ? "weak" : "missing";
 }
 
 // Возвращает непустое значение заголовка или null.
@@ -452,17 +505,21 @@ function summarizeCookies(cookies) {
 // rawHeaders — res.rawHeaders: повторяющиеся CSP/XFO/Referrer-Policy/
 // Permissions-Policy — это отдельные политики, а не одно склеенное значение.
 // body — уже прочитанное тело GET / (до 64 КБ) для CSP в <meta>.
-function analyzeSecurityHeaders(headers, rawHeaders = [], body = "") {
+function analyzeSecurityHeaders(headers, rawHeaders = [], body = "", options = {}) {
   const accessControlAllowOrigin = headerValue(
     headers,
     "access-control-allow-origin",
   );
+  const probeOrigin =
+    typeof options.probeOrigin === "string"
+      ? options.probeOrigin.trim().toLowerCase()
+      : null;
 
   const hstsValue = headerValue(headers, "strict-transport-security");
   let hstsState = "missing";
   if (hstsValue !== null) {
     const maxAge = hstsMaxAge(hstsValue);
-    hstsState = maxAge !== null && maxAge > 0 ? "ok" : "weak";
+    hstsState = maxAge !== null && maxAge >= HSTS_MIN_MAX_AGE ? "ok" : "weak";
   }
 
   const cspHeaderPolicies = headerValueList(
@@ -505,14 +562,7 @@ function analyzeSecurityHeaders(headers, rawHeaders = [], body = "") {
   }
 
   const referrerValues = headerValueList(headers, rawHeaders, "referrer-policy");
-  let referrerPolicyState = "missing";
-  if (referrerValues.length > 0) {
-    referrerPolicyState = referrerValues.some((value) =>
-      SAFE_REFERRER_POLICIES.has(firstToken(value)),
-    )
-      ? "ok"
-      : "weak";
-  }
+  const referrerPolicyState = referrerPolicyStateFrom(referrerValues);
 
   const coopValue = headerValue(headers, "cross-origin-opener-policy");
   let coopState = "missing";
@@ -541,6 +591,19 @@ function analyzeSecurityHeaders(headers, rawHeaders = [], body = "") {
   // вырезаем до отдачи в API. corsWildcard считается по исходному значению,
   // поэтому "*" остаётся "*".
   const corsWildcard = accessControlAllowOrigin === "*";
+  // Отражение проверочного Origin — реальная уязвимость, в отличие от "*"
+  // без credentials (норма для публичных API).
+  const corsReflectsOrigin =
+    probeOrigin !== null &&
+    typeof accessControlAllowOrigin === "string" &&
+    accessControlAllowOrigin.trim().toLowerCase() === probeOrigin;
+  const credentialsValue = headerValue(
+    headers,
+    "access-control-allow-credentials",
+  );
+  const corsCredentials =
+    typeof credentialsValue === "string" &&
+    credentialsValue.trim().toLowerCase() === "true";
 
   return {
     hsts: hstsState === "ok",
@@ -559,6 +622,8 @@ function analyzeSecurityHeaders(headers, rawHeaders = [], body = "") {
     coop: coopState === "ok",
     coopState,
     corsWildcard,
+    corsReflectsOrigin,
+    corsCredentials,
     accessControlAllowOrigin: sanitizeHeaderText(accessControlAllowOrigin),
   };
 }

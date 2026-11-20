@@ -11,21 +11,45 @@ const {
 // Пауза перед повтором входит в бюджет этапа TLS, а не добавляется к нему.
 const RETRY_DELAY_MS = 500;
 
-// Проверка старых TLS — отдельное соединение. Если на неё осталось меньше
-// секунды, результат всё равно недостоверен, а бюджет этапа будет съеден.
-const OLD_TLS_TIMEOUT_MS = 3000;
+// Проверка старых TLS — отдельное соединение с собственным бюджетом.
+// 4 секунды покрывают медленный хендшейк, который раньше не укладывался в
+// остаток этапа; общий дедлайн скана при этом остаётся жёстким.
+const OLD_TLS_TIMEOUT_MS = 4000;
 const OLD_TLS_MIN_MS = 1000;
 
 // Попытка короче 50 мс не успевает даже на TCP-хендшейк.
 const MIN_ATTEMPT_MS = 50;
 
 // Проверяет, принимает ли сервер устаревшие версии TLS (1.0 / 1.1).
-// timeoutMs — остаток бюджета этапа TLS, а не фиксированные 3 секунды.
+// timeoutMs — бюджет именно этой пробы (не остаток этапа: иначе медленный
+// основной хендшейк оставлял проверке миллисекунды и она отдавала null).
 //
 // Возвращает true (старые протоколы принимаются), false (сервер их отверг)
 // или null — «проверить не удалось»: отмена, нехватка бюджета, таймаут.
 // null нельзя трактовать как false: «не успели» и «не поддерживает» — разные
 // утверждения, и отчёт не должен выдавать одно за другое.
+// Ошибка рукопожатия со старым протоколом — доказательство отказа сервера.
+// Сетевой сбой — нет: до сервера могли не достучаться.
+function classifyOldTlsError(error) {
+  const code = error && typeof error === "object" ? error.code : null;
+  const message =
+    error && typeof error.message === "string" ? error.message : "";
+
+  if (typeof code === "string") {
+    // Alert от сервера: он ответил и явно отверг версию/шифр.
+    if (/^ERR_SSL_(TLSV1|SSLV3)_ALERT_/.test(code)) return false;
+    if (code === "ERR_SSL_VERSION_OR_CIPHER_MISMATCH") return false;
+    // WRONG_VERSION_NUMBER и прочие ERR_SSL_* — не доказательство: возможно,
+    // на порту вообще не TLS. Оставляем «не проверено».
+  }
+  if (code === "EPROTO") return false;
+  if (/sslv[23] alert|tlsv1 alert|protocol version|wrong version number/i.test(message)) {
+    return false;
+  }
+
+  return null;
+}
+
 function checkOldTls(connectIp, port, hostname, signal, timeoutMs) {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve(null);
@@ -71,9 +95,13 @@ function checkOldTls(connectIp, port, hostname, signal, timeoutMs) {
 
     // Обработчик ошибок вешаем до проверки abort: destroy() на уже
     // отменённом сигнале может породить error, который нельзя оставлять
-    // без слушателя. Ошибка рукопожатия — доказательство, что старый
-    // протокол отвергнут.
-    socket.on("error", () => finish(false));
+    // без слушателя.
+    //
+    // false — только доказанный отказ сервера (TLS-alert/EPROTO). Сетевые
+    // ошибки (ECONNREFUSED, ECONNRESET, ETIMEDOUT) ничего не говорят о
+    // поддержке старых протоколов: раньше закрытый порт давал зелёное
+    // «протоколы отключены», хотя соединения не было вовсе.
+    socket.on("error", (error) => finish(classifyOldTlsError(error)));
 
     if (signal) {
       onAbort = () => {
@@ -216,20 +244,27 @@ async function checkSSL(
               );
               socket.end();
 
-              // Старые протоколы проверяются только на остаток бюджета этапа:
-              // иначе успешный хендшейк добавлял к этапу фиксированные 3 с.
-              // null — «не проверялось» (нет бюджета/таймаут), это НЕ
-              // «не поддерживает»: иначе отчёт молча выдавал бы неизвестность
-              // за проверенный факт.
+              // Старые протоколы — отдельная проба со своим бюджетом. Раньше
+              // она получала только остаток 5-секундного этапа: медленный
+              // основной хендшейк оставлял <1 с, проба отдавала null, и оценка
+              // скакала на 10 баллов между одинаковыми сканами. Теперь у
+              // проверки свой бюджет, ограниченный только общим дедлайном.
               let supportsOldTls = null;
-              if (hasBudget(stage, OLD_TLS_MIN_MS)) {
+              let oldTlsBudget = OLD_TLS_TIMEOUT_MS;
+              if (Number.isFinite(deadline)) {
+                oldTlsBudget = Math.min(
+                  oldTlsBudget,
+                  Math.max(0, deadline - Date.now()),
+                );
+              }
+              if (oldTlsBudget >= OLD_TLS_MIN_MS) {
                 try {
                   const oldTls = await checkOldTls(
                     connectIp,
                     port,
                     hostname,
                     signal,
-                    timeoutFor(OLD_TLS_TIMEOUT_MS, stage),
+                    oldTlsBudget,
                   );
                   if (typeof oldTls === "boolean") supportsOldTls = oldTls;
                 } catch (e) {}

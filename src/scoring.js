@@ -229,16 +229,26 @@ function calculateScore(report) {
   const ports = (Array.isArray(input.ports) ? input.ports : []).filter(
     (p) => p && typeof p === "object",
   );
+  // Полные состояния портов (включая filtered/closed). В API ports остаются
+  // только открытыми — их рисует карточка, — но scoring должен видеть и
+  // «не ответил»: иначе filtered молча превращался в «опасных портов нет».
+  const portChecks = (
+    Array.isArray(input.portChecks) ? input.portChecks : ports
+  ).filter((p) => p && typeof p === "object");
 
   const hasSSL = !!ssl.hasSSL && !!ssl.valid;
+  // Сертификат может быть валидным, но сервер согласует только TLS 1.0/1.1:
+  // браузеры таким сайтом не пользуются. Это не «невалидный сертификат»,
+  // поэтому finding должен называться иначе.
+  const tlsOnlyOutdated = !!ssl.hasSSL && !ssl.valid && !ssl.verifyError;
   // NaN и Infinity не должны попадать в сравнения: это единственное число,
   // которое приходит из сертификата, а NaN молча проходит проверку typeof.
   const daysLeft = Number.isFinite(ssl.daysLeft) ? ssl.daysLeft : null;
-  const riskyPorts = ports.filter(
+  const riskyPorts = portChecks.filter(
     (p) => p.status === "open" && [22, 3306].includes(p.port),
   );
   // filtered — состояние не измерено (таймаут/DROP): это не «закрыт».
-  const unverifiedPorts = ports.filter((p) => p.status === "filtered");
+  const unverifiedPorts = portChecks.filter((p) => p.status === "filtered");
   const has3306 = ports.some((p) => p.port === 3306 && p.status === "open");
 
   const add = (finding) => {
@@ -289,6 +299,19 @@ function calculateScore(report) {
         "Проверьте, что сайт отвечает по 80/443, и повторите скан.",
       owasp: OWASP.crypto,
     });
+  } else if (ssl.tlsChecked === false) {
+    // 443 не ответил (filtered/closed): TLS не устанавливался, но это не
+    // доказательство отсутствия HTTPS. Потолок 60, а не 30, как у no-ssl.
+    add({
+      id: "tls-not-checked",
+      title: "TLS не проверялся",
+      desc: "Порт 443 недоступен из сети сканера (таймаут или фильтр), поэтому TLS-соединение не устанавливалось. Это не значит, что HTTPS не настроен.",
+      severity: "medium",
+      weight: 0,
+      recommendation:
+        "Повторите скан из сети, где доступен 443, или проверьте TLS вручную.",
+      owasp: OWASP.crypto,
+    });
   } else if (ssl.error) {
     add({
       id: "ssl-error",
@@ -307,6 +330,17 @@ function calculateScore(report) {
       severity: "high",
       weight: WEIGHTS.ssl,
       recommendation: "Настройте HTTPS (Let's Encrypt, Cloudflare).",
+      owasp: OWASP.crypto,
+    });
+  } else if (tlsOnlyOutdated) {
+    add({
+      id: "tls-outdated",
+      title: "Устаревший TLS",
+      desc: "Сервер не согласует TLS 1.2/1.3: современные браузеры откажутся от соединения, хотя цепочка сертификата может быть валидной.",
+      severity: "high",
+      weight: WEIGHTS.ssl,
+      recommendation:
+        "Включите TLS 1.2 и 1.3 и отключите TLS 1.0/1.1.",
       owasp: OWASP.crypto,
     });
   } else {
@@ -335,7 +369,7 @@ function calculateScore(report) {
     });
   }
 
-  if (ssl.hasSSL && ssl.supportsOldTls === true) {
+  if (ssl.hasSSL && ssl.supportsOldTls === true && !tlsOnlyOutdated) {
     score -= OLD_TLS_PENALTY;
     add({
       id: "old-tls",
@@ -365,11 +399,17 @@ function calculateScore(report) {
 
   // --- HTTP-заголовки, cookie, CORS ----------------------------------------
   // Оценка заголовков имеет смысл только для обычной страницы. Редирект,
-  // который не удалось пройти, челлендж WAF и страница ошибки — это не сайт:
-  // оценки «нет CSP/XFO» по ним недостоверны, поэтому считаем проверку
-  // невыполненной, а не проваленной.
+  // который не удалось пройти, челлендж WAF и страница авторизации — это не
+  // сайт: оценки «нет CSP/XFO» по ним недостоверны, поэтому считаем проверку
+  // невыполненной. Обычные 404/500 — это страница ошибки самого сайта, её
+  // заголовки отражают конфигурацию сервера, и обнулять из-за них все баллы
+  // (30+) неправильно.
+  const CHALLENGE_STATUSES = new Set([401, 403, 407, 429, 503]);
   const headersNotChecked =
-    Boolean(h.error) || (typeof h.status === "number" && h.status >= 300);
+    Boolean(h.error) ||
+    (typeof h.status === "number" &&
+      ((h.status >= 300 && h.status < 400) ||
+        CHALLENGE_STATUSES.has(h.status)));
   if (headersNotChecked) {
     add({
       id: h.error ? "headers-unavailable" : "headers-not-checked",
@@ -409,7 +449,7 @@ function calculateScore(report) {
     // 3 только если с открытого порта 80 пришёл 301/308 на https.
     const HSTS_TOTAL_WEIGHT = WEIGHTS.hsts + WEIGHTS.hstsRedirect;
 
-    if (h.hsts && hasSSL) {
+    if (h.hsts && hasSSL && h.protocol !== "HTTP") {
       score += WEIGHTS.hsts;
 
       if (input.httpRedirectsToHttps === false) {
@@ -423,12 +463,29 @@ function calculateScore(report) {
             "Настройте постоянный редирект с http:// на https:// (301/308) на порту 80.",
           owasp: OWASP.crypto,
         });
-      } else {
-        // true — редирект подтверждён, null — проверить не удалось (порт 80
-        // закрыт или не было бюджета). Наказывать за неизвестность не за что.
+      } else if (
+        input.httpRedirectsToHttps === true ||
+        input.httpPortOpen === false ||
+        input.httpPortOpen === undefined
+      ) {
+        // true — редирект подтверждён; 80 закрыт — открытого первого запроса
+        // нет, редирект не нужен; undefined — старый отчёт без поля.
         score += WEIGHTS.hstsRedirect;
+      } else {
+        // Порт 80 открыт, но пробу редиректа выполнить не удалось: за
+        // неизвестность балл не начисляем.
+        add({
+          id: "no-http-redirect-unchecked",
+          title: "Редирект HTTP→HTTPS не проверен",
+          desc: "Порт 80 открыт, но проверить редирект на HTTPS не удалось (таймаут/ошибка пробы).",
+          severity: "low",
+          weight: 0,
+          recommendation:
+            "Повторите скан; убедитесь, что http:// перенаправляет на https://.",
+          owasp: OWASP.crypto,
+        });
       }
-    } else if (hasSSL) {
+    } else if (hasSSL && h.protocol !== "HTTP") {
       headerFinding(h.hstsState, HSTS_TOTAL_WEIGHT, {
         id: "no-hsts",
         weakId: "weak-hsts",
@@ -587,15 +644,55 @@ function calculateScore(report) {
       recommendation: "Добавьте Cross-Origin-Opener-Policy: same-origin.",
     });
 
-    if (h.corsWildcard) {
+    // CORS. Проверка идёт с Origin: https://cybercheck.invalid:
+    //  - отражение произвольного Origin — реальная уязвимость (high);
+    //  - * без credentials — норма для публичных API, не high;
+    //  - * вместе с credentials браузеры отвергают, это ошибка конфигурации.
+    if (h.corsReflectsOrigin === true) {
       add({
-        id: "cors-wildcard",
-        title: "CORS разрешён для всех",
-        desc: "Access-Control-Allow-Origin: * позволяет любому origin читать ответы API.",
+        id: "cors-reflects-origin",
+        title: "CORS отражает произвольный Origin",
+        desc: h.corsCredentials === true
+          ? "Сервер отражает любой Origin и разрешает credentials: чужой сайт может читать ответы от имени пользователя."
+          : "Сервер отражает любой Origin: чужой сайт может читать ответы API.",
         severity: "high",
         weight: WEIGHTS.cors,
         recommendation:
-          "Замените * на явный список origin и не включайте credentials вместе с *.",
+          "Сравнивайте Origin с явным списком доверенных, а не отражайте его.",
+        owasp: OWASP.misconfig,
+      });
+    } else if (h.corsWildcard === true && h.corsCredentials === true) {
+      add({
+        id: "cors-wildcard-credentials",
+        title: "CORS: * вместе с credentials",
+        desc: "Access-Control-Allow-Origin: * вместе с Access-Control-Allow-Credentials: true — браузер такую пару отвергает, настройка не работает.",
+        severity: "medium",
+        weight: 0,
+        recommendation:
+          "Уберите credentials или замените * на явный список origin.",
+        owasp: OWASP.misconfig,
+      });
+    } else if (h.corsWildcard === true) {
+      add({
+        id: "cors-wildcard",
+        title: "CORS разрешён для всех",
+        desc: "Access-Control-Allow-Origin: * позволяет любому origin читать ответы API. Для публичных данных это норма, для приватных — нет.",
+        severity: "low",
+        weight: 0,
+        recommendation:
+          "Если API отдаёт приватные данные, замените * на явный список origin.",
+        owasp: OWASP.misconfig,
+      });
+    } else if (h.corsWildcard !== false) {
+      // Проверку не выполнили (старый отчёт/нет заголовка) — баллы не
+      // начисляем и не штрафуем.
+      add({
+        id: "cors-unchecked",
+        title: "CORS не проверен",
+        desc: "Не удалось определить политику CORS по ответу сервера.",
+        severity: "low",
+        weight: 0,
+        recommendation: "Повторите скан.",
         owasp: OWASP.misconfig,
       });
     } else {
@@ -726,7 +823,13 @@ function calculateScore(report) {
   }
 
   if (!ports.some((p) => p.port === 8080 && p.status === "open")) {
-    score += WEIGHTS.port8080;
+    const check8080 = portChecks.find((p) => p.port === 8080);
+    // Порт не проверялся вовсе (старый отчёт/кастомный список) — сохраняем
+    // прежнее поведение. filtered — не «закрыт»: балл не начисляем, но и
+    // отдельную находку не плодим, она уже есть в ports-unverified.
+    if (!check8080 || check8080.status !== "filtered") {
+      score += WEIGHTS.port8080;
+    }
   } else {
     add({
       id: "port-8080",
@@ -741,6 +844,10 @@ function calculateScore(report) {
 
   // --- DNS / email ---------------------------------------------------------
   const dns = input.dns;
+  // Секции, которые не удалось проверить (таймаут/SERVFAIL). За них нельзя
+  // ни начислять баллы, ни писать «записи нет»: раньше unknown давал полный
+  // балл, и недоступный резолвер приносил 100/A без единой находки.
+  const dnsUnknown = [];
   if (!dns || dns.applicable === false) {
     // Для IP/localhost проверки неприменимы, для старого отчёта их просто нет.
     score += WEIGHTS.spf + WEIGHTS.dmarc + WEIGHTS.caa;
@@ -776,7 +883,10 @@ function calculateScore(report) {
       add({
         id: "spf-missing",
         title: "Нет SPF",
-        desc: "В TXT-записях домена нет v=spf1 — письма можно подделывать от имени домена.",
+        desc:
+          spf.inheritedFrom && spf.parentPresent
+            ? `У поддомена нет своей SPF-записи. Запись ${spf.inheritedFrom} на него не распространяется — письма от этого имени можно подделывать.`
+            : "В TXT-записях домена нет v=spf1 — письма можно подделывать от имени домена.",
         severity: "medium",
         weight: WEIGHTS.spf,
         recommendation:
@@ -784,7 +894,7 @@ function calculateScore(report) {
         owasp: OWASP.auth,
       });
     } else {
-      score += WEIGHTS.spf;
+      dnsUnknown.push("SPF");
     }
 
     const dmarc = dns.dmarc;
@@ -818,7 +928,20 @@ function calculateScore(report) {
       const partial = pct < 100 || pctInvalid;
 
       if (policy === "reject" || policy === "quarantine") {
-        if (partial) {
+        if (pct === 0) {
+          // pct=0 — политика не применяется ни к одному письму. Это не лучше
+          // p=none: баллов не начисляем и говорим прямо.
+          add({
+            id: "dmarc-disabled",
+            title: "DMARC не применяется (pct=0)",
+            desc: `Политика p=${policy} задана, но pct=0: она не применяется ни к одному письму.`,
+            severity: "medium",
+            weight: WEIGHTS.dmarc,
+            recommendation:
+              "Увеличьте pct до 100 (или уберите pct), чтобы политика действовала.",
+            owasp: OWASP.auth,
+          });
+        } else if (partial) {
           score += WEIGHTS.dmarc - 1;
           add({
             id: "dmarc-partial",
@@ -871,7 +994,7 @@ function calculateScore(report) {
         owasp: OWASP.auth,
       });
     } else {
-      score += WEIGHTS.dmarc;
+      dnsUnknown.push("DMARC");
     }
 
     const caa = dns.caa;
@@ -903,16 +1026,43 @@ function calculateScore(report) {
         owasp: OWASP.misconfig,
       });
     } else {
-      score += WEIGHTS.caa;
+      dnsUnknown.push("CAA");
     }
+  }
+
+  if (dnsUnknown.length > 0) {
+    add({
+      id: "dns-unchecked",
+      title: "DNS-проверки не выполнены",
+      desc: `Резолвер не ответил по разделам: ${dnsUnknown.join(", ")}. Отсутствие записей не доказано — оценка не начисляется за неизвестность.`,
+      severity: "low",
+      weight: 0,
+      recommendation:
+        "Повторите скан; проверьте SPF/DMARC/CAA вручную через dig.",
+      owasp: OWASP.auth,
+    });
   }
 
   // --- Открытые файлы ------------------------------------------------------
   const files = input.files;
   let filesCap = 100;
+  let filesUnknown = false;
 
   if (!files) {
     score += WEIGHTS.env + WEIGHTS.git + WEIGHTS.backup + WEIGHTS.dsStore;
+  } else if (files.error) {
+    // Файловые пробы не выполнялись (нет веб-порта, бюджет): это не «файлов
+    // нет». Баллы не начисляем и говорим об этом явно.
+    filesUnknown = true;
+    add({
+      id: "files-unchecked",
+      title: "Открытые файлы не проверены",
+      desc: "Файловые пробы не выполнялись: сервер не ответил на веб-запрос. Отсутствие утечек не доказано.",
+      severity: "low",
+      weight: 0,
+      recommendation: "Повторите скан, когда сайт отвечает по 80/443.",
+      owasp: OWASP.misconfig,
+    });
   } else {
     const exposed = exposedPaths(files);
 
@@ -965,10 +1115,26 @@ function calculateScore(report) {
         score += check.weight;
       }
     }
+
+    if (failedProbes.size > 0) {
+      add({
+        id: "files-partial",
+        title: "Часть файловых проб не выполнена",
+        desc: `Не удалось проверить пути: ${Array.from(failedProbes)
+          .sort()
+          .join(", ")}. WAF, редирект или таймаут не доказывают, что файла нет.`,
+        severity: "low",
+        weight: 0,
+        recommendation:
+          "Повторите скан без WAF/anti-bot или проверьте пути вручную.",
+        owasp: OWASP.misconfig,
+      });
+    }
   }
 
   // --- security.txt --------------------------------------------------------
   const securityTxt = input.securityTxt;
+  let securityTxtUnknown = false;
   if (!securityTxt || securityTxt.present) {
     score += WEIGHTS.securityTxt;
   } else if (securityTxt.status === 404) {
@@ -996,8 +1162,18 @@ function calculateScore(report) {
       owasp: OWASP.misconfig,
     });
   } else {
-    // Сеть/сервер не ответили: отсутствие файла не доказано, баллы не снимаем.
-    score += WEIGHTS.securityTxt;
+    // Сеть/сервер не ответили: отсутствие файла не доказано. Баллы за
+    // непроверенное не начисляем и показываем это отдельной находкой.
+    securityTxtUnknown = true;
+    add({
+      id: "security-txt-unchecked",
+      title: "security.txt не проверен",
+      desc: "Проба security.txt не получила ответ: наличие или отсутствие файла не доказано.",
+      severity: "low",
+      weight: 0,
+      recommendation: "Повторите скан, когда сайт отвечает по 80/443.",
+      owasp: OWASP.misconfig,
+    });
   }
 
   // --- Fingerprint (информационно, без баллов) -----------------------------
@@ -1034,7 +1210,15 @@ function calculateScore(report) {
   // Тот же принцип: ошибка TLS режет оценку до 60 только когда HTTPS не
   // подтверждён. Если заголовки пришли по HTTPS, потолок 60 — ложный.
   if (ssl.error && ssl.tlsConfirmed !== true) cap = Math.min(cap, 60);
-  if (!ssl.hasSSL && !ssl.error && ssl.tlsConfirmed !== true) {
+  // TLS не проверялся (443 filtered/closed): это неизвестность, а не
+  // отсутствие HTTPS, поэтому потолок 60, а не 30.
+  if (ssl.tlsChecked === false) cap = Math.min(cap, 60);
+  if (
+    !ssl.hasSSL &&
+    !ssl.error &&
+    ssl.tlsConfirmed !== true &&
+    ssl.tlsChecked !== false
+  ) {
     cap = Math.min(cap, 30);
   } else if (ssl.hasSSL && !ssl.valid) {
     cap = Math.min(cap, 40);
@@ -1046,7 +1230,14 @@ function calculateScore(report) {
     cap = Math.min(cap, 85);
   }
   if (hasSSL && daysLeft !== null && daysLeft <= 7) cap = Math.min(cap, 90);
-  if (h.corsWildcard) cap = Math.min(cap, 60);
+  if (h.corsWildcard === true && h.corsCredentials === true) {
+    cap = Math.min(cap, 90);
+  }
+  // Неизвестность не должна давать отличную оценку: DNS/файлы/security.txt
+  // могли быть недоступны, и баллы за них не начислены.
+  if (dnsUnknown.length > 0) cap = Math.min(cap, 90);
+  if (filesUnknown || securityTxtUnknown) cap = Math.min(cap, 90);
+  if (h.corsReflectsOrigin === true) cap = Math.min(cap, 60);
   cap = Math.min(cap, filesCap);
   if (findings.some((f) => f.severity !== "low")) cap = Math.min(cap, 90);
 

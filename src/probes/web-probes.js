@@ -24,6 +24,9 @@ const MAX_PATH_REDIRECTS = 3;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const SECURITY_TXT_PATH = "/.well-known/security.txt";
+// RFC 9116 допускает legacy-путь /security.txt (обычно редиректом), и многие
+// сайты до сих пор публикуют файл только там.
+const SECURITY_TXT_LEGACY_PATH = "/security.txt";
 // security.txt — однострочные RFC 9116-записи; 32 КБ хватает с запасом.
 // Меньший лимит обрезал файл до строки Contact и давал ложное «некорректный».
 const SECURITY_TXT_MAX_BODY = 32768;
@@ -559,19 +562,36 @@ async function checkSecurityTxt(
   signal,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ) {
-  const response = await request({
-    method: "GET",
-    path: SECURITY_TXT_PATH,
-    connectIp,
-    port,
-    hostname,
-    hasTls,
-    signal,
-    timeoutMs,
-    headers: { Accept: "text/plain" },
-    readBody: true,
-    maxBody: SECURITY_TXT_MAX_BODY,
-  });
+  // Две попытки (well-known и legacy) делят бюджет пробы.
+  const attemptTimeout = Math.max(500, Math.floor(timeoutMs / 2));
+
+  const fetchTxt = (probePath) =>
+    request({
+      method: "GET",
+      path: probePath,
+      connectIp,
+      port,
+      hostname,
+      hasTls,
+      signal,
+      timeoutMs: attemptTimeout,
+      headers: { Accept: "text/plain" },
+      readBody: true,
+      maxBody: SECURITY_TXT_MAX_BODY,
+    });
+
+  let response = await fetchTxt(SECURITY_TXT_PATH);
+  let usedPath = SECURITY_TXT_PATH;
+
+  // Файла по каноническому пути нет — проверяем legacy-путь. Остальные
+  // ответы (200/403/таймаут) уже что-то доказывают, fallback не нужен.
+  if (!response.error && (response.status === 404 || response.status === 410)) {
+    const legacy = await fetchTxt(SECURITY_TXT_LEGACY_PATH);
+    if (!legacy.error && legacy.status !== 404 && legacy.status !== 410) {
+      response = legacy;
+      usedPath = SECURITY_TXT_LEGACY_PATH;
+    }
+  }
 
   const contentType = headerText(response.headers, "content-type");
   const body = typeof response.body === "string" ? response.body : "";
@@ -579,14 +599,17 @@ async function checkSecurityTxt(
   // Без Content-Type не отбрасываем: часть серверов его не отдаёт.
   const plainText = contentType === null || /^text\/plain\b/i.test(contentType);
   const hasContact = /(?:^|\n)\s*Contact\s*:/i.test(body);
-  const present = response.status === 200 && plainText && hasContact;
+  // RFC 9116 требует Expires: без него срок действия файла неизвестен.
+  const hasExpires = /(?:^|\n)\s*Expires\s*:/i.test(body);
+  const present =
+    response.status === 200 && plainText && hasContact && hasExpires;
 
   // Contact не найден, но тело обрезано лимитом — сказать «файла нет» или
   // «файл некорректен» нельзя. Отдаём явную причину, чтобы scoring отличил
   // это от настоящего отсутствия.
   if (!present && response.status === 200 && truncated && !response.error) {
     return {
-      path: SECURITY_TXT_PATH,
+      path: usedPath,
       status: response.status,
       present: false,
       blocked: false,
@@ -596,12 +619,14 @@ async function checkSecurityTxt(
   }
 
   return {
-    path: SECURITY_TXT_PATH,
+    path: usedPath,
     status: response.status,
     present,
     blocked: response.status === 403,
     error: response.error,
     truncated,
+    hasContact,
+    hasExpires,
   };
 }
 
