@@ -119,11 +119,33 @@ test("нет XCTO → 90/B, вес 6", () => {
 
 test("просроченный SSL → ≤ 40 (D/F), вес 12", () => {
   const r = calculateScore(
-    report({ ssl: { hasSSL: true, valid: false } }),
+    report({
+      ssl: { hasSSL: true, valid: false, verifyError: "CERT_HAS_EXPIRED" },
+    }),
   );
   assert.ok(r.score <= 40);
   assert.ok(["D", "F"].includes(r.grade));
   assert.strictEqual(r.findings.find((f) => f.id === "bad-ssl").weight, 12);
+});
+
+test("только старый TLS без ошибки сертификата → tls-outdated, не bad-ssl", () => {
+  const r = calculateScore(
+    report({
+      ssl: {
+        hasSSL: true,
+        valid: false,
+        verifyError: null,
+        tlsVersion: "TLSv1.1",
+        supportsOldTls: true,
+      },
+    }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "tls-outdated"));
+  assert.ok(!r.findings.some((f) => f.id === "bad-ssl"));
+  // Дублировать штраф за старый TLS не нужно: покрывает tls-outdated.
+  assert.ok(!r.findings.some((f) => f.id === "old-tls"));
+  assert.ok(r.score <= 40);
 });
 
 test("нет SSL → ≤ 30, no-ssl high", () => {
@@ -316,16 +338,35 @@ test("открыт /backup.zip → потолок 50 (D)", () => {
   assert.ok(r.findings.some((f) => f.id === "exposed-backup"));
 });
 
-test("CORS wildcard → потолок 60 (C)", () => {
+test("CORS wildcard без credentials — норма для публичных API, не high", () => {
   const r = calculateScore(
     report({ headers: { ...okHeaders, corsWildcard: true } }),
   );
-  assert.strictEqual(r.score, 60);
-  assert.strictEqual(r.grade, "C");
+  assert.strictEqual(r.score, 97);
+  assert.strictEqual(r.grade, "A");
   const finding = r.findings.find((f) => f.id === "cors-wildcard");
   assert.ok(finding);
+  assert.strictEqual(finding.severity, "low");
+  assert.strictEqual(finding.weight, 0);
+});
+
+test("CORS отражает произвольный Origin → high и потолок 60", () => {
+  const r = calculateScore(
+    report({
+      headers: {
+        ...okHeaders,
+        corsWildcard: false,
+        corsReflectsOrigin: true,
+        corsCredentials: true,
+      },
+    }),
+  );
+  assert.strictEqual(r.score, 60);
+  assert.strictEqual(r.grade, "C");
+  const finding = r.findings.find((f) => f.id === "cors-reflects-origin");
+  assert.ok(finding);
   assert.strictEqual(finding.severity, "high");
-  assert.strictEqual(finding.owasp, "A05:2021 Security Misconfiguration");
+  assert.strictEqual(finding.weight, WEIGHTS.cors);
 });
 
 test("DMARC p=none → dmarc-weak и 90/B", () => {
@@ -352,7 +393,7 @@ test("DMARC p=none → dmarc-weak и 90/B", () => {
   );
 });
 
-test("DNS timeout не роняет скан и не отнимает баллы", () => {
+test("DNS timeout не роняет скан, но и не начисляет баллы за неизвестность", () => {
   const timeout = { present: false, error: "TIMEOUT" };
   const r = calculateScore(
     report({
@@ -364,8 +405,9 @@ test("DNS timeout не роняет скан и не отнимает баллы
       },
     }),
   );
-  assert.strictEqual(r.score, 100);
-  assert.strictEqual(r.grade, "A");
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "B");
+  assert.ok(r.findings.some((f) => f.id === "dns-unchecked"));
   assert.ok(!r.findings.some((f) => f.id === "spf-missing"));
   assert.ok(!r.findings.some((f) => f.id === "dmarc-missing"));
   assert.ok(!r.findings.some((f) => f.id === "caa-missing"));
@@ -888,6 +930,17 @@ test("HSTS: заголовок и подтверждённый редирект 
   // null — проверить не удалось (порт 80 закрыт): баллы как раньше.
   const unverified = calculateScore(report({ httpRedirectsToHttps: null }));
   assert.strictEqual(unverified.score, 100);
+
+  // Порт 80 открыт, но редирект проверить не удалось — балл не начисляем.
+  const openButUnknown = calculateScore(
+    report({ httpRedirectsToHttps: null, httpPortOpen: true }),
+  );
+  assert.strictEqual(openButUnknown.score, 97);
+  assert.ok(
+    openButUnknown.findings.some(
+      (f) => f.id === "no-http-redirect-unchecked",
+    ),
+  );
 });
 
 test("ports filtered: баллы за отсутствие опасных портов не начисляются", () => {
@@ -904,6 +957,25 @@ test("ports filtered: баллы за отсутствие опасных пор
   assert.ok(finding, "неизвестное состояние порта должно попадать в отчёт");
   assert.strictEqual(finding.severity, "low");
   assert.strictEqual(finding.weight, 0);
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "B");
+});
+
+test("portChecks: filtered из полного набора не теряется, даже если ports только open", () => {
+  const r = calculateScore(
+    report({
+      ports: [{ port: 443, status: "open" }],
+      portChecks: [
+        { port: 443, status: "open" },
+        { port: 80, status: "closed" },
+        { port: 22, status: "closed" },
+        { port: 3306, status: "filtered" },
+        { port: 8080, status: "closed" },
+      ],
+    }),
+  );
+
+  assert.ok(r.findings.some((f) => f.id === "ports-unverified"));
   assert.strictEqual(r.score, 90);
   assert.strictEqual(r.grade, "B");
 });
@@ -963,12 +1035,24 @@ test("daysLeft=NaN: срок сертификата не начисляется 
   assert.ok(!r.findings.some((f) => f.id === "ssl-expiring"));
 });
 
-test("HTTP 404: заголовки считаются непроверенными, а не «нет CSP/XFO»", () => {
+test("HTTP 404: заголовки страницы ошибки оцениваются как обычно", () => {
   const r = calculateScore(report({ headers: { ...okHeaders, status: 404 } }));
 
-  assert.ok(r.findings.some((f) => f.id === "headers-not-checked"));
+  assert.ok(!r.findings.some((f) => f.id === "headers-not-checked"));
   assert.ok(!r.findings.some((f) => f.id === "no-csp"));
-  assert.ok(r.score <= 60);
+  assert.strictEqual(r.score, 100);
+});
+
+test("HTTP 403/503: челлендж WAF — заголовки не проверены", () => {
+  for (const status of [401, 403, 429, 503]) {
+    const r = calculateScore(report({ headers: { ...okHeaders, status } }));
+
+    assert.ok(
+      r.findings.some((f) => f.id === "headers-not-checked"),
+      `status=${status}`,
+    );
+    assert.ok(r.score <= 60, `status=${status}`);
+  }
 });
 
 test("HTTP 200: заголовки проверяются как обычно", () => {
@@ -978,8 +1062,34 @@ test("HTTP 200: заголовки проверяются как обычно", 
   assert.ok(!r.findings.some((f) => f.id === "headers-not-checked"));
 });
 
+test("DMARC pct=0 — политика не применяется, как p=none", () => {
+  const r = calculateScore(
+    report({
+      dns: {
+        ...okDns,
+        dmarc: {
+          present: true,
+          record: "v=DMARC1; p=reject; pct=0",
+          policy: "reject",
+          pct: 0,
+          strict: false,
+          partial: true,
+          weak: false,
+          error: null,
+        },
+      },
+    }),
+  );
+
+  const finding = r.findings.find((f) => f.id === "dmarc-disabled");
+  assert.ok(finding);
+  assert.strictEqual(finding.weight, WEIGHTS.dmarc);
+  assert.strictEqual(r.score, 90);
+  assert.strictEqual(r.grade, "B");
+});
+
 test("DMARC pct<100: частичная политика даёт 2 из 3 баллов", () => {
-  for (const pct of [0, 50, 99]) {
+  for (const pct of [50, 99]) {
     const r = calculateScore(
       report({
         dns: {
@@ -1042,7 +1152,8 @@ test("security.txt с оборванным телом — «не провере�
   );
 
   assert.ok(!r.findings.some((f) => f.id === "security-txt-invalid"));
-  assert.strictEqual(r.score, 100);
+  assert.ok(r.findings.some((f) => f.id === "security-txt-unchecked"));
+  assert.strictEqual(r.score, 90);
 });
 
 test("/.env с 200 без сигнатуры содержимого — не экспозиция", () => {
@@ -1136,5 +1247,21 @@ test("buildReport доносит признак клоакинга до оцен
 
   assert.ok(r.findings.some((f) => f.id === "cloaking-detected"));
   assert.ok(r.score <= 90);
+});
+
+// --- TLS не проверялся: 443 недоступен ------------------------------
+
+test("ssl.tlsChecked === false → tls-not-checked вместо no-ssl и потолок 60", () => {
+  const unknown = calculateScore(
+    report({ ssl: { hasSSL: false, tlsChecked: false } }),
+  );
+  assert.ok(unknown.findings.some((f) => f.id === "tls-not-checked"));
+  assert.ok(!unknown.findings.some((f) => f.id === "no-ssl"));
+  assert.ok(unknown.score <= 60, `потолок 60, получено ${unknown.score}`);
+
+  // Без пометки это по-прежнему «TLS действительно нет»: потолок 30.
+  const absent = calculateScore(report({ ssl: { hasSSL: false } }));
+  assert.ok(absent.findings.some((f) => f.id === "no-ssl"));
+  assert.ok(absent.score <= 30, `потолок 30, получено ${absent.score}`);
 });
 

@@ -5,6 +5,7 @@ const {
   parseSpfTxt,
   parseDmarcTxt,
   parseCaaRecords,
+  registrableDomain,
   checkDnsSecurity,
 } = require("../src/probes/dns-security");
 
@@ -43,6 +44,7 @@ const notApplicable = {
     present: false,
     record: null,
     policy: null,
+    sp: null,
     pct: null,
     pctInvalid: false,
     partial: false,
@@ -181,6 +183,7 @@ test("parseDmarcTxt: p=reject считается strict", () => {
     present: true,
     record,
     policy: "reject",
+    sp: null,
     pct: null,
     pctInvalid: false,
     partial: false,
@@ -198,6 +201,7 @@ test("parseDmarcTxt: p=quarantine считается strict", () => {
     present: true,
     record,
     policy: "quarantine",
+    sp: null,
     pct: 100,
     pctInvalid: false,
     partial: false,
@@ -215,6 +219,7 @@ test("parseDmarcTxt: p=none считается weak", () => {
     present: true,
     record,
     policy: "none",
+    sp: null,
     pct: null,
     pctInvalid: false,
     partial: false,
@@ -230,6 +235,7 @@ test("parseDmarcTxt: отсутствие DMARC-записи", () => {
     present: false,
     record: null,
     policy: null,
+    sp: null,
     pct: null,
     pctInvalid: false,
     partial: false,
@@ -262,6 +268,7 @@ test("parseDmarcTxt: некорректная политика даёт policy=n
     present: true,
     record,
     policy: null,
+    sp: null,
     pct: null,
     pctInvalid: false,
     partial: false,
@@ -439,6 +446,7 @@ test("checkDnsSecurity: собирает SPF, DMARC и CAA", async () => {
       present: true,
       record: "v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com",
       policy: "quarantine",
+      sp: null,
       pct: null,
       pctInvalid: false,
       partial: false,
@@ -452,6 +460,7 @@ test("checkDnsSecurity: собирает SPF, DMARC и CAA", async () => {
       records: caaRecords,
       restrictive: true,
       error: null,
+      foundAt: "example.com",
     },
   });
 
@@ -461,6 +470,86 @@ test("checkDnsSecurity: собирает SPF, DMARC и CAA", async () => {
     { type: "TXT", name: "_dmarc.example.com" },
     { type: "CAA", name: "example.com" },
   ]);
+});
+
+test("registrableDomain: организационный домен для поддоменов и ccTLD", () => {
+  assert.strictEqual(registrableDomain("www.example.com"), "example.com");
+  assert.strictEqual(registrableDomain("a.b.example.com"), "example.com");
+  assert.strictEqual(registrableDomain("www.example.co.uk"), "example.co.uk");
+  assert.strictEqual(registrableDomain("example.com"), "example.com");
+  assert.strictEqual(registrableDomain("127.0.0.1"), null);
+  assert.strictEqual(registrableDomain("localhost"), null);
+});
+
+test("checkDnsSecurity: поддомен учитывает SPF/DMARC и CAA родителя", async () => {
+  const caaRecords = [{ critical: 0, issue: "letsencrypt.org" }];
+  const resolver = makeResolver({
+    txt: {
+      "www.example.com": dnsError("ENODATA"),
+      "_dmarc.www.example.com": [["v=spf1 -all"]],
+      "example.com": [["v=spf1 -all"]],
+      "_dmarc.example.com": [["v=DMARC1; p=reject; sp=quarantine"]],
+    },
+    caa: {
+      "www.example.com": dnsError("ENODATA"),
+      "example.com": caaRecords,
+    },
+  });
+
+  const result = await checkDnsSecurity("www.example.com", { resolver });
+
+  assert.strictEqual(result.spf.present, false);
+  assert.strictEqual(result.spf.inheritedFrom, "example.com");
+  assert.strictEqual(result.spf.parentPresent, true);
+  assert.strictEqual(result.dmarc.present, true);
+  // Для поддомена действует sp, а не p.
+  assert.strictEqual(result.dmarc.policy, "quarantine");
+  assert.strictEqual(result.dmarc.inheritedFrom, "example.com");
+  assert.strictEqual(result.dmarc.spApplied, true);
+  assert.strictEqual(result.caa.present, true);
+  assert.strictEqual(result.caa.foundAt, "example.com");
+
+  // CAA ищется по дереву: www, затем apex.
+  assert.deepStrictEqual(
+    resolver.calls.filter((call) => call.type === "CAA"),
+    [
+      { type: "CAA", name: "www.example.com" },
+      { type: "CAA", name: "example.com" },
+    ],
+  );
+});
+
+test("checkDnsSecurity: своя DMARC-запись поддомена важнее родительской", async () => {
+  const resolver = makeResolver({
+    txt: {
+      "www.example.com": [["v=spf1 -all"]],
+      "_dmarc.www.example.com": [["v=DMARC1; p=none"]],
+      "example.com": [["v=spf1 -all"]],
+      "_dmarc.example.com": [["v=DMARC1; p=reject"]],
+    },
+    caa: { "www.example.com": [] },
+  });
+
+  const result = await checkDnsSecurity("www.example.com", { resolver });
+
+  assert.strictEqual(result.dmarc.policy, "none");
+  assert.strictEqual(result.dmarc.inheritedFrom, undefined);
+});
+
+test("checkDnsSecurity: таймаут родительской DMARC — «не проверено», а не «нет»", async () => {
+  const resolver = makeResolver({
+    txt: {
+      "www.example.com": [["v=spf1 -all"]],
+      "_dmarc.www.example.com": dnsError("ENODATA"),
+      "example.com": [["v=spf1 -all"]],
+      "_dmarc.example.com": dnsError("ETIMEOUT"),
+    },
+    caa: { "www.example.com": [] },
+  });
+
+  const result = await checkDnsSecurity("www.example.com", { resolver });
+  assert.strictEqual(result.dmarc.present, false);
+  assert.strictEqual(result.dmarc.error, "ETIMEOUT");
 });
 
 test("checkDnsSecurity: известные DNS-ошибки возвращаются кодом, без throw", async () => {
@@ -488,6 +577,7 @@ test("checkDnsSecurity: известные DNS-ошибки возвращают
         present: false,
         record: null,
         policy: null,
+        sp: null,
         pct: null,
         pctInvalid: false,
         partial: false,
@@ -552,6 +642,7 @@ test("checkDnsSecurity: каждый запрос завершается по т
       present: false,
       record: null,
       policy: null,
+      sp: null,
       pct: null,
       pctInvalid: false,
       partial: false,
@@ -598,6 +689,7 @@ test("checkDnsSecurity: отменённый signal даёт ABORTED, без thr
       present: false,
       record: null,
       policy: null,
+      sp: null,
       pct: null,
       pctInvalid: false,
       partial: false,

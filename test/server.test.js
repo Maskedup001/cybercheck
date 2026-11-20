@@ -1,10 +1,12 @@
 const net = require("node:net");
+const http = require("node:http");
 const test = require("node:test");
 const assert = require("node:assert");
 const {
   createHttpServer,
   issueConsentToken,
   redirectsToHttps,
+  clientIdentity,
 } = require("../src/core/server");
 const {
   readConfig,
@@ -159,7 +161,16 @@ test("readPort: целое число от 0 до 65535, пустое значе
   assert.strictEqual(readPort(undefined), 3000);
   assert.strictEqual(readPort(""), 3000);
 
-  for (const invalid of ["-1", "65536", "3.5", "abc", "3000abc"]) {
+  for (const invalid of [
+    "-1",
+    "65536",
+    "3.5",
+    "abc",
+    "3000abc",
+    "0x50",
+    "1e3",
+    "+80",
+  ]) {
     const { exits, messages } = captureFailures(() => readPort(invalid));
 
     assert.deepStrictEqual(exits, [1], `${invalid}: ожидался exit(1)`);
@@ -193,32 +204,123 @@ test("readTrustProxy: только целое 0..10", () => {
   }
 });
 
+test("clientIdentity: при двух прокси берётся клиент, а не адрес прокси", () => {
+  const req = {
+    socket: { remoteAddress: "10.0.0.5" },
+    headers: { "x-forwarded-for": "1.1.1.1, 2.2.2.2" },
+  };
+
+  const two = clientIdentity(req, 2);
+  assert.strictEqual(two.rawIp, "1.1.1.1");
+  // За прокси edge-ключ тоже клиентский: иначе все клиенты делят два слота.
+  assert.strictEqual(two.edgeKey, two.clientKey);
+
+  const one = clientIdentity(req, 1);
+  assert.strictEqual(one.rawIp, "2.2.2.2");
+
+  // XFF короче числа доверенных прокси — падаем на адрес сокета.
+  assert.strictEqual(
+    clientIdentity({ ...req, headers: { "x-forwarded-for": "1.1.1.1" } }, 2)
+      .rawIp,
+    "10.0.0.5",
+  );
+});
+
+test("явный порт в URL сканируется, а состояния портов возвращаются в portChecks", async (t) => {
+  const target = http.createServer((req, res) => {
+    res.setHeader("Content-Type", "text/plain");
+    res.end("ok");
+  });
+  await new Promise((resolve, reject) => {
+    target.once("error", reject);
+    target.listen(0, "127.0.0.1", resolve);
+  });
+  const targetPort = target.address().port;
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        target.closeAllConnections?.();
+        target.close(resolve);
+      }),
+  );
+
+  const config = readConfig(testEnv({ DEMO_MODE: "true" }));
+  const { url } = await listenServer(t, config);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: `http://127.0.0.1:${targetPort}`,
+      consent: true,
+      consentToken: issueConsentToken(),
+    }),
+  });
+
+  assert.strictEqual(res.status, 200);
+  const data = await res.json();
+
+  // Раньше порт из URL молча игнорировался и скан шёл по 80/443.
+  assert.ok(
+    data.ports.some((port) => port.port === targetPort),
+    "явный порт должен попасть в отчёт",
+  );
+  assert.ok(Array.isArray(data.portChecks));
+  assert.ok(
+    data.portChecks.some((port) => port.port === targetPort && port.status === "open"),
+  );
+  assert.strictEqual(data.headers.status, 200);
+});
+
 // --- Признак редиректа 80 → 443 (HSTS имеет смысл только с ним) ---------
 
-test("redirectsToHttps: только 3xx с абсолютным https Location", () => {
+test("redirectsToHttps: только 3xx с https Location на тот же хост", () => {
   assert.strictEqual(
-    redirectsToHttps({ status: 301, location: "https://example.com/" }),
+    redirectsToHttps(
+      { status: 301, location: "https://example.com/" },
+      "example.com",
+    ),
     true,
   );
   assert.strictEqual(
-    redirectsToHttps({ status: 308, location: "HTTPS://example.com/" }),
+    redirectsToHttps(
+      { status: 308, location: "HTTPS://Example.COM./path" },
+      "example.com",
+    ),
     true,
   );
 
   // Открытый HTTP на порту 80 — не «неизвестно», а подтверждённое отсутствие
   // редиректа.
-  assert.strictEqual(redirectsToHttps({ status: 200, location: "" }), false);
   assert.strictEqual(
-    redirectsToHttps({ status: 302, location: "http://example.com/" }),
+    redirectsToHttps({ status: 200, location: "" }, "example.com"),
     false,
   );
   assert.strictEqual(
-    redirectsToHttps({ status: 302, location: "/login" }),
+    redirectsToHttps(
+      { status: 302, location: "http://example.com/" },
+      "example.com",
+    ),
     false,
   );
-  assert.strictEqual(redirectsToHttps({ status: 302 }), false);
-  assert.strictEqual(redirectsToHttps({ error: true }), false);
-  assert.strictEqual(redirectsToHttps(null), false);
+  assert.strictEqual(
+    redirectsToHttps({ status: 302, location: "/login" }, "example.com"),
+    false,
+  );
+  // Чужой origin не защищает этот сайт, даже если редирект ведёт на HTTPS.
+  assert.strictEqual(
+    redirectsToHttps(
+      { status: 301, location: "https://evil.example/" },
+      "example.com",
+    ),
+    false,
+  );
+  assert.strictEqual(redirectsToHttps({ status: 302 }, "example.com"), false);
+  assert.strictEqual(
+    redirectsToHttps({ error: true }, "example.com"),
+    false,
+  );
+  assert.strictEqual(redirectsToHttps(null, "example.com"), false);
 });
 
 // --- Rate limit и доверие к X-Forwarded-For -----------------------------
@@ -326,9 +428,9 @@ test("Сервер отклоняет сканирование с поддель
   assert.match(data.error, /Подтверждение устарело или недействительно/);
 });
 
-test("Rate limit блокирует исчерпание пула с одного IP при подмене XFF", async (t) => {
+test("Rate limit: за прокси ключ считается по реальному клиенту, а не по прокси", async (t) => {
   // Зависшая цель на случайном порту: скан подключается к ней как к веб-порту
-  // и висит на TLS/HTTP-пробе, удерживая edge-слоты. Фиксированный 8080 не
+  // и висит на TLS/HTTP-пробе, удерживая слоты. Фиксированный 8080 не
   // занимаем: при параллельном запуске или чужом процессе на этом порту тест
   // получал бы EADDRINUSE. Порт передаём серверу через options (scanPorts/
   // webPortOrder) — настоящие пробы и настоящий скан при этом сохраняются.
@@ -340,7 +442,11 @@ test("Rate limit блокирует исчерпание пула с одног�
     socket.on("error", () => {});
   });
 
-  const controllers = [new AbortController(), new AbortController()];
+  const controllers = [
+    new AbortController(),
+    new AbortController(),
+    new AbortController(),
+  ];
   t.after(async () => {
     controllers.forEach((c) => c.abort());
     for (const socket of hangingSockets) socket.destroy();
@@ -378,29 +484,18 @@ test("Rate limit блокирует исчерпание пула с одног�
 
   const req1 = makeReq("1.1.1.1", controllers[0].signal).catch(() => {});
   const req2 = makeReq("2.2.2.2", controllers[1].signal).catch(() => {});
+  const req3 = makeReq("3.3.3.3", controllers[2].signal).catch(() => {});
 
-  // Дожидаемся, пока оба скана реально займут edge-слоты (фиксированный sleep
-  // мог не хватить на медленной машине). Заодно проверяем, что XFF дал два
-  // разных clientKey при одном edgeKey.
+  // Три разных клиента за одним прокси должны получить три слота: раньше
+  // edgeKey брался из адреса сокета (прокси) и третий запрос получал 429.
   await waitFor(
-    () => limiter.activeScans === 2 && limiter.activeKeys === 2,
-    2000,
-    "первые два запроса не заняли два edge-слота",
+    () => limiter.activeScans === 3 && limiter.activeKeys === 3,
+    3000,
+    "три клиента за прокси не получили по слоту",
   );
 
-  const res3 = await makeReq("3.3.3.3");
-  assert.strictEqual(
-    res3.status,
-    429,
-    "Третий запрос должен быть заблокирован лимитом edgeKey",
-  );
-
-  const errorData = await res3.json();
-  assert.match(errorData.error, /С этого сетевого адреса/);
-
-  // Отменяем висящие запросы, чтобы тест не ждал таймаут
   controllers.forEach((c) => c.abort());
-  await Promise.all([req1, req2]);
+  await Promise.all([req1, req2, req3]);
 
   // Слоты освобождаются на любом исходе скана (finally в роуте): утечка
   // навсегда съедала бы ёмкость лимитера.

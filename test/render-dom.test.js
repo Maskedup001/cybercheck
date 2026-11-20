@@ -256,3 +256,236 @@ test("renderResult: XSS-payload из отчёта остаётся тексто�
     else globalThis.window = saved.window;
   }
 });
+
+async function renderReport(report) {
+  const saved = { document: globalThis.document, window: globalThis.window };
+
+  globalThis.document = {
+    title: "CyberCheck",
+    createElement: (tag) => new FakeNode(tag),
+    createElementNS: (_namespace, tag) => new FakeNode(tag),
+    createTextNode: (data) => ({ nodeType: 3, data: String(data) }),
+    querySelector: () => new FakeNode("span"),
+  };
+  globalThis.window = {
+    addEventListener() {},
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame() {},
+    matchMedia: () => ({ matches: true }),
+  };
+
+  try {
+    const { renderResult } = await import(
+      pathToFileURL(
+        path.join(__dirname, "../public/assets/js/ui/render-result.js"),
+      ).href
+    );
+
+    const container = new FakeNode("section");
+    const body = new FakeNode("div");
+    renderResult(container, body, report);
+    return { body, container };
+  } finally {
+    if (saved.document === undefined) delete globalThis.document;
+    else globalThis.document = saved.document;
+    if (saved.window === undefined) delete globalThis.window;
+    else globalThis.window = saved.window;
+  }
+}
+
+function allNodes(node, acc = []) {
+  if (!node || node.nodeType === 3) return acc;
+  acc.push(node);
+  for (const child of node.children || []) allNodes(child, acc);
+  return acc;
+}
+
+const baseReport = {
+  host: "example.com",
+  score: 100,
+  grade: "A",
+  ports: [],
+  ssl: { hasSSL: false, error: "NO_WEB_PORT" },
+  headers: { error: true },
+  dns: { applicable: false },
+  files: null,
+  securityTxt: null,
+  fingerprint: null,
+  findings: [],
+};
+
+test("renderResult: критичная находка не даёт зелёный вердикт «Хорошая защита»", async () => {
+  const { body } = await renderReport({
+    ...baseReport,
+    score: 90,
+    grade: "B",
+    ports: [{ port: 443, status: "open" }],
+    ssl: { hasSSL: true, valid: true, daysLeft: 100 },
+    headers: { error: false, status: 200 },
+    findings: [
+      {
+        id: "exposed-env",
+        title: "Открыт .env",
+        severity: "high",
+        weight: 7,
+        recommendation: "Закройте .env.",
+      },
+    ],
+  });
+
+  assert.match(body.textContent, /Есть критичные замечания/);
+  assert.ok(
+    !body.textContent.includes("Хорошая защита"),
+    "зелёный вердикт при критичной находке недопустим",
+  );
+  assert.ok(
+    allNodes(body).some((node) => String(node.className).includes("score--warn")),
+    "тон оценки должен стать предупреждающим",
+  );
+});
+
+test("renderResult: устаревший TLS не подписан как «невалидный сертификат»", async () => {
+  const { body } = await renderReport({
+    ...baseReport,
+    ports: [{ port: 443, status: "open" }],
+    ssl: {
+      hasSSL: true,
+      valid: false,
+      verifyError: null,
+      tlsVersion: "TLSv1.0",
+      daysLeft: 100,
+      validToISO: "2030-01-01T00:00:00Z",
+    },
+    headers: { error: false, status: 200 },
+  });
+
+  assert.match(body.textContent, /устаревший TLS/);
+  assert.match(body.textContent, /Протокол TLSv1\.0 ниже TLS 1\.2/);
+  assert.ok(!body.textContent.includes("невалиден"));
+});
+
+test("renderResult: пустые порты при NO_WEB_PORT — «не проверены», файлы не дублируются", async () => {
+  const { body } = await renderReport({
+    ...baseReport,
+    files: { exposed: ["/.env"], critical: [{ path: "/.env" }], results: [] },
+  });
+
+  assert.match(
+    body.textContent,
+    /Порты не проверены: пробы не ответили/,
+  );
+
+  const occurrences = body.textContent.split("/.env").length - 1;
+  assert.strictEqual(occurrences, 1, "путь не должен дублироваться в подписи");
+});
+
+test("renderResult: HTTP 404 — заголовки оцениваются, 403 — «не проверено»", async () => {
+  const okHeaders = {
+    error: false,
+    status: 404,
+    protocol: "HTTPS",
+    hsts: true,
+    hstsState: "ok",
+    csp: true,
+    cspState: "ok",
+    xframe: true,
+    xframeState: "ok",
+    xcontent: true,
+    xcontentState: "ok",
+    referrerPolicy: true,
+    referrerPolicyState: "ok",
+    permissionsPolicy: true,
+    permissionsPolicyState: "ok",
+    coop: true,
+    coopState: "ok",
+    corsWildcard: false,
+    cookieSummary: { total: 0 },
+  };
+
+  const notFound = await renderReport({
+    ...baseReport,
+    ports: [{ port: 443, status: "open" }],
+    ssl: { hasSSL: true, valid: true, daysLeft: 100 },
+    headers: okHeaders,
+  });
+  assert.ok(!notFound.body.textContent.includes("Проверка не выполнялась"));
+
+  const challenge = await renderReport({
+    ...baseReport,
+    ports: [{ port: 443, status: "open" }],
+    ssl: { hasSSL: true, valid: true, daysLeft: 100 },
+    headers: { ...okHeaders, status: 403 },
+  });
+  assert.match(challenge.body.textContent, /Проверка не выполнялась: корневой ответ HTTP 403/);
+});
+
+test("renderResult: HTTP 301 — карточка заголовков говорит «не проверено»", async () => {
+  const saved = { document: globalThis.document, window: globalThis.window };
+
+  globalThis.document = {
+    title: "CyberCheck",
+    createElement: (tag) => new FakeNode(tag),
+    createElementNS: (_namespace, tag) => new FakeNode(tag),
+    createTextNode: (data) => ({ nodeType: 3, data: String(data) }),
+    querySelector: () => new FakeNode("span"),
+  };
+  globalThis.window = {
+    addEventListener() {},
+    requestAnimationFrame: () => 0,
+    cancelAnimationFrame() {},
+    matchMedia: () => ({ matches: true }),
+  };
+
+  try {
+    const { renderResult } = await import(
+      pathToFileURL(
+        path.join(__dirname, "../public/assets/js/ui/render-result.js"),
+      ).href
+    );
+
+    const report = {
+      host: "example.com",
+      score: 14,
+      grade: "F",
+      ports: [{ port: 80, status: "open" }],
+      headers: {
+        error: false,
+        status: 301,
+        location: "https://example.com/",
+        protocol: "HTTP",
+        server: "nginx",
+      },
+      ssl: { hasSSL: false, tlsChecked: false },
+      dns: {
+        applicable: true,
+        spf: { present: true },
+        dmarc: { present: true, policy: "reject" },
+        caa: { present: true, restrictive: true },
+      },
+      files: { exposed: [], blocked: [], results: [] },
+      securityTxt: { present: true },
+      fingerprint: null,
+      findings: [],
+    };
+
+    const container = new FakeNode("section");
+    const body = new FakeNode("div");
+    renderResult(container, body, report);
+
+    assert.ok(
+      body.textContent.includes(
+        "Проверка не выполнялась: корневой ответ HTTP 301",
+      ),
+      "карточка заголовков должна объяснять, почему проверки нет",
+    );
+    assert.ok(
+      !body.textContent.includes("CSP"),
+      "при ответе 301 карточка не должна перечислять заголовки как проверенные",
+    );
+  } finally {
+    if (saved.document === undefined) delete globalThis.document;
+    else globalThis.document = saved.document;
+    if (saved.window === undefined) delete globalThis.window;
+    else globalThis.window = saved.window;
+  }
+});

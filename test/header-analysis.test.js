@@ -609,6 +609,56 @@ test("analyzeSecurityHeaders: несколько CSP-заголовков оце
   assert.strictEqual(weakOnly.csp, false);
 });
 
+test("HSTS с коротким max-age не считается защитой", () => {
+  for (const value of ["max-age=1", "max-age=300", "max-age=0"]) {
+    const result = analyzeSecurityHeaders({
+      "strict-transport-security": value,
+    });
+    assert.strictEqual(result.hstsState, "weak", value);
+    assert.strictEqual(result.hsts, false, value);
+  }
+
+  const halfYear = analyzeSecurityHeaders({
+    "strict-transport-security": "max-age=15552000",
+  });
+  assert.strictEqual(halfYear.hstsState, "ok");
+});
+
+test("Referrer-Policy: действует последняя распознанная политика", () => {
+  const weakLast = analyzeSecurityHeaders({
+    "referrer-policy": "no-referrer, unsafe-url",
+  });
+  assert.strictEqual(weakLast.referrerPolicyState, "weak");
+
+  const safeLast = analyzeSecurityHeaders({
+    "referrer-policy": "unsafe-url, no-referrer",
+  });
+  assert.strictEqual(safeLast.referrerPolicyState, "ok");
+
+  // Неизвестное значение игнорируется, а не отменяет безопасное.
+  const unknownLast = analyzeSecurityHeaders({
+    "referrer-policy": "no-referrer, something-new",
+  });
+  assert.strictEqual(unknownLast.referrerPolicyState, "ok");
+});
+
+test("Permissions-Policy: interest-cohort не заменяет ограничение камеры", () => {
+  const flocOnly = analyzeSecurityHeaders({
+    "permissions-policy": "interest-cohort=()",
+  });
+  assert.strictEqual(flocOnly.permissionsPolicyState, "weak");
+
+  const camera = analyzeSecurityHeaders({
+    "permissions-policy": "camera=(), microphone=()",
+  });
+  assert.strictEqual(camera.permissionsPolicyState, "ok");
+
+  const allowed = analyzeSecurityHeaders({
+    "permissions-policy": "camera=*",
+  });
+  assert.strictEqual(allowed.permissionsPolicyState, "weak");
+});
+
 test("analyzeSecurityHeaders: несколько XFO/Referrer-Policy/Permissions-Policy", () => {
   const raw = [
     "X-Frame-Options",

@@ -6,7 +6,7 @@ const https = require("node:https");
 const tls = require("node:tls");
 
 const { checkPort } = require("../src/probes/ports");
-const { checkSSL } = require("../src/probes/tls");
+const { checkSSL, checkOldTls } = require("../src/probes/tls");
 const { checkHeaders } = require("../src/probes/http-headers");
 const { selfSignedCertificate } = require("./fixtures/tls/self-signed");
 
@@ -374,6 +374,63 @@ test("checkSSL: самоподписанный сертификат читает
   assert.strictEqual(result.issuer, "localhost");
 });
 
+test("checkHeaders: таймаут первой попытки не съедает бюджет ретрая", async (t) => {
+  let requests = 0;
+
+  const server = http.createServer((req, res) => {
+    requests += 1;
+    if (requests === 1) {
+      // Первый ответ приходит позже таймаута первой попытки.
+      setTimeout(() => res.end("late"), 2500);
+      return;
+    }
+    res.setHeader("X-Frame-Options", "DENY");
+    res.end("ok");
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const headers = await checkHeaders(
+    "127.0.0.1",
+    port,
+    "localhost",
+    1,
+    undefined,
+    false,
+    4000,
+    Date.now() + 10_000,
+  );
+
+  assert.strictEqual(headers.error, undefined);
+  assert.strictEqual(headers.xframe, true);
+  assert.ok(requests >= 2, `ожидался ретрай, запросов: ${requests}`);
+});
+
+test("checkHeaders: отражающий CORS виден по проверочному Origin", async (t) => {
+  const server = http.createServer((req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.end("ok");
+  });
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const headers = await checkHeaders(
+    "127.0.0.1",
+    port,
+    "localhost",
+    0,
+    undefined,
+    false,
+    3000,
+  );
+
+  assert.strictEqual(headers.error, undefined);
+  assert.strictEqual(headers.corsWildcard, false);
+  assert.strictEqual(headers.corsReflectsOrigin, true);
+  assert.strictEqual(headers.corsCredentials, true);
+});
+
 test("checkHeaders: по HTTPS возвращает protocol HTTPS", async (t) => {
   const { key, cert } = selfSignedCertificate();
   const server = https.createServer({ key, cert }, (req, res) => {
@@ -399,7 +456,29 @@ test("checkHeaders: по HTTPS возвращает protocol HTTPS", async (t) =
   assert.strictEqual(headers.xframe, true);
 });
 
-test("checkSSL: возвращает ошибку, если TLS не поднялся", async () => {
+test("checkOldTls: закрытый порт — «не проверено», а не «протоколы отключены»", async () => {
+  const server = net.createServer();
+  const port = await listen(server);
+  await closeServer(server);
+
+  const result = await checkOldTls("127.0.0.1", port, "localhost", null, 2000);
+  assert.strictEqual(result, null);
+});
+
+test("checkOldTls: TLS-сервер, отвергший старую версию, — false", async (t) => {
+  const { key, cert } = selfSignedCertificate();
+  const server = https.createServer(
+    { key, cert, minVersion: "TLSv1.2" },
+    (req, res) => res.end("ok"),
+  );
+  const port = await listen(server);
+  t.after(() => closeServer(server));
+
+  const result = await checkOldTls("127.0.0.1", port, "localhost", null, 2000);
+  assert.strictEqual(result, false);
+});
+
+test("checkSSL: возвращает ошибку, если TLS не поднялся", async (t) => {
   // Порт закрыт (слушатель освобождён): TCP-отказ, TLS не поднимается.
   const server = net.createServer();
   const port = await listen(server);

@@ -217,6 +217,8 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
     blocked: false,
     error: null,
     truncated: false,
+    hasContact: true,
+    hasExpires: true,
   });
 
   status = 404;
@@ -233,6 +235,8 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
     blocked: false,
     error: null,
     truncated: false,
+    hasContact: false,
+    hasExpires: false,
   });
 
   status = 403;
@@ -249,9 +253,17 @@ test("checkSecurityTxt: 200 — present, 404 — absent, 403 — blocked", async
     blocked: true,
     error: null,
     truncated: false,
+    hasContact: false,
+    hasExpires: false,
   });
 
-  assert.deepEqual(accepts, ["text/plain", "text/plain", "text/plain"]);
+  // 200 — один запрос, 404/410 — плюс legacy-путь, 403 — один.
+  assert.deepEqual(accepts, [
+    "text/plain",
+    "text/plain",
+    "text/plain",
+    "text/plain",
+  ]);
 });
 
 test("checkSecurityTxt: 200 с HTML-заглушкой не считается security.txt", async (t) => {
@@ -322,7 +334,8 @@ test("checkSecurityTxt: Contact в начале обрезанного тела 
   const server = await startServer((req, res) => {
     res.setHeader("content-type", "text/plain");
     res.end(
-      "Contact: mailto:security@example.com\n" + "padding ".repeat(5000),
+      "Contact: mailto:security@example.com\nExpires: 2030-01-01T00:00:00Z\n" +
+        "padding ".repeat(5000),
     );
   });
   t.after(() => server.close());
@@ -338,6 +351,52 @@ test("checkSecurityTxt: Contact в начале обрезанного тела 
   assert.equal(result.present, true);
   assert.equal(result.error, null);
   assert.equal(result.truncated, true);
+});
+
+test("checkSecurityTxt: legacy /security.txt используется, если well-known нет", async (t) => {
+  const server = await startServer((req, res) => {
+    if (req.url === "/security.txt") {
+      res.setHeader("content-type", "text/plain; charset=utf-8");
+      res.end(
+        "Contact: mailto:security@example.com\nExpires: 2030-01-01T00:00:00Z\n",
+      );
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+  t.after(() => server.close());
+
+  const result = await checkSecurityTxt(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.strictEqual(result.path, "/security.txt");
+  assert.strictEqual(result.status, 200);
+  assert.strictEqual(result.present, true);
+});
+
+test("checkSecurityTxt: без Expires файл считается некорректным", async (t) => {
+  const server = await startServer((req, res) => {
+    res.setHeader("content-type", "text/plain");
+    res.end("Contact: mailto:security@example.com\n");
+  });
+  t.after(() => server.close());
+
+  const result = await checkSecurityTxt(
+    "127.0.0.1",
+    server.port,
+    "localhost",
+    false,
+  );
+
+  assert.strictEqual(result.status, 200);
+  assert.strictEqual(result.present, false);
+  assert.strictEqual(result.hasContact, true);
+  assert.strictEqual(result.hasExpires, false);
 });
 
 test("checkFingerprint: находит WordPress и Cloudflare и не даёт ложных срабатываний", async (t) => {

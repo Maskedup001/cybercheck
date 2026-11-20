@@ -25,6 +25,8 @@ function loadModel() {
        tlsNotice,
        caaState,
        secureContextState,
+       tlsCertificateState,
+       tlsVerifyErrorText,
        reportTitleFor,
        buildShareText,
      };`,
@@ -390,9 +392,62 @@ test("secureContextState: HTTPS с валидным сертификатом —
 
 test("secureContextState: невалидный сертификат — invalid-cert", () => {
   assert.strictEqual(
-    model.secureContextState({ hasSSL: true, valid: false }),
+    model.secureContextState({
+      hasSSL: true,
+      valid: false,
+      verifyError: "CERT_HAS_EXPIRED",
+    }),
     "invalid-cert",
   );
+});
+
+test("secureContextState: устаревший TLS — old-tls, а не invalid-cert", () => {
+  assert.strictEqual(
+    model.secureContextState({
+      hasSSL: true,
+      valid: false,
+      verifyError: null,
+      tlsVersion: "TLSv1.0",
+    }),
+    "old-tls",
+  );
+});
+
+test("tlsCertificateState: валидный, просроченный и устаревший TLS", () => {
+  assert.strictEqual(
+    plain(model.tlsCertificateState({ hasSSL: true, valid: true })).label,
+    "валиден",
+  );
+
+  const expired = plain(
+    model.tlsCertificateState({
+      hasSSL: true,
+      valid: false,
+      verifyError: "CERT_HAS_EXPIRED",
+    }),
+  );
+  assert.strictEqual(expired.label, "невалиден");
+  assert.match(expired.reason, /истёк/);
+
+  const old = plain(
+    model.tlsCertificateState({
+      hasSSL: true,
+      valid: false,
+      verifyError: null,
+      tlsVersion: "TLSv1.1",
+    }),
+  );
+  assert.strictEqual(old.label, "устаревший TLS");
+  assert.match(old.reason, /TLSv1\.1/);
+});
+
+test("tlsVerifyErrorText: известные коды переводятся, неизвестные не теряются", () => {
+  assert.match(
+    model.tlsVerifyErrorText("ERR_TLS_CERT_ALTNAME_INVALID"),
+    /другого домена/,
+  );
+  assert.match(model.tlsVerifyErrorText("SOMETHING_NEW"), /SOMETHING_NEW/);
+  assert.strictEqual(model.tlsVerifyErrorText(""), "");
 });
 
 test("secureContextState: HTTP и непроверенный TLS", () => {
@@ -432,5 +487,23 @@ test("reportTitleFor: имя PDF только для настоящего хос
   assert.strictEqual(
     model.reportTitleFor("exa\u202emple.com", "2026-11-05"),
     "CyberCheck_example.com_2026-11-05",
+  );
+});
+
+// --- TLS: 443 недоступен из сети ------------------------------------
+
+test("tlsNotice: ssl.tlsChecked === false — «не проверялся», а не «нет SSL»", () => {
+  const text = model.tlsNotice({ hasSSL: false, tlsChecked: false }, [
+    { port: 80 },
+  ]);
+  assert.match(text, /не проверялся/);
+  assert.match(text, /443/);
+  assert.doesNotMatch(text, /SSL не настроен/);
+});
+
+test("secureContextState: ssl.tlsChecked === false — unknown, а не no-https", () => {
+  assert.strictEqual(
+    model.secureContextState({ hasSSL: false, tlsChecked: false }),
+    "unknown",
   );
 });

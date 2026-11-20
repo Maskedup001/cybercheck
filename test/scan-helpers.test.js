@@ -12,6 +12,7 @@ const {
   hasBudget,
   stageDeadline,
   effectiveHasTls,
+  tlsUnknownPort,
   selectWebPorts,
   withCriticalFiles,
   buildReport,
@@ -296,9 +297,14 @@ test("effectiveHasTls: протокол заголовков важнее checkS
     false,
   );
 
-  // Заголовков нет: падаем назад к checkSSL (кроме 80).
+  // Заголовков нет, но TLS-порт подтверждён хендшейком: пробы должны идти
+  // по HTTPS, а не по HTTP.
   assert.strictEqual(
     effectiveHasTls({ headers: { error: true }, port: 443, portTls: true }),
+    true,
+  );
+  assert.strictEqual(
+    effectiveHasTls({ headers: { error: true }, port: 443, portTls: false }),
     false,
   );
   assert.strictEqual(
@@ -350,4 +356,17 @@ test("isLiteralIp: принимает только IPv4/IPv6-литералы", 
   assert.strictEqual(isLiteralIp(""), false);
   assert.strictEqual(isLiteralIp(undefined), false);
   assert.strictEqual(isLiteralIp(null), false);
+});
+
+// --- Неизвестное состояние 443 -------------------------------------
+
+test("tlsUnknownPort: filtered/closed — неизвестность, refused/open — нет", () => {
+  assert.strictEqual(tlsUnknownPort([{ port: 443, status: "filtered" }]), true);
+  assert.strictEqual(tlsUnknownPort([{ port: 443, status: "closed" }]), true);
+  assert.strictEqual(tlsUnknownPort([{ port: 443, status: "refused" }]), false);
+  assert.strictEqual(tlsUnknownPort([{ port: 443, status: "open" }]), false);
+  assert.strictEqual(tlsUnknownPort([{ port: 80, status: "open" }]), false);
+  assert.strictEqual(tlsUnknownPort([]), false);
+  assert.strictEqual(tlsUnknownPort(null), false);
+  assert.strictEqual(tlsUnknownPort(undefined), false);
 });
