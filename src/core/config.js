@@ -36,10 +36,17 @@ function readOrigin(env) {
 // Порт — строго целое 0..65535. Пустое значение означает 3000, как и
 // раньше: `PORT=` в окружении не должен ронять локальный запуск.
 function readPort(raw) {
-  const value = raw || "3000";
-  const port = Number(value);
+  // Только десятичные цифры: Number("0x50") === 80, Number("1e3") === 1000,
+  // Number("  ") === 0 — такие значения проходили проверку и молча меняли порт.
+  const text = raw === undefined || raw === null ? "" : String(raw).trim();
+  const value = text === "" ? "3000" : text;
 
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  if (!/^\d{1,5}$/.test(value)) {
+    fail("PORT должен быть целым числом от 0 до 65535");
+  }
+
+  const port = Number(value);
+  if (port > 65535) {
     fail("PORT должен быть целым числом от 0 до 65535");
   }
 

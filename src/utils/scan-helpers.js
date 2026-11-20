@@ -126,10 +126,23 @@ function clampTimeout(ms, deadline, now = Date.now()) {
 // а не checkSSL. На 443 checkHeaders пробует HTTPS даже при упавшем
 // checkSSL, и протокол ответа точно описывает, как соединение установилось.
 function effectiveHasTls({ headers, port, portTls }) {
-  if (!headers || headers.error) return false;
+  if (!headers || headers.error) {
+    // Заголовки не сняты, но TLS-порт уже подтверждён хендшейком: пробы
+    // должны идти по HTTPS, а не падать на 80/8080.
+    return port !== 80 && Boolean(portTls);
+  }
   if (headers.protocol === "HTTPS") return true;
   if (headers.protocol === "HTTP") return false;
   return port !== 80 && Boolean(portTls);
+}
+
+// Состояние 443, при котором TLS нельзя считать проверенным: таймаут/DROP
+// (filtered) или локальный отказ/исчерпанный бюджет (closed). В обоих случаях
+// порт не измерен, поэтому «SSL не настроен» — ложное утверждение.
+function tlsUnknownPort(portResults) {
+  if (!Array.isArray(portResults)) return false;
+  const port443 = portResults.find((item) => item && item.port === 443);
+  return Boolean(port443) && (port443.status === "filtered" || port443.status === "closed");
 }
 
 // Веб-порты, которые реально открыты, в порядке приоритета. Отдельная
@@ -197,6 +210,11 @@ function buildReport(host, ports, ssl, headers, extra = {}) {
   return {
     host,
     ports,
+    // Полный набор состояний портов нужен UI и тестам; в API это
+    // дополнительное поле, старые клиенты его игнорируют.
+    portChecks: Array.isArray(scoringInput.portChecks)
+      ? scoringInput.portChecks
+      : null,
     ssl,
     headers,
     dns,
@@ -249,6 +267,7 @@ module.exports = {
   stageDeadline,
   clampTimeout,
   effectiveHasTls,
+  tlsUnknownPort,
   selectWebPorts,
   WEB_PORT_ORDER,
   withCriticalFiles,

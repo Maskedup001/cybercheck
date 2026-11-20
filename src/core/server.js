@@ -10,6 +10,7 @@ const { checkPort } = require("../probes/ports");
 const { checkSSL } = require("../probes/tls");
 const { checkHeaders, BROWSER_UA, BOT_UA } = require("../probes/http-headers");
 const { resolvePublicIps } = require("./net-guard");
+const { readNodeEnv } = require("./config");
 const { checkDnsSecurity } = require("../probes/dns-security");
 const { ScanLimiter } = require("../utils/rate-limit");
 const {
@@ -19,6 +20,7 @@ const {
   budgetLeft,
   clampTimeout,
   effectiveHasTls,
+  tlsUnknownPort,
   isHtmlRequestPath,
   selectWebPorts,
   WEB_PORT_ORDER,
@@ -36,7 +38,7 @@ const SCAN_BUDGET_MS = 60_000;
 const DNS_BUDGET_MS = 5000;
 const PORT_TIMEOUT_MS = 3000;
 const TLS_TIMEOUT_MS = 5000;
-const HEADERS_TIMEOUT_MS = 5000;
+const HEADERS_TIMEOUT_MS = 8000;
 const DNS_SECURITY_TIMEOUT_MS = 3000;
 const PROBE_TIMEOUT_MS = 2000;
 
@@ -49,24 +51,34 @@ const SERVER_MAX_CONNECTIONS = 4096;
 const SERVER_MAX_REQUESTS_PER_SOCKET = 100;
 const MAX_SOCKETS_PER_IP = 64;
 
-// Секрет для подписи токенов согласия. В продакшене должен быть задан явно.
+// Секрет для подписи токенов согласия. В продакшене должен быть задан явно
+// и не совпадать с публичным dev-значением из .env.example: иначе токены
+// согласия может подписать кто угодно.
+const CONSENT_SECRET_PLACEHOLDER = "dev-secret-do-not-use-in-prod";
+const NODE_ENV = readNodeEnv(process.env.NODE_ENV);
+const IS_PRODUCTION = NODE_ENV === "production";
+
 const CONSENT_SECRET =
   process.env.CONSENT_SECRET ||
-  (process.env.NODE_ENV === "production"
-    ? null
-    : "dev-secret-do-not-use-in-prod");
+  (IS_PRODUCTION ? null : CONSENT_SECRET_PLACEHOLDER);
 
-if (process.env.NODE_ENV === "production" && !CONSENT_SECRET) {
+if (
+  IS_PRODUCTION &&
+  (!CONSENT_SECRET ||
+    CONSENT_SECRET === CONSENT_SECRET_PLACEHOLDER ||
+    CONSENT_SECRET.length < 32)
+) {
   console.error(
-    "ОШИБКА: Переменная окружения CONSENT_SECRET обязательна в production.",
+    "ОШИБКА: в production CONSENT_SECRET обязателен, не должен совпадать с " +
+      "публичным dev-значением и должен быть не короче 32 символов.",
   );
   process.exit(1);
 }
 
 if (
   !process.env.CONSENT_SECRET &&
-  process.env.NODE_ENV &&
-  process.env.NODE_ENV !== "development"
+  NODE_ENV &&
+  NODE_ENV !== "development"
 ) {
   console.warn(
     "ВНИМАНИЕ: CONSENT_SECRET не задан, токены согласия подписываются публичным dev-секретом.",
@@ -157,13 +169,17 @@ function verifyConsentToken(token) {
 }
 
 // Определяет реальный IP клиента с учетом доверия к прокси.
-// Берет IP из сокета (edgeKey) и из правого края X-Forwarded-For (clientKey).
+// trustProxy — число реальных прокси перед приложением (0..10). Правый край
+// X-Forwarded-For дописан ближайшим прокси, поэтому адрес клиента стоит на
+// позиции length - trustProxy, а не всегда в конце: при двух прокси
+// (Cloudflare + Render) прежний код ключевал лимит по адресу прокси и делал
+// кулдаун общим для всех клиентов.
 function clientIdentity(req, trustProxy) {
   const socketIp = req.socket && req.socket.remoteAddress;
-  const edgeKey = rateKey(socketIp);
+  const socketKey = rateKey(socketIp);
 
   if (!trustProxy || trustProxy <= 0) {
-    return { edgeKey, clientKey: edgeKey, rawIp: socketIp };
+    return { edgeKey: socketKey, clientKey: socketKey, rawIp: socketIp };
   }
 
   const forwarded = String(req.headers["x-forwarded-for"] || "")
@@ -171,13 +187,16 @@ function clientIdentity(req, trustProxy) {
     .map((part) => part.trim())
     .filter(Boolean);
 
-  // Правый элемент дописал наш прокси (Render/Cloudflare); левые контролирует клиент.
-  const candidate =
-    forwarded.length > 0 ? forwarded[forwarded.length - 1] : socketIp;
+  const index = forwarded.length - trustProxy;
+  const candidate = index >= 0 ? forwarded[index] : socketIp;
+
+  const clientKey = net.isIP(candidate) ? rateKey(candidate) : socketKey;
 
   return {
-    edgeKey,
-    clientKey: net.isIP(candidate) ? rateKey(candidate) : edgeKey,
+    // За прокси сокет — это сам прокси: лимит на edge иначе ограничивал бы
+    // всех клиентов двумя одновременными сканами.
+    edgeKey: clientKey,
+    clientKey,
     rawIp: candidate,
   };
 }
@@ -187,6 +206,8 @@ function clientIdentity(req, trustProxy) {
 function securitySignature(headers) {
   if (!headers || headers.error) return null;
   return JSON.stringify([
+    headers.status,
+    headers.server,
     headers.hstsState,
     headers.cspState,
     headers.xframeState,
@@ -200,17 +221,28 @@ function securitySignature(headers) {
 }
 
 // Подтверждает, что порт 80 перенаправляет на HTTPS: только 3xx с https://
-// в Location. Открытый HTTP без редиректа — это false (повод снять баллы за
-// HSTS), а null остаётся для случая, когда проверка недоступна и мы не знаем.
-function redirectsToHttps(headers) {
+// в Location. Редирект на чужой хост защитой этого сайта не является:
+// Location: https://evil.example/ раньше засчитывался как редирект на HTTPS.
+function redirectsToHttps(headers, hostname) {
   if (!headers || headers.error) return false;
 
-  return (
-    typeof headers.status === "number" &&
-    headers.status >= 300 &&
-    headers.status < 400 &&
-    /^https:/i.test(headers.location || "")
-  );
+  if (
+    typeof headers.status !== "number" ||
+    headers.status < 300 ||
+    headers.status >= 400
+  ) {
+    return false;
+  }
+
+  const location = headers.location || "";
+  if (!/^https:/i.test(location)) return false;
+
+  try {
+    const target = new URL(location);
+    return normalizeHostname(target.hostname) === normalizeHostname(hostname);
+  } catch {
+    return false;
+  }
 }
 
 // Собирает Express-приложение и лимитер, но ничего не слушает: так HTTP-слой
@@ -410,6 +442,31 @@ function createApp(config, options = {}) {
 
     const hostname = normalizeHostname(parsed.hostname);
 
+    // Явный порт в URL раньше молча игнорировался: скан шёл по 80/443, а
+    // пользователь думал, что проверен https://host:8443. Добавляем его к
+    // списку проб и ставим первым веб-портом.
+    const requestedPort = parsed.port ? Number(parsed.port) : null;
+    // Схема из URL: для явного http://host:8443 TLS-проба не нужна, иначе
+    // отчёт писал бы «ошибка проверки SSL» у обычного HTTP-сервиса.
+    const requestScheme = parsed.protocol;
+    // 22/3306 — не веб-порты: добавлять их в webPortOrder бессмысленно.
+    const requestWebPortOrderExcluded = new Set([22, 3306]);
+    const requestScanPorts =
+      Number.isInteger(requestedPort) &&
+      requestedPort > 0 &&
+      requestedPort <= 65535 &&
+      !scanPorts.includes(requestedPort)
+        ? [requestedPort, ...scanPorts]
+        : scanPorts;
+    const requestWebPortOrder =
+      Number.isInteger(requestedPort) &&
+      !requestWebPortOrderExcluded.has(requestedPort)
+        ? [
+            requestedPort,
+            ...webPortOrder.filter((port) => port !== requestedPort),
+          ]
+        : webPortOrder;
+
     if (hostname.length === 0 || hostname.length > 253) {
       return res.status(400).json({ error: "Некорректный адрес" });
     }
@@ -509,6 +566,10 @@ function createApp(config, options = {}) {
 
           let connectIpToUse = connectIp;
           let openPorts = [];
+          // Статусы всех пяти портов выбранного IP: открытые уходят в отчёт,
+          // а filtered/closed нужны, чтобы не выдать «SSL не настроен» за
+          // недоступный 443.
+          let chosenPortResults = null;
           // DNS/email-проверки не зависят от веб-портов и идут параллельно
           // с перебором адресов/портов. Для IP и localhost модуль вернёт
           // applicable:false, не обращаясь к резолверу.
@@ -536,24 +597,28 @@ function createApp(config, options = {}) {
           for (const ip of resolvedIps.slice(0, 3)) {
             ensureBudget();
             const ports = await Promise.all(
-              scanPorts.map((p) =>
+              requestScanPorts.map((p) =>
                 checkPort(ip, p, budget(PORT_TIMEOUT_MS), 1, signal, deadline),
               ),
             );
             if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
             const currentOpen = ports.filter((p) => p.status === "open");
+            // Полные состояния последнего проверенного IP: scoring должен
+            // видеть filtered, иначе «22 не ответил» превращался в «22 закрыт»
+            // и приносил баллы за непроверенное.
+            chosenPortResults = ports;
             if (currentOpen.length > 0) {
               for (const result of currentOpen) {
                 if (!openByPort.has(result.port)) {
                   openByPort.set(result.port, result);
                 }
               }
-              openPorts = scanPorts.filter((port) => openByPort.has(port)).map(
+              openPorts = requestScanPorts.filter((port) => openByPort.has(port)).map(
                 (port) => openByPort.get(port),
               );
 
-              if (currentOpen.some((p) => webPortOrder.includes(p.port))) {
+              if (currentOpen.some((p) => requestWebPortOrder.includes(p.port))) {
                 connectIpToUse = ip;
                 break;
               }
@@ -570,11 +635,20 @@ function createApp(config, options = {}) {
               // потолок 30 у хоста, который просто не отвечает.
               { hasSSL: false, error: "NO_WEB_PORT" },
               { error: true },
-              { dns, files: null, securityTxt: null, fingerprint: null },
+              {
+                dns,
+                files: { error: "NO_WEB_PORT", results: [] },
+                securityTxt: { error: "NO_WEB_PORT", present: false, status: null },
+                fingerprint: null,
+                portChecks: chosenPortResults,
+              },
             );
           }
 
-          const availableWebPorts = selectWebPorts(openPorts, webPortOrder);
+          const availableWebPorts = selectWebPorts(
+            openPorts,
+            requestWebPortOrder,
+          );
 
           if (availableWebPorts.length === 0) {
             const dns = await dnsPromise;
@@ -583,7 +657,13 @@ function createApp(config, options = {}) {
               openPorts,
               { hasSSL: false, error: "NO_WEB_PORT" },
               { error: true },
-              { dns, files: null, securityTxt: null, fingerprint: null },
+              {
+                dns,
+                files: { error: "NO_WEB_PORT", results: [] },
+                securityTxt: { error: "NO_WEB_PORT", present: false, status: null },
+                fingerprint: null,
+                portChecks: chosenPortResults,
+              },
             );
           }
 
@@ -593,30 +673,48 @@ function createApp(config, options = {}) {
           let bestPort = availableWebPorts[0];
           let bestPortTls = false;
           let cloaking = false;
+          // Порт с рабочим TLS, на котором не удалось снять заголовки. Если
+          // потом 80 отдаст 301, нельзя выдавать его за основной результат:
+          // отчёт получал «TLS валиден» и «заголовки не проверены» одновре-
+          // менно. Лучше честно отметить заголовки непроверенными на TLS-порту.
+          let tlsPortWithoutHeaders = null;
 
           for (const wp of availableWebPorts) {
             ensureBudget();
             // На 80 порту TLS не бывает, не тратим время и не пугаем клиента.
-            // 8080 по умолчанию тоже HTTP: провал TLS там не означает ошибку.
-            let ssl =
-              wp === 80
-                ? { hasSSL: false }
-                : await checkSSL(
-                    connectIpToUse,
-                    wp,
-                    hostname,
-                    signal,
-                    1,
-                    budget(TLS_TIMEOUT_MS),
-                    deadline,
-                  ).catch((error) => {
-                    return {
-                      hasSSL: false,
-                      error: "PROBE_FAILED",
-                      errorCode: error.code || null,
-                    };
-                  });
-            if (wp === 8080 && ssl.error) ssl = { hasSSL: false };
+            // Явный http://host:port тоже означает HTTP: TLS-проба там
+            // заведомо провалится и даст ложную «ошибку SSL».
+            const skipTls =
+              wp === 80 ||
+              (wp === requestedPort && requestScheme === "http:");
+
+            let ssl = skipTls
+              ? { hasSSL: false }
+              : await checkSSL(
+                  connectIpToUse,
+                  wp,
+                  hostname,
+                  signal,
+                  1,
+                  budget(TLS_TIMEOUT_MS),
+                  deadline,
+                ).catch((error) => {
+                  return {
+                    hasSSL: false,
+                    error: "PROBE_FAILED",
+                    errorCode: error.code || null,
+                  };
+                });
+            // Провал TLS на нестандартном веб-порту — не ошибка проверки:
+            // порт мог быть обычным HTTP. HTTP-протокол заголовков всё равно
+            // определит реальную схему.
+            if (
+              wp !== 443 &&
+              ssl.error &&
+              !(wp === requestedPort && requestScheme === "https:")
+            ) {
+              ssl = { hasSSL: false };
+            }
             if (wp === bestPort) bestPortTls = Boolean(ssl.hasSSL);
             if (signal.aborted) throw new Error("SCAN_TIMEOUT");
 
@@ -662,9 +760,25 @@ function createApp(config, options = {}) {
                 cloaking = true;
               }
               break;
-            } else if (wp === 443) {
-              bestSsl = ssl;
+            } else {
+              if (ssl.hasSSL) tlsPortWithoutHeaders = { port: wp, ssl };
+              if (wp === 443) bestSsl = ssl;
             }
+          }
+
+          // 443 (или другой TLS-порт) не отдал заголовки, а запасной 80 —
+          // только редирект. Возвращаемся к TLS-порту: заголовки считаем
+          // непроверенными, но TLS и последующие пробы идут по HTTPS.
+          if (
+            tlsPortWithoutHeaders &&
+            !bestHeaders.error &&
+            typeof bestHeaders.status === "number" &&
+            bestHeaders.status >= 300
+          ) {
+            bestPort = tlsPortWithoutHeaders.port;
+            bestPortTls = true;
+            bestHeaders = { error: true, tlsPort: bestPort };
+            if (!bestSsl.hasSSL) bestSsl = tlsPortWithoutHeaders.ssl;
           }
 
           // Источник истины для TLS — протокол фактически полученных
@@ -707,6 +821,18 @@ function createApp(config, options = {}) {
             }
           }
 
+          // 443 не ответил (filtered/closed) — это «не измерено», а не «HTTPS
+          // не настроен»: помечаем TLS непроверенным, чтобы scoring не выдал
+          // критичный no-ssl и потолок 30 по сетевой блокировке.
+          if (
+            !bestSsl.hasSSL &&
+            !bestSsl.error &&
+            bestSsl.tlsConfirmed !== true &&
+            tlsUnknownPort(chosenPortResults)
+          ) {
+            bestSsl = { ...bestSsl, tlsChecked: false };
+          }
+
           // HSTS защищает только повторные заходы: первый http://-запрос
           // уходит открытым, если порт 80 не перенаправляет на HTTPS.
           // Проверяем это отдельным запросом и только при живом TLS и открытом
@@ -725,7 +851,7 @@ function createApp(config, options = {}) {
               deadline,
             );
             if (plain && !plain.error) {
-              httpRedirectsToHttps = redirectsToHttps(plain);
+              httpRedirectsToHttps = redirectsToHttps(plain, hostname);
             }
           }
 
@@ -771,6 +897,8 @@ function createApp(config, options = {}) {
             fingerprint,
             cloaking,
             httpRedirectsToHttps,
+            httpPortOpen: openPorts.some((port) => port.port === 80),
+            portChecks: chosenPortResults,
           });
         },
         SCAN_BUDGET_MS,
@@ -965,4 +1093,5 @@ module.exports = {
   issueConsentToken,
   verifyConsentToken,
   redirectsToHttps,
+  clientIdentity,
 };
