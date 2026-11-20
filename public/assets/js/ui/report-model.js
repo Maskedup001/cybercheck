@@ -85,7 +85,7 @@ export function getExposedFiles(files) {
   return Array.from(paths);
 }
 
-// Сколько HEAD-проб реально ответили, сколько упало и сколько заблокировано.
+// Сколько GET-проб с проверкой сигнатуры реально ответили, сколько упало и сколько заблокировано.
 export function getProbeStats(files) {
   const results = (Array.isArray(files && files.results) ? files.results : [])
     .filter((item) => item && typeof item === "object");
@@ -117,7 +117,7 @@ export function getProbeStats(files) {
 // проверенное отрицание.
 export function filesNote(files) {
   if (!files || typeof files !== "object") {
-    return "Не удалось проверить: данные HEAD-проб не получены.";
+    return "Не удалось проверить: данные файловых проб не получены.";
   }
 
   const exposed = getExposedFiles(files);
@@ -138,7 +138,7 @@ export function filesNote(files) {
   // выполнялась». Иначе пустой объект от старого/неполного API выглядел бы
   // как доказанное отрицание.
   if (total === 0) {
-    return "Проверки файлов не выполнялись: результатов HEAD-проб нет.";
+    return "Проверки файлов не выполнялись: GET-пробы с проверкой сигнатуры не запускались.";
   }
 
   // Ни один путь не подтверждён: все пробы упали или были заблокированы
