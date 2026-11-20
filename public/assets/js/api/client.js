@@ -28,10 +28,15 @@ export function normalizeFinding(raw) {
   };
 }
 
-export async function scanTarget({ url, consent, consentToken }) {
-  // <-- Добавили consentToken
+export async function scanTarget({ url, consent, consentToken, signal }) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  // Пользовательская отмена и таймаут — разные причины: иначе «Отменить»
+  // показывал бы «превышено время ожидания».
+  const requestSignal = signal
+    ? AbortSignal.any([controller.signal, signal])
+    : controller.signal;
+  const abortedByUser = () => Boolean(signal && signal.aborted);
 
   try {
     // Только сетевой вызов: TypeError от fetch означает «запрос не ушёл»
@@ -42,11 +47,12 @@ export async function scanTarget({ url, consent, consentToken }) {
       res = await fetch(`${API_URL}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url, consent, consentToken }), // <-- Передаем токен
-        signal: controller.signal,
+        body: JSON.stringify({ url, consent, consentToken }),
+        signal: requestSignal,
       });
     } catch (error) {
       if (error && error.name === "AbortError") {
+        if (abortedByUser()) throw new Error("Сканирование отменено.");
         throw new Error(
           "Превышено время ожидания (65 сек). Попробуйте другой адрес.",
         );
@@ -66,6 +72,7 @@ export async function scanTarget({ url, consent, consentToken }) {
     // вместо честного «превышено время ожидания».
     const data = await res.json().catch((error) => {
       if (error && error.name === "AbortError") {
+        if (abortedByUser()) throw new Error("Сканирование отменено.");
         throw new Error(
           "Превышено время ожидания (65 сек). Попробуйте другой адрес.",
         );
@@ -89,6 +96,16 @@ export async function scanTarget({ url, consent, consentToken }) {
               (p.status === undefined || p.status === "open"),
           )
         : [],
+      // Полные состояния портов (open/closed/filtered) — только для карточки,
+      // в ports по-прежнему попадают открытые.
+      portChecks: Array.isArray(data.portChecks)
+        ? data.portChecks.filter(
+            (p) =>
+              p &&
+              Number.isInteger(p.port) &&
+              typeof p.status === "string",
+          )
+        : null,
       ssl:
         data.ssl && typeof data.ssl === "object" ? data.ssl : { hasSSL: false },
       headers:

@@ -177,6 +177,12 @@ export function tlsNotice(ssl, ports) {
     return "TLS не проверялся: у сайта не открыт ни один веб-порт (80, 443, 8080).";
   }
 
+  // 443 не ответил (таймаут/фильтр): TLS не проверялся, и «SSL не настроен»
+  // здесь так же неверно, как и для полностью недоступного хоста.
+  if (ssl.tlsChecked === false) {
+    return "TLS не проверялся: порт 443 недоступен из сети сканера (таймаут или фильтр). Это не значит, что HTTPS не настроен.";
+  }
+
   // HTTPS подтверждён ответом сервера, но сертификат прочитать не удалось:
   // «SSL не настроен» здесь так же неверно, как и «TLS не проверялся».
   if (ssl.tlsConfirmed === true) {
@@ -211,10 +217,68 @@ export function secureContextState(ssl) {
   // HTTPS подтверждён заголовками, но сертификат не прочитан: это не «TLS не
   // проверен» — карточка TLS в этом же отчёте говорит, что HTTPS работает.
   if (ssl.tlsConfirmed === true) return "unverified";
+  // 443 недоступен: утверждать «нет HTTPS» нельзя, контекст неизвестен.
+  if (ssl.tlsChecked === false) return "unknown";
   if (ssl.error) return "unknown";
   if (ssl.hasSSL !== true) return "no-https";
-  if (ssl.valid === false) return "invalid-cert";
+  if (ssl.valid === false) {
+    // TLS 1.0/1.1: цепочка может быть валидной, но браузеры таким сайтом не
+    // пользуются. Это не «сертификат невалиден» — и HSTS/Secure тут ни при чём.
+    return ssl.verifyError ? "invalid-cert" : "old-tls";
+  }
   return "ok";
+}
+
+// Человекочитаемая причина, по которой сертификат не принят. Коды Node
+// (CERT_HAS_EXPIRED и т.п.) — не текст для пользователя.
+export function tlsVerifyErrorText(code) {
+  if (typeof code !== "string" || code === "") return "";
+
+  const known = {
+    CERT_HAS_EXPIRED: "Срок действия сертификата истёк.",
+    CERT_NOT_YET_VALID: "Сертификат ещё не вступил в силу.",
+    ERR_TLS_CERT_ALTNAME_INVALID:
+      "Сертификат выпущен для другого домена — имя не совпадает.",
+    DEPTH_ZERO_SELF_SIGNED_CERT:
+      "Самоподписанный сертификат: браузер ему не доверяет.",
+    SELF_SIGNED_CERT_IN_CHAIN:
+      "В цепочке самоподписанный сертификат — браузер ей не доверяет.",
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE:
+      "Не удалось проверить подпись сертификата: цепочка неполная.",
+    UNABLE_TO_GET_ISSUER_CERT_LOCALLY:
+      "Издатель сертификата неизвестен системе.",
+    CERT_REVOKED: "Сертификат отозван.",
+  };
+
+  return known[code] || `Сертификат не прошёл проверку (${sanitizeText(code, 60)}).`;
+}
+
+// Состояние сертификата для карточки TLS: тон, подпись и причина.
+export function tlsCertificateState(ssl) {
+  if (!ssl || typeof ssl !== "object" || ssl.hasSSL !== true) {
+    return { tone: "muted", label: "не проверен", reason: "" };
+  }
+
+  if (ssl.valid === true) {
+    return { tone: "ok", label: "валиден", reason: "" };
+  }
+
+  if (typeof ssl.verifyError === "string" && ssl.verifyError !== "") {
+    return {
+      tone: "bad",
+      label: "невалиден",
+      reason: tlsVerifyErrorText(ssl.verifyError),
+    };
+  }
+
+  const version = typeof ssl.tlsVersion === "string" ? ssl.tlsVersion : "";
+  return {
+    tone: "warn",
+    label: "устаревший TLS",
+    reason: version
+      ? `Протокол ${version} ниже TLS 1.2 — современные браузеры им не пользуются.`
+      : "Сертификат не прошёл проверку по неизвестной причине.",
+  };
 }
 
 // Имя отчёта: используется и в заголовке вкладки, и в имени PDF. host "—" —

@@ -2,6 +2,7 @@
    чтобы страница не «прыгала» при подстановке результата. */
 .scan-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   max-width: 48rem;
@@ -28,8 +29,17 @@
 }
 
 .scan-status__text {
+  flex: 1 1 auto;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
+}
+
+.scan-status__cancel {
+  flex: none;
+}
+
+.scan-status__cancel[hidden] {
+  display: none;
 }
 
 @keyframes scan-status-spin {

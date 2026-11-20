@@ -7,6 +7,7 @@ import {
   getExposedFiles,
   filesNote,
   tlsNotice,
+  tlsCertificateState,
   caaState,
   secureContextState,
   reportTitleFor,
@@ -33,6 +34,11 @@ const SEVERITY = {
   medium: { label: "Важно", tone: "warn" },
   low: { label: "Замечание", tone: "muted" },
 };
+
+// Ответы, по которым нельзя судить о защите: редирект, который не удалось
+// пройти, и челлендж WAF/авторизации. 404/500 — обычная страница ошибки
+// сайта, её заголовки всё ещё описывают конфигурацию сервера.
+const HEADERS_UNCHECKED_STATUSES = new Set([401, 403, 407, 429, 503]);
 
 const PORT_TONES = { 80: "ok", 443: "ok", 22: "bad", 3306: "bad", 8080: "warn" };
 const PORT_LABELS = { ok: "открыт", bad: "опасный", warn: "риск" };
@@ -81,6 +87,7 @@ const HINTS = {
 const SECURE_CONTEXT_NOTES = {
   "no-https": "н/д (нет HTTPS)",
   "invalid-cert": "н/д (сертификат невалиден)",
+  "old-tls": "н/д (устаревший TLS)",
   unverified: "н/д (сертификат не прочитан)",
   unknown: "н/д (TLS не проверен)",
 };
@@ -248,10 +255,9 @@ function describeFindings(findings) {
 }
 
 function createScore(report, score) {
-  const tone = toneForGrade(report.grade);
+  let tone = toneForGrade(report.grade);
 
   const block = document.createElement("div");
-  block.className = `score score--${tone}`;
 
   const gauge = document.createElement("div");
   gauge.className = "score__gauge";
@@ -275,9 +281,24 @@ function createScore(report, score) {
 
   const title = document.createElement("p");
   title.className = "score__title";
-  title.textContent = Object.hasOwn(GRADE_LABELS, report.grade)
-    ? GRADE_LABELS[report.grade]
-    : "Оценка";
+
+  const hasHigh =
+    Array.isArray(report.findings) &&
+    report.findings.some((finding) => finding && finding.severity === "high");
+
+  // «B · Хорошая защита» рядом с красным «Критично» — противоречие: при
+  // критичной находке зелёный вердикт не показываем, даже если сумма баллов
+  // высокая (потолок 90).
+  if (hasHigh && tone === "good") {
+    tone = "warn";
+    title.textContent = "Есть критичные замечания";
+  } else {
+    title.textContent = Object.hasOwn(GRADE_LABELS, report.grade)
+      ? GRADE_LABELS[report.grade]
+      : "Оценка";
+  }
+
+  block.className = `score score--${tone}`;
 
   const text = document.createElement("p");
   text.className = "score__text";
@@ -463,11 +484,9 @@ function createRow(label, value, hint) {
   term.append(termText);
 
   if (hint) {
-    // title — нативный способ показать пояснение при наведении; он не
-    // нарушает CSP. Иконка декоративная по умолчанию, но с подсказкой
-    // становится фокусируемым триггером: иначе keyboard-only пользователь
-    // не мог получить пояснение.
-    term.setAttribute("title", hint);
+    // Видимая подсказка вместо нативного title: title не показывается при
+    // фокусе с клавиатуры. Иконка остаётся фокусируемым триггером, а текст
+    // подсказки лежит рядом и открывается по focus-within.
     term.append(createInfoIcon());
 
     const icon = term.lastElementChild;
@@ -475,6 +494,12 @@ function createRow(label, value, hint) {
     icon.setAttribute("tabindex", "0");
     icon.setAttribute("aria-label", hint);
     icon.removeAttribute("aria-hidden");
+
+    const hintNode = document.createElement("span");
+    hintNode.className = "detail__hint";
+    hintNode.textContent = hint;
+    hintNode.setAttribute("aria-hidden", "true");
+    term.append(hintNode);
   }
 
   const cell = document.createElement("dd");
@@ -533,8 +558,34 @@ function createCard(titleText, rows, note) {
   return card;
 }
 
-function createPortsCard(ports) {
+function createPortsCard(report) {
+  const openPorts = Array.isArray(report.ports) ? report.ports : [];
+  const checks = Array.isArray(report.portChecks) ? report.portChecks : [];
+
+  // В отчёт отдаются только открытые порты (контракт API), но полный набор
+  // состояний нужен, чтобы «не ответил» не выглядел как «закрыт».
+  const byPort = new Map();
+  for (const port of checks) {
+    if (port && Number.isInteger(port.port)) byPort.set(port.port, port);
+  }
+  for (const port of openPorts) {
+    if (port && Number.isInteger(port.port)) byPort.set(port.port, port);
+  }
+
+  const ports = [...byPort.values()].sort((a, b) => a.port - b.port);
+
   const rows = ports.map((port) => {
+    const isOpen = port.status === undefined || port.status === "open";
+    if (!isOpen) {
+      return {
+        label: `Порт ${port.port}`,
+        value: createBadge(
+          "muted",
+          port.status === "filtered" ? "не ответил" : "закрыт",
+        ),
+      };
+    }
+
     const tone = Object.hasOwn(PORT_TONES, port.port)
       ? PORT_TONES[port.port]
       : "warn";
@@ -544,11 +595,19 @@ function createPortsCard(ports) {
     };
   });
 
-  return createCard(
-    "Порты",
-    rows,
-    ports.length === 0 ? "Открытых портов не найдено" : "",
-  );
+  let note = "";
+  if (ports.length === 0) {
+    // Пустой ports при NO_WEB_PORT — это не «портов нет», а «пробы не
+    // ответили»: TLS в соседней карточке уже говорит «не проверялся».
+    note =
+      report.ssl && report.ssl.error === "NO_WEB_PORT"
+        ? "Порты не проверены: пробы не ответили (таймаут или фильтр)."
+        : "Открытых портов не найдено";
+  } else if (ports.every((port) => port.status === "filtered")) {
+    note = "Порты не проверены: ни один порт не ответил на пробу.";
+  }
+
+  return createCard("Порты", rows, note);
 }
 
 function formatDate(raw) {
@@ -583,18 +642,13 @@ function createTlsCard(ssl, ports) {
     );
   }
 
-  const validBadge = createBadge(
-    ssl.valid ? "ok" : "bad",
-    ssl.valid ? "валиден" : "невалиден",
-  );
+  const cert = tlsCertificateState(ssl);
+  const validBadge = createBadge(cert.tone, cert.label);
 
   const rows = [{ label: "Сертификат", value: validBadge, hint: HINTS.tls }];
 
-  if (!ssl.valid && ssl.verifyError) {
-    rows.push({
-      label: "Причина",
-      value: sanitizeText(ssl.verifyError) || "н/д",
-    });
+  if (cert.reason) {
+    rows.push({ label: "Причина", value: cert.reason });
   }
 
   const daysLeft = ssl.daysLeft;
@@ -655,6 +709,24 @@ function createHeadersCard(headers, ssl) {
     return card;
   }
 
+  // Конечный ответ — редирект, челлендж WAF или страница авторизации:
+  // заголовки такой страницы не описывают защиту сайта. Карточка должна
+  // говорить «не проверено», а не рисовать «Не настроен» по каждому
+  // заголовку (scoring их уже не считает).
+  if (
+    typeof headers.status === "number" &&
+    ((headers.status >= 300 && headers.status < 400) ||
+      HEADERS_UNCHECKED_STATUSES.has(headers.status))
+  ) {
+    const card = createCard(
+      "Заголовки",
+      [],
+      `Проверка не выполнялась: корневой ответ HTTP ${headers.status}. Заголовки редиректа, ошибки или челленджа не позволяют судить о защите.`,
+    );
+    card.classList.add("detail--headers");
+    return card;
+  }
+
   const context = secureContextState(ssl);
 
   // Состояние заголовка: ok / weak (есть, но выключен) / missing.
@@ -671,11 +743,15 @@ function createHeadersCard(headers, ssl) {
       : stateFlag(state, Boolean(value));
 
   const cors =
-    headers.corsWildcard === true
-      ? createBadge("bad", "*")
-      : headers.corsWildcard === false
-        ? createBadge("ok", "ограничен")
-        : createMuted("н/д");
+    headers.corsReflectsOrigin === true
+      ? createBadge("bad", "отражает Origin")
+      : headers.corsWildcard === true && headers.corsCredentials === true
+        ? createBadge("warn", "* + credentials")
+        : headers.corsWildcard === true
+          ? createBadge("muted", "разрешён всем")
+          : headers.corsWildcard === false
+            ? createBadge("ok", "ограничен")
+            : createMuted("н/д");
 
   // Без HTTPS HSTS неприменим: scoring его не штрафует, значит и карточка
   // не должна рисовать красное «нет». Невалидный сертификат — тот же случай.
@@ -725,7 +801,7 @@ function createHeadersCard(headers, ssl) {
   return card;
 }
 
-function createMailCard(dns) {
+function createMailCard(dns, hostname = "") {
   if (!dns || typeof dns !== "object") {
     return createCard(
       "Почтовая безопасность",
@@ -808,13 +884,39 @@ function createMailCard(dns) {
     caaStateValue === "unknown",
   ].filter(Boolean).length;
 
-  return createCard(
-    "Почтовая безопасность",
-    rows,
-    unavailable > 0
-      ? "Часть DNS-проверок не ответила — значения отмечены как «Не удалось проверить»."
-      : "",
-  );
+  // Политика поддомена может быть унаследована от организационного домена —
+  // пользователь должен видеть, откуда взяты значения.
+  const inherited = [];
+  if (spf && typeof spf.inheritedFrom === "string") {
+    const parent = sanitizeText(spf.inheritedFrom, 120);
+    inherited.push(
+      spf.parentPresent
+        ? `У ${parent} SPF есть, но на этот поддомен он не распространяется.`
+        : `SPF родительского домена ${parent} не найден.`,
+    );
+  }
+  if (dmarc && typeof dmarc.inheritedFrom === "string") {
+    inherited.push(
+      `DMARC взят у ${sanitizeText(dmarc.inheritedFrom, 120)}${dmarc.spApplied ? " (политика sp)" : ""}.`,
+    );
+  }
+  if (
+    caa &&
+    typeof caa.foundAt === "string" &&
+    caa.foundAt !== sanitizeText(hostname, 120)
+  ) {
+    inherited.push(`CAA найден у ${sanitizeText(caa.foundAt, 120)}.`);
+  }
+
+  const notes = [];
+  if (unavailable > 0) {
+    notes.push(
+      "Часть DNS-проверок не ответила — значения отмечены как «Не удалось проверить».",
+    );
+  }
+  notes.push(...inherited);
+
+  return createCard("Почтовая безопасность", rows, notes.join(" "));
 }
 
 function createCookieCard(headers, ssl) {
@@ -952,12 +1054,21 @@ function createTechCard(fingerprint, securityTxt) {
 }
 
 function createFilesCard(files) {
-  const card = createCard("Открытые файлы", [], filesNote(files));
+  const exposed =
+    files && typeof files === "object" ? getExposedFiles(files) : [];
+
+  // Список ниже сам перечисляет пути: дублировать их ещё и в подписи
+  // (как делал filesNote) незачем.
+  const note =
+    exposed.length > 0
+      ? `Найдено доступных файлов: ${exposed.length}.`
+      : filesNote(files);
+
+  const card = createCard("Открытые файлы", [], note);
   card.classList.add("detail--files");
 
   if (!files || typeof files !== "object") return card;
 
-  const exposed = getExposedFiles(files);
   if (exposed.length === 0) return card;
 
   // Список продолжает карточку: её содержимое снова прижато к верху,
@@ -1041,10 +1152,10 @@ function createDetails(report) {
   // растягивает короткие карточки. Внутри карточек двух- и трёхколоночные
   // таблицы остаются только там, где они не создают пустых ячеек.
   grid.append(
-    createPortsCard(report.ports),
+    createPortsCard(report),
     createTlsCard(report.ssl, report.ports),
     createCookieCard(report.headers, report.ssl),
-    createMailCard(report.dns),
+    createMailCard(report.dns, report.host),
     createTechCard(report.fingerprint, report.securityTxt),
     createFilesCard(report.files),
     createHeadersCard(report.headers, report.ssl),

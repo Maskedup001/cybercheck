@@ -118,6 +118,9 @@ if (toc && list) {
 
       if (lastTop - max > ACTIVE_LINE) {
         if (window.scrollY <= 2) setCurrent(ids[0]);
+        // Последний раздел физически не доходит до линии, поэтому у дна
+        // страницы подсвечиваем именно его, а не оставляем первый пункт.
+        else if (window.scrollY >= max - 2) setCurrent(ids[ids.length - 1]);
         return;
       }
 
