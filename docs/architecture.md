@@ -296,6 +296,7 @@ report = {
   ssl: {
     hasSSL: boolean, valid?: boolean, daysLeft?: number,
     supportsOldTls?: boolean | null, tlsConfirmed?: boolean,
+    tlsChecked?: false,
     error?: "NO_WEB_PORT" | "HANDSHAKE_FAILED" | "CERT_PARSE_FAILED" | string
   },
   headers: { error?: true } | {
@@ -389,7 +390,8 @@ report = {
 | `headers.corsWildcard` | 60 |
 | `headers.error` или `headers.status >= 300` | 60 |
 | `ssl.error` (кроме `tlsConfirmed === true`) | 60 |
-| `!ssl.hasSSL && !ssl.error` | 30 |
+| `ssl.tlsChecked === false` (443 filtered/closed) | 60 |
+| `!ssl.hasSSL && !ssl.error && ssl.tlsChecked !== false` | 30 |
 | `ssl.hasSSL && !ssl.valid` | 40 |
 | открыт 3306 | 70 |
 | `ssl.supportsOldTls` | 85 |
@@ -406,6 +408,7 @@ report = {
 
 * **`headers.error` / `headers.status >= 300`** — баллы за HSTS/CSP/XFO/XCTO/`Server`/доп. заголовки/cookie/CORS не начисляются; находка `headers-unavailable` (ошибка) или `headers-not-checked` (редирект/челлендж WAF); потолок 60.
 * **`ssl.error`** — TLS-хендшейк не удался (таймаут, reset, сертификат не разобран). Находка `ssl-error` уровня `medium`, потолок 60; `no-ssl` не создаётся, потому что отсутствие TLS не доказано. На 80 порту TLS не проверяется, на 8080 ошибка TLS трактуется как HTTP, а не как ошибка.
+* **`tlsChecked === false`** — 443 не ответил (`filtered`/`closed`), поэтому TLS не проверялся: находка `tls-not-checked` (`medium`, `weight: 0`), потолок 60. `no-ssl` и потолок 30 остаются только для доказанного отсутствия TLS (`refused`/только HTTP на 80 или 8080).
 * **Нет TLS** — только при `hasSSL: false` **без** `error`: HSTS-баллы не начисляются (`h.hsts && hasSSL`); находка `no-hsts` не создаётся, потому что без HTTPS она была бы шумом. CSP/XFO/XCTO/`Server`/доп. заголовки/cookie считаются, но потолок 30 даёт E.
 * **`NO_WEB_PORT`** — ни один веб-порт не открыт: `files/securityTxt/fingerprint: null`, находка `tls-not-checked` с `weight: 0`, потолок 30 не применяется, баллы за непроверенные секции начисляются. Это отличается от «HTTPS не настроен».
 * **`tlsConfirmed`** — заголовки пришли по HTTPS, но сертификат не прочитан: `ssl-unverified` (`medium`), баллы TLS не начисляются, потолок 60 не применяется — сайт реально работает по HTTPS.
@@ -429,7 +432,7 @@ report = {
 
 ### 10.4. Тесты
 
-`test/scoring.test.js` — **66 тестов**:
+`test/scoring.test.js` — **67 тестов**:
 
 * сумма положительных весов ровно 100, `WEIGHTS` и `FILE_CHECKS` заморожены;
 * идеальный отчёт → 100/A без находок;
@@ -481,15 +484,15 @@ report = {
 
 ## 12. Тестирование
 
-Покрыто (**291 тест** в 13 файлах):
+Покрыто (**296 тестов** в 13 файлах):
 
 * `test/net-guard.test.js` — 9 тестов: 20 адресов на блокировку (mapped, NAT64, `::/96`, `::7f00:1`), 4 на разрешение, 5 мусорных на fail-closed, инъекция резолвера, смешанный ответ, таймаут.
-* `test/scoring.test.js` — 66 тестов (см. §10.4), включая веса 100, `FILE_CHECKS`, потолки файлов/CORS, HSTS 5+3, `filtered`-порт, `supportsOldTls: null`, DMARC `pct`, клоакинг через `buildReport`, `NO_WEB_PORT`, `security-txt-invalid` и OWASP.
+* `test/scoring.test.js` — 67 тестов (см. §10.4), включая веса 100, `FILE_CHECKS`, потолки файлов/CORS, HSTS 5+3, `filtered`-порт, `supportsOldTls: null`, `tlsChecked === false` → `tls-not-checked`, DMARC `pct`, клоакинг через `buildReport`, `NO_WEB_PORT`, `security-txt-invalid` и OWASP.
 * `test/checks.test.js` — 19 тестов: `checkPort` с `open`/`refused`/`filtered`, дедлайн, отказ от нелитерального `connectIp`, `checkHeaders` с cookie/доп. заголовками/CORS/weak-значениями/IPv6-Host, несколько CSP-заголовков, CSP в `<meta>`, `frame-ancestors`, таймаут тела и same-origin редирект, `checkSSL` с точными кодами `HANDSHAKE_FAILED`/`TIMEOUT`/`ABORTED`, самоподписанным сертификатом и отменой.
 * `test/dns-security.test.js` — 29 тестов: SPF (включая `redirect=`), DMARC (`reject`/`quarantine`/`none`, `pct`), CAA, IP/localhost, таймауты, DNS-ошибки, abort.
 * `test/header-analysis.test.js` — 42 теста: `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, несколько одноимённых заголовков, CSP из `<meta>`, `frame-ancestors`, ACAO `*`, WAF и CMS, отсутствие ReDoS на ~58 КБ `<meta>`-текста.
 * `test/web-probes.test.js` — 20 тестов: GET-файлы по сигнатурам (200/403/404/301), `security.txt` (включая обрезку тела), фингерпринт, браузерный `User-Agent`, Host/connectIp, same-origin и запрет cross-origin редиректов, лимит в три хопа, таймаут, abort, частичное тело.
-* `test/scan-helpers.test.js` — 23 теста: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath` (включая NTFS ADS и обратные слэши), `isLiteralIp`.
+* `test/scan-helpers.test.js` — 24 теста: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath` (включая NTFS ADS и обратные слэши), `isLiteralIp`, `tlsUnknownPort`.
 * `test/rate-limit.test.js` — 17 тестов: кулдаун, LRU, sweep, семафор, `maxPerEdge` и его освобождение, лишний `finish`, таймер.
 * `test/report-model.test.js` — 25 тестов: `sanitizeText`, критичность путей, `filesNote`, `tlsNotice`, `caaState`, `secureContextState`, склонения, имя отчёта, `buildShareText`.
 * `test/frontend-contract.test.js` — 12 тестов: поведенческий контракт `scanTarget`, реальный `import()` модулей и экспорты, нормализация `owasp`/новых полей, мусорные `score`/`grade`/`ports`, сетевые ошибки, SVG-иконка подсказки, ENOTFOUND для SPF, решения CAA/TLS, отсутствие HTML-синков и инлайн-скриптов.

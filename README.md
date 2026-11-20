@@ -1,7 +1,7 @@
 # CyberCheck
 
 ![version](https://img.shields.io/badge/version-2.3.0-blue)
-![tests](https://img.shields.io/badge/tests-291%20passed-brightgreen)
+![tests](https://img.shields.io/badge/tests-296%20passed-brightgreen)
 ![node](https://img.shields.io/badge/node-22%E2%80%9324-339933)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)
@@ -24,7 +24,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 - **CSP и кликджекинг.** Несколько одноимённых заголовков разбираются как отдельные политики, CSP в `<meta http-equiv>` учитывается, `frame-ancestors` закрывает кликджекинг без `X-Frame-Options`.
 - **DNS/email, порты, TLS.** SPF `redirect=` считается рабочей политикой; DMARC `reject`/`quarantine` при `pct < 100` даёт `dmarc-partial`; пробы портов различают `open`/`refused`/`filtered`/`closed`; `supportsOldTls` может быть `null` — «не проверено», а не «отключено».
 - **Устойчивость сервера.** Строгая валидация `NODE_ENV`, предупреждение о dev-секрете, таймауты сокетов, `maxConnections = 4096`, лимит 64 сокета на IP при прямом доступе и потолок 2 скана на сокет-адрес против подмены `X-Forwarded-For`.
-- **Тесты.** 291 тест в 13 файлах. `npm test` идёт через `scripts/run-tests.js` (один процесс, без `spawn`), классический прогон с изоляцией — `npm run test:isolated`; добавлен исполняемый DOM-тест рендера.
+- **Тесты.** 296 тестов в 13 файлах. `npm test` идёт через `scripts/run-tests.js` (один процесс, без `spawn`), классический прогон с изоляцией — `npm run test:isolated`; добавлен исполняемый DOM-тест рендера.
 
 Ключевые возможности:
 
@@ -102,6 +102,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 | `headers.corsWildcard === true` | **60 (C)** |
 | Не удалось проверить заголовки (`headers.error`) или корневой ответ `>= 300` | 60 |
 | Ошибка TLS (`ssl.error`), кроме случая `ssl.tlsConfirmed === true` | 60 |
+| TLS не проверялся: 443 не ответил (`ssl.tlsChecked === false`) | 60 |
 | HTTPS отсутствует | 30 |
 | Сертификат невалиден/просрочен | 40 |
 | Открыт порт 3306 | 70 |
@@ -117,7 +118,7 @@ CyberCheck — сканер внешней безопасности веб-са�
 
 Сертификат, истекающий в течение 30 дней, даёт находку `ssl-expiring` уровня `low` и не приносит 3 балла. При `daysLeft <= 7` дополнительно включается потолок 90 (B); при 8–30 днях сайт с идеальной гигиеной остаётся A (97).
 
-Если TLS-соединение не установилось, отчёт не утверждает «SSL нет»: приходит `ssl.hasSSL: false`, `ssl.error` (например, `HANDSHAKE_FAILED`), находка `ssl-error` уровня `medium` и потолок 60. `no-ssl` и потолок 30 остаются только для случая, когда TLS действительно не настроен (порт 80/8080 отвечает по HTTP). Карточка TLS в этом случае пишет «Не удалось проверить TLS», а не «SSL не настроен».
+Если TLS-соединение не установилось, отчёт не утверждает «SSL нет»: приходит `ssl.hasSSL: false`, `ssl.error` (например, `HANDSHAKE_FAILED`), находка `ssl-error` уровня `medium` и потолок 60. `no-ssl` и потолок 30 остаются только для случая, когда TLS действительно не настроен (порт 80/8080 отвечает по HTTP). Карточка TLS в этом случае пишет «Не удалось проверить TLS», а не «SSL не настроен». Если порт 443 не ответил (таймаут/фильтр), TLS не проверялся: приходит `ssl.tlsChecked: false`, находка `tls-not-checked` уровня `medium` и потолок 60 — «SSL не настроен» и потолок 30 остаются только для доказанного отсутствия TLS.
 
 Новые проверки дают находки `cloaking-detected`, `no-http-redirect`, `no-https-first`, `old-tls-unchecked`, `headers-not-checked`/`headers-unavailable`, `dmarc-partial`, `spf-missing`, `dmarc-missing`/`dmarc-weak`/`dmarc-invalid`, `caa-missing`, `cookie-no-secure`/`cookie-no-httponly`/`cookie-no-samesite`, `no-referrer-policy`/`no-permissions-policy`/`no-coop`, `cors-wildcard`, `exposed-env`/`exposed-git`/`exposed-backup`/`exposed-dsstore`, `security-txt-missing`/`security-txt-invalid`. `cloaking-detected`, `old-tls-unchecked` и `headers-not-checked` имеют `weight: 0`, но `cloaking-detected` — `high`, поэтому включает общий потолок 90. WAF/CMS — информационные `waf-detected`/`cms-detected` с `weight: 0`.
 
@@ -346,7 +347,7 @@ Content-Type: application/json
 
 Оценка учитывает `dns`, `files`, `securityTxt` и расширенные поля `headers` (включая `status`, `location` и `cspFrameAncestors`); `fingerprint` даёт только информационные находки `weight: 0` и score не меняет. Каждая находка содержит `owasp`. Файл утечки считается открытым только когда `200` и содержимое совпало с сигнатурой (`KEY=VALUE` для `/.env`, `[core]` для `/.git/config`, ZIP-магия для `/backup.zip`, магия `.DS_Store`). `200` без сигнатуры — `error: "NO_SIGNATURE"`: путь не подтверждён ни как открытый, ни как закрытый, баллы за него не начисляются.
 
-Дополнительные поля контракта: у `headers` — `status`, `location`, `hstsState`, `cspState`, `xframeState`, `xcontentState`, `referrerPolicyState`, `permissionsPolicyState`, `coopState` (`ok` / `weak` / `missing`), `cspFrameAncestors`; у `ssl` — `tlsConfirmed` и `supportsOldTls` (`true` / `false` / `null` — не проверено); у `securityTxt` — `truncated`; у `dns.spf` — `multiple` и `weak`; у `dns.dmarc` — `multiple`, `pct`, `partial`, `pctInvalid`, `strict`, `weak`; у `dns.caa` — `restrictive`; у `cookieSummary` — `insecureNone`. В массиве `ports` есть только открытые порты (`status: "open"`): `refused`/`filtered`/`closed` — внутренние состояния пробы и в ответ не попадают. `httpRedirectsToHttps` (`true` / `false` / `null`) и признак клоакинга — входные данные скоринга, а не поля ответа: наружу они видны как находки `no-http-redirect` и `cloaking-detected`. Эти поля нужны, чтобы UI отличал «заголовка нет» от «заголовок есть, но защита выключена» и «проверить не удалось», и не расходился со скорингом.
+Дополнительные поля контракта: у `headers` — `status`, `location`, `hstsState`, `cspState`, `xframeState`, `xcontentState`, `referrerPolicyState`, `permissionsPolicyState`, `coopState` (`ok` / `weak` / `missing`), `cspFrameAncestors`; у `ssl` — `tlsConfirmed`, `tlsChecked` (`false` — 443 не ответил, TLS не проверялся) и `supportsOldTls` (`true` / `false` / `null` — не проверено); у `securityTxt` — `truncated`; у `dns.spf` — `multiple` и `weak`; у `dns.dmarc` — `multiple`, `pct`, `partial`, `pctInvalid`, `strict`, `weak`; у `dns.caa` — `restrictive`; у `cookieSummary` — `insecureNone`. В массиве `ports` есть только открытые порты (`status: "open"`): `refused`/`filtered`/`closed` — внутренние состояния пробы и в ответ не попадают. `httpRedirectsToHttps` (`true` / `false` / `null`) и признак клоакинга — входные данные скоринга, а не поля ответа: наружу они видны как находки `no-http-redirect` и `cloaking-detected`. Эти поля нужны, чтобы UI отличал «заголовка нет» от «заголовок есть, но защита выключена» и «проверить не удалось», и не расходился со скорингом.
 
 Ошибки — всегда JSON `{ "error": "..." }` без стека и внутренних деталей:
 
@@ -367,10 +368,10 @@ Content-Type: application/json
 npm test
 ```
 
-Запускается `npm test` → `node scripts/run-tests.js` — **291 тест** в тринадцати файлах. Скрипт подключает файлы по очереди в одном процессе: `node --test` поднимает отдельный процесс на каждый файл, и там, где создание процессов запрещено (песочницы, Windows AppContainer), весь набор падал бы с `spawn EPERM`, хотя тесты рабочие. Классический прогон с изоляцией — `npm run test:isolated`.
+Запускается `npm test` → `node scripts/run-tests.js` — **296 тестов** в тринадцати файлах. Скрипт подключает файлы по очереди в одном процессе: `node --test` поднимает отдельный процесс на каждый файл, и там, где создание процессов запрещено (песочницы, Windows AppContainer), весь набор падал бы с `spawn EPERM`, хотя тесты рабочие. Классический прогон с изоляцией — `npm run test:isolated`.
 
 - `test/net-guard.test.js` — 9 тестов: 20 приватных/служебных адресов блокируются, 4 публичных разрешаются, мусорный ввод блокируется (fail-closed), инъекция резолвера, таймаут и смешанный DNS-ответ.
-- `test/scoring.test.js` — 66 тестов: сумма весов 100; `FILE_CHECKS` совпадает с путями файловых проб; TLS/SSL, заголовки, порты; потолки `.env`/`.git`/`backup`/CORS; HSTS 5+3 и редирект HTTP→HTTPS; `filtered`-порт не даёт баллов; `supportsOldTls: null` и `daysLeft: NaN`; `status ≥ 300` — «не проверено»; DMARC `p=none` и `pct < 100`; DNS timeout и `ENODATA`; cookie-флаги; `security.txt` (404, некорректный и оборванный 200); `200` без сигнатуры файла; `frame-ancestors` вместо XFO; клоакинг доходит до оценки через `buildReport`; заморозка `WEIGHTS`; WAF/CMS; OWASP-теги; сортировка находок.
+- `test/scoring.test.js` — 67 тестов: сумма весов 100; `FILE_CHECKS` совпадает с путями файловых проб; TLS/SSL, заголовки, порты; потолки `.env`/`.git`/`backup`/CORS; HSTS 5+3 и редирект HTTP→HTTPS; `filtered`-порт не даёт баллов; `supportsOldTls: null` и `daysLeft: NaN`; `tlsChecked === false` → `tls-not-checked`; `status ≥ 300` — «не проверено»; DMARC `p=none` и `pct < 100`; DNS timeout и `ENODATA`; cookie-флаги; `security.txt` (404, некорректный и оборванный 200); `200` без сигнатуры файла; `frame-ancestors` вместо XFO; клоакинг доходит до оценки через `buildReport`; заморозка `WEIGHTS`; WAF/CMS; OWASP-теги; сортировка находок.
 - `test/checks.test.js` — 19 тестов: `checkPort` с состояниями `open`/`refused`/`filtered`, дедлайн и отказ от нелитерального `connectIp`, `checkHeaders` (CSP, X-Frame-Options, cookie-флаги, дополнительные заголовки, CORS, weak-значения, IPv6 `Host`, несколько CSP-заголовков, CSP в `<meta>`, `frame-ancestors`, таймаут тела, same-origin редирект), `checkSSL` с точными кодами `HANDSHAKE_FAILED`/`TIMEOUT`/`ABORTED` и поведенческими проверками вместо замеров времени.
 - `test/dns-security.test.js` — 29 тестов: SPF (включая `redirect=`), DMARC (`reject`/`quarantine`/`none`, `pct`), CAA, IP/localhost, таймауты, DNS-ошибки и abort.
 - `test/header-analysis.test.js` — 42 теста: разбор `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, несколько одноимённых заголовков, CSP из `<meta>`, `frame-ancestors`, ACAO `*`, WAF (Cloudflare/Sucuri/Akamai), CMS (WordPress/Drupal/Joomla/Bitrix), отсутствие ReDoS на ~58 КБ `<meta>`-текста.
@@ -563,7 +564,7 @@ cybercheck/
 
 ## Roadmap
 
-- **2.3.0 (текущая)** — доказательные файловые пробы по сигнатурам, клоакинг, HSTS 5+3 с проверкой редиректа, CSP из `<meta>` и `frame-ancestors`, DMARC `pct`, состояния портов, устойчивость сокетов; 291 тест.
+- **2.3.0 (текущая)** — доказательные файловые пробы по сигнатурам, клоакинг, HSTS 5+3 с проверкой редиректа, CSP из `<meta>` и `frame-ancestors`, DMARC `pct`, состояния портов, устойчивость сокетов; 296 тестов.
 - **2.4.0** — глобальный rate-limit, verification домена, мультидомен в CORS, PostgreSQL, история, API-ключи, share-ссылки, тесты 503/504.
 - **Дальше** — дополнительные модули для пентеста: TLS-шифры и цепочка, cookie/CORS-политики, DNS/email, утечки, fingerprinting.
 
