@@ -2,7 +2,7 @@
 
 Документ отвечает на вопрос «как это устроено и почему именно так». Он не заменяет `README.md` (запуск, переменные, деплой) и `.github/SECURITY.md` (порядок сообщения об уязвимостях).
 
-**Кодовые ориентиры:** `src/server.js` (точка входа), `src/core/{config,server,net-guard,file-paths}.js`, `src/probes/{ports,tls,http-headers,dns-security,header-analysis,web-probes}.js`, `src/utils/{scan-helpers,rate-limit}.js`, `src/scoring.js`, `public/assets/js/{app.js,api/client.js,ui/*}`, `test/*.test.js` — около 13 700 строк вместе с CSS, разметкой, тестами и фронтенд-скриптами.
+**Кодовые ориентиры:** `src/server.js` (точка входа), `src/core/{config,server,net-guard,file-paths}.js`, `src/probes/{ports,tls,http-headers,dns-security,header-analysis,web-probes}.js`, `src/utils/{scan-helpers,rate-limit}.js`, `src/scoring.js`, `public/assets/js/{app.js,api/client.js,ui/*}`, `test/*.test.js` — около 16 600 строк вместе с CSS, разметкой, тестами и фронтенд-скриптами.
 
 > **Соглашение о ссылках.** Ссылки указывают на **функции и маркеры** в коде, а не на номера строк: номера устаревают от любой вставки, а имена — нет. Ищите `isPublicIp`, `resolvePublicIps`, `calculateScore`, `checkOldTls`, `createApp`, `startServer` или маркеры `Сначала валидация`, `Лимит частоты`, `Логируем ПОСЛЕ валидации`.
 
@@ -10,7 +10,7 @@
 
 ## 1. Назначение и границы
 
-**Что делает:** по запросу `hostname` проверяет доступность пяти портов (`80, 443, 22, 3306, 8080`), читает TLS-сертификат на найденном веб-порту, определяет версию TLS и поддержку TLS 1.0/1.1, наличие security-заголовков и cookie-флагов, SPF/DMARC/CAA, HEAD-пробы файлов утечки, `security.txt`, CORS `*` и WAF/CMS-фингерпринт, затем считает Risk Score. Возвращает JSON `{host, ports, ssl, headers, dns, files, securityTxt, fingerprint, score, grade, findings}`.
+**Что делает:** по запросу `hostname` проверяет доступность пяти портов (`80, 443, 22, 3306, 8080`), читает TLS-сертификат на найденном веб-порту, определяет версию TLS и поддержку TLS 1.0/1.1, наличие security-заголовков и cookie-флагов, SPF/DMARC/CAA, GET-пробы файлов утечки с проверкой сигнатур содержимого, `security.txt`, CORS `*`, WAF/CMS-фингерпринт, подтверждённый редирект HTTP→HTTPS и клоакинг, затем считает Risk Score. Возвращает JSON `{host, ports, ssl, headers, dns, files, securityTxt, fingerprint, score, grade, findings}`.
 
 **Чего не делает:**
 
@@ -19,11 +19,11 @@
 * не хранит результаты (ни БД, ни файлов, ни кэша);
 * не проверяет владение доменом: согласие подтверждается HMAC-токеном (см. §3.1), но это лишь признак того, что запрос пришёл со страницы сканера, а не проверка прав;
 * не сканирует пути и нестандартные порты (`https://site:8443/admin` проверяется как `https://site/` на 80/443/8080);
-* не разворачивает редиректы;
+* не переходит по редиректам на другой origin, схему или порт; same-origin редиректы (тот же хост, схема и порт) преследуются до 3 хопов;
 * не поддерживает zone-id у IPv6 (`fe80::1%eth0`) — обычные IPv6-литералы проверяются;
 * не проверяет шифры и цепочку сертификатов (только leaf-сертификат и версию протокола).
 
-Тело ответа не скачивается для обычных проверок заголовков; только `checkFingerprint()` читает не больше 64 КБ HTML для CMS-признаков и сразу уничтожает ответ после лимита.
+Тело ответа не сохраняется. Корневой `GET /` читается до 64 КБ ради CSP в `<meta http-equiv>`; `checkSensitiveFiles()` читает до 4 КБ каждого файла, `checkSecurityTxt()` — до 32 КБ, `checkFingerprint()` — до 64 КБ HTML. Прочитанное остаётся в памяти процесса и в ответ не попадает.
 
 ---
 
@@ -75,17 +75,17 @@
 | Модуль | Отвечает за | Не отвечает за |
 |---|---|---|
 | `core/config.js` | чтение и строгая проверка `PUBLIC_ORIGIN`, `PORT`, `TRUST_PROXY`, `DEMO_MODE`, `NODE_ENV` | маршруты, сеть |
-| `core/server.js` | сборка Express (`createApp`), страницы, CORS, лимит, валидация URL, выдача и проверка токена согласия (`issueConsentToken` / `verifyConsentToken`), маршрут `/api/scan`, 404, запуск (`startServer`) | сетевые проверки, расчёт оценки |
+| `core/server.js` | сборка Express (`createApp`), страницы, CORS, лимит, валидация URL, выдача и проверка токена согласия (`issueConsentToken` / `verifyConsentToken`), маршрут `/api/scan`, клоакинг и проверка редиректа HTTP→HTTPS, сборка HTTP-сервера (`createHttpServer` / `applySocketLimits`), запуск (`startServer`) | сетевые проверки, расчёт оценки |
 | `core/net-guard.js` | решение «можно ли подключаться к этому хосту» | подключение |
-| `core/file-paths.js` | единый список путей HEAD-проб и критических файлов | сами пробы |
-| `probes/ports.js` | TCP-проверка пяти портов, retry в бюджете этапа | TLS, HTTP |
-| `probes/tls.js` | TLS-сертификат, версия протокола, `checkOldTls` | заголовки, оценка |
-| `probes/http-headers.js` | заголовки ответа, `Set-Cookie`, CORS, retry | DNS, файлы |
-| `probes/header-analysis.js` | чистый разбор `Set-Cookie`, security-заголовков, ACAO `*`, WAF/CMS-эвристики | сеть, I/O |
-| `probes/dns-security.js` | SPF, DMARC, CAA через `node:dns/promises` | HTTP/TCP-подключение к цели |
-| `probes/web-probes.js` | HEAD-файлы, `security.txt`, фингерпринт; запросы только на `connectIp` | оценка, рендер |
+| `core/file-paths.js` | единый список путей файловых проб и критических файлов | сами пробы |
+| `probes/ports.js` | TCP-проверка пяти портов, классификация `open`/`refused`/`filtered`/`closed`, retry в бюджете этапа | TLS, HTTP |
+| `probes/tls.js` | TLS-сертификат, версия протокола, `checkOldTls` (`true`/`false`/`null`) | заголовки, оценка |
+| `probes/http-headers.js` | заголовки ответа, `Set-Cookie`, CORS, retry, same-origin редиректы, `status`/`location`, тело до 64 КБ для CSP в `<meta>` | DNS, файлы |
+| `probes/header-analysis.js` | чистый разбор `Set-Cookie`, security-заголовков (включая повторяющиеся), CSP из `<meta>` и `frame-ancestors`, ACAO `*`, WAF/CMS-эвристики | сеть, I/O |
+| `probes/dns-security.js` | SPF (включая `redirect=`), DMARC (включая `pct`), CAA через `node:dns/promises` | HTTP/TCP-подключение к цели |
+| `probes/web-probes.js` | GET-файлы по сигнатурам содержимого, `security.txt` до 32 КБ, фингерпринт; запросы только на `connectIp` | оценка, рендер |
 | `utils/scan-helpers.js` | `parseTarget`, `rateKey`, бюджеты/дедлайны, `selectWebPorts`, `buildReport` | сеть, Express |
-| `utils/rate-limit.js` | кулдаун, семафор, LRU-чистка | HTTP-ответы |
+| `utils/rate-limit.js` | кулдаун, семафор, лимит на сокет-адрес, LRU-чистка | HTTP-ответы |
 | `scoring.js` | Risk Score и находки по готовому отчёту | сеть, I/O, состояние |
 | `public/assets/js/api/client.js` | fetch, таймаут 65 с, нормализация ответа | DOM |
 | `public/assets/js/ui/*` | модель отчёта, рендер через DOM API, фильтры, печать, оглавление | решения о безопасности |
@@ -105,12 +105,12 @@
 | 7 | Валидация входа | `core/server.js` → маршрут `/api/scan` | `url` строкой, ≤ 2048; `consent === true`; `consentToken` — HMAC-SHA256 и TTL 15 мин (иначе 400) |
 | 8 | `new URL()` + схема | `utils/scan-helpers.js` → `parseTarget()` | только `http:`/`https:`; `ftp://` отклоняется |
 | 9 | Hostname | `utils/scan-helpers.js` → `normalizeHostname()`: нижний регистр, снятие trailing dot и скобок IPv6; длина ≤ 253, `net.isIP` + `domainRegex` | IDN/punycode, IPv4/IPv6; скобки возвращает только `hostHeaderFor()` для `Host` |
-| 10 | Семафор и лимит частоты | `utils/rate-limit.js` → `activeScans` (503), затем `CooldownGate.wait()` (429) | 503 и 429 до сети; 503 не сжигает 10 секунд |
+| 10 | Семафор и лимит частоты | `utils/rate-limit.js` → `activeScans` (503), затем `maxPerEdge` (429), затем `CooldownGate.wait()` (429) | 503 и 429 до сети; 503 не сжигает 10 секунд |
 | 11 | Лог | комментарий «Логируем ПОСЛЕ валидации» | после проверок — log injection невозможен |
 | 12 | `resolvePublicIps` | `core/net-guard.js` | решение об SSRF |
-| 13 | Порты → TLS → заголовки | `probes/ports.js`, `probes/tls.js`, `probes/http-headers.js`; fallback 443 → 80 → 8080, до трёх IP | скан |
-| 14 | DNS/email + HTTP-пробы | `probes/dns-security.js` + `probes/web-probes.js`; HEAD/GET только на `connectIp` | `dns`, `files`, `securityTxt`, `fingerprint` |
-| 15 | `buildReport` | `utils/scan-helpers.js` → `buildReport(host, ports, ssl, headers, extra)` | единая сборка + `calculateScore` |
+| 13 | Порты → TLS → заголовки | `probes/ports.js`, `probes/tls.js`, `probes/http-headers.js`; fallback 443 → 80 → 8080, до трёх IP; контрольный запрос другого `User-Agent` и проверка редиректа на 80 | скан, `cloaking`, `httpRedirectsToHttps` |
+| 14 | DNS/email + HTTP-пробы | `probes/dns-security.js` + `probes/web-probes.js`; GET-файлы, `security.txt` и фингерпринт только на `connectIp` | `dns`, `files`, `securityTxt`, `fingerprint` |
+| 15 | `buildReport` | `utils/scan-helpers.js` → `buildReport(host, ports, ssl, headers, extra)` | единая сборка + `calculateScore`; `cloaking`/`httpRedirectsToHttps` уходят в скоринг, но не в JSON |
 | 16 | Ответ / 404 / ошибка | `res.json`, error handler, JSON-404 | без внутренних деталей; `no-store` на `/` и `/api/*`, `revalidate` для legal/privacy |
 
 **Бюджет времени (худший сценарий):**
@@ -122,15 +122,19 @@
 | Перебор IP (до трёх) | до **9 с** |
 | TLS на один веб-порт (включая retry и `checkOldTls`) | до **5 с** |
 | Заголовки на один веб-порт (HTTPS/HTTP fallback + retry) | до **5 с** |
-| Один веб-порт целиком (TCP-этап + TLS + заголовки) | примерно **13 с** |
+| Контрольный запрос клоакинга (`CyberCheck/<version>`) | ещё до **5 с** |
+| Проверка редиректа HTTP→HTTPS на порту 80 | до **5 с** |
+| Один веб-порт целиком (TCP-этап + TLS + заголовки + клоакинг) | примерно **18 с** |
 | DNS/email (3 запроса параллельно) | до **3 с** |
-| HEAD-файлы (4 параллельно) + security.txt + fingerprint | до **4 с** |
-| Три веб-порта последовательно | до **39 с** + общие пробы |
+| GET-файлы (4 параллельно, до 4 КБ) + security.txt (до 32 КБ) + fingerprint | до **4 с** |
+| Три веб-порта последовательно | до **54 с** + до 5 с на редирект |
 | Фактический лимит скана (`withTimeout`) | **60 с** → 504 |
 
 Бюджеты этапов считаются от одного дедлайна: `stageDeadline()` ограничивает этап его таймаутом и общим дедлайном скана, а `timeoutFor()` перед каждой попыткой отдаёт только остаток. Поэтому «3 с» у портов и «5 с» у TLS/заголовков — это бюджет **всего этапа**, включая retry и fallback, а не отдельная попытка.
 
 На 80 порту TLS не проверяется (`{ hasSSL: false }`), на 8080 провал TLS трактуется как HTTP-порт (без `ssl-error`). Если TLS на порту не поднялся, HTTPS-попытка пропускается (`hasTls`), и заголовки всё равно укладываются в свой 5-секундный этап; исключение — порт 443: там HTTPS пробуется всегда (`hasTls || port === 443`), иначе медленный или неудачный хендшейк давал бы ложное «заголовки недоступны» на самом обычном TLS-сайте.
+
+Клоакинг проверяется только на том веб-порту, который дал успешные заголовки: второй запрос уходит с `CyberCheck/<version>`, сравниваются сигнатуры security-заголовков, cookie и CORS. Если контрольный запрос не удался, `cloaking` остаётся `false`, а не «не проверено». Редирект HTTP→HTTPS проверяется отдельным запросом на порт 80 только при живом TLS и открытом 80; во всех остальных случаях `httpRedirectsToHttps` — `null`.
 
 DNS-разрешение входит в те же 60 с: `withTimeout` запускается до `resolvePublicIps`, а его сигнал прерывает и DNS-ожидание. Клиентский таймаут — **65 с** (`TIMEOUT_MS` в `api/client.js`). Graceful shutdown — **40 с** (`core/server.js`), но Render может прислать SIGKILL раньше. Серверный лимит (60 с) сознательно меньше клиентского: 504 должен успеть дойти до браузера. Перебор трёх «молчащих» веб-портов вместе с пробами в 60 с может не уложиться — такая цель обрывается 504-й.
 
@@ -187,7 +191,7 @@ withConsentToken(html)          → issueConsentToken() на каждый отв
 1. **Резолв:** `dns.resolve4` и `dns.resolve6` параллельно (c-ares, не `getaddrinfo`) — все адреса.
 2. **Проверка всех:** `if (!ips.every(isPublicIp)) return []` — хотя бы один приватный → отказ целиком.
 3. **Подключение по проверенному IP:** `connectIp = resolvedIps[0]`, при неудаче перебираются до трёх адресов; hostname — только в `Host` и SNI.
-4. **Новые HTTP-пробы:** HEAD-файлы, `security.txt`, фингерпринт и корневой CORS-ответ используют тот же `connectIp`; `probes/web-probes.js` не вызывает `fetch(hostname)` и не резолвит имя повторно. SPF/DMARC/CAA — это запросы к DNS-резолверу, а не сокет на цель, поэтому `connectIp` к ним не применяется.
+4. **Новые HTTP-пробы:** GET-файлы, `security.txt`, фингерпринт и корневой ответ используют тот же `connectIp`; same-origin редиректы повторяются тем же сокетом и не требуют нового резолва, а переход на другой origin/порт не выполняется. `probes/web-probes.js` не вызывает `fetch(hostname)` и не резолвит имя повторно. SPF/DMARC/CAA — это запросы к DNS-резолверу, а не сокет на цель, поэтому `connectIp` к ним не применяется.
 
 **Почему закрыт DNS rebinding:** между проверкой и подключением нет повторного резолва. Даже если A-запись сменится, соединение пойдёт на проверенный IP.
 
@@ -215,14 +219,15 @@ DEMO_MODE === "true"  И  NODE_ENV === "development"   →  работаем
 ## 7. Лимит частоты
 
 ```
-clientIdentity(req) → IP сокета, при TRUST_PROXY>0 — правый элемент X-Forwarded-For
-                → rateKey() → IPv4-mapped → IPv4
-                → IPv6 → /64
-                → невалидный → "unknown"
+clientIdentity(req) → socketIp / правый элемент X-Forwarded-For
+                → rateKey() → IPv4-mapped → IPv4 → IPv6 /64 → невалидный "unknown"
+                → clientKey (кулдаун, maxPerKey) и edgeKey (maxPerEdge = 2)
 CooldownGate.entries: Map<key, timestamp>   TTL 10 с, чистка раз в 30 с, MAX_KEYS 10 000, LRU
 ```
 
 IP клиента определяет `clientIdentity()`: при `TRUST_PROXY=0` берётся адрес сокета, а `X-Forwarded-For` игнорируется целиком; при `>0` — **правый** элемент заголовка (его дописал наш прокси), а левые, которые контролирует клиент, не используются. Невалидный адрес из заголовка откатывается к IP сокета, а не в общий бакет.
+
+**Лимит на сокет-адрес.** Кроме `clientKey` считается `edgeKey` — адрес сокета: не больше **2** одновременных сканов с одного edge-адреса (`maxPerEdge`). Это закрывает исчерпание пула подменным `X-Forwarded-For` при прямом доступе, но за общим прокси (Render) адрес сокета — это адрес edge, поэтому там лимит фактически ограничивает общую параллельность двумя сканами. Третий одновременный запрос получает `429` с `Retry-After: 10`.
 
 Лимит списывается **после** валидации URL и hostname. Невалидные имена окно не занимают; невалидный IP попадает в общий бакет `"unknown"`; IPv6 нормализуется до `/64`, чтобы смена младших 64 бит не давала нового окна.
 
@@ -232,13 +237,16 @@ IP клиента определяет `clientIdentity()`: при `TRUST_PROXY=0
 * не глобальный: N реплик = N лимитов;
 * не ограничивает запросы, отвалившиеся на валидации;
 * уязвим к неверному `TRUST_PROXY`;
+* за общим прокси `maxPerEdge` считает один edge-адрес на всех клиентов — фактическая параллельность 2;
 * списывается до DNS-резолва (опечатка стоит 10 с).
 
 Для публичного запуска нужен внешний лимит (`express-rate-limit` + Redis) — семафор ниже остаётся последней линией.
 
-**Семафор параллельных сканов.** Отдельно от лимита частоты: `activeScans` в памяти процесса, потолок `MAX_CONCURRENT_SCANS = 25`. Сверх потолка — `503 { error: "Сервис занят…" }` с `Retry-After: 60`. Проверка потолка стоит **до** списания cooldown: ответ 503 не блокирует клиента на 10 секунд. Счётчик увеличивается один раз и уменьшается в `finally`, то есть на любом исходе.
+**Семафор параллельных сканов.** Отдельно от лимита частоты: `activeScans` в памяти процесса, потолок `MAX_CONCURRENT_SCANS = 25`. Сверх потолка — `503 { error: "Сервис занят…" }` с `Retry-After: 60`. Порядок проверок в `attempt(key, edgeKey)`: общий семафор (503) → `maxPerEdge` (429) → кулдаун (429) → `maxPerKey` (429). Проверка потолка стоит **до** списания cooldown: ответ 503 не блокирует клиента на 10 секунд. Счётчик увеличивается один раз и уменьшается в `finally`, то есть на любом исходе.
 
 Обрыв соединения клиентом не освобождает слот «вхолостую»: на `res.on("close")` срабатывает собственный `AbortController`, его сигнал объединяется с внутренним таймером через `AbortSignal.any`, и `checkPort`/`checkSSL`/`checkHeaders`/`web-probes` прекращают работу сразу, а не через 60 с. DNS-ожидание тоже прерывается по этому сигналу. Это защита от исчерпания дескрипторов, а не от нагрузки как таковой: 25 сканов × (до 3 IP × 5 портов + TLS + probe TLS 1.0/1.1 + HTTP-пробы с retry) даёт несколько сотен одновременных сокетов к целям. Лимит на IP от этого не спасает — он обходится сменой адреса.
+
+**Лимиты сокетов.** `applySocketLimits()` ставит `headersTimeout = 10 с`, `requestTimeout = 15 с`, `keepAliveTimeout = 5 с`, `maxConnections = 4096`, `maxRequestsPerSocket = 100`. При `trustProxy = 0` на `connection` считается число открытых сокетов с одного IP: 64-й и последующие уничтожаются; за прокси этот лимит выключен, потому что у всех клиентов один адрес edge.
 
 ---
 
@@ -287,11 +295,13 @@ report = {
   ports: [{ port: number, status: "open" }],
   ssl: {
     hasSSL: boolean, valid?: boolean, daysLeft?: number,
-    supportsOldTls?: boolean, tlsConfirmed?: boolean,
+    supportsOldTls?: boolean | null, tlsConfirmed?: boolean,
     error?: "NO_WEB_PORT" | "HANDSHAKE_FAILED" | "CERT_PARSE_FAILED" | string
   },
   headers: { error?: true } | {
+    status?: number, location?: string | null,
     hsts, csp, xframe, xcontent: boolean,
+    cspFrameAncestors?: boolean,
     hstsState, cspState, xframeState, xcontentState: "ok" | "weak" | "missing",
     referrerPolicy?, permissionsPolicy?, coop?, corsWildcard?: boolean,
     referrerPolicyState?, permissionsPolicyState?, coopState?,
@@ -306,7 +316,7 @@ report = {
   dns: {
     applicable: boolean,
     spf: { present, record, multiple, weak, error },
-    dmarc: { present, record, policy, strict, weak, multiple, error },
+    dmarc: { present, record, policy, strict, weak, multiple, pct, partial, pctInvalid, error },
     caa: { present, records, restrictive, error }
   },
   files: {
@@ -315,10 +325,12 @@ report = {
     blocked?: string[],
     results?: [{ path, status, exposed, blocked, error }]
   },
-  securityTxt: { present, status, blocked, error },
+  securityTxt: { present, status, blocked, error, truncated },
   fingerprint: { waf?: { name }, cms?: { name }, status, error, bodyBytes }
 }
 ```
+
+`calculateScore()` принимает ещё два необязательных входа, которых нет в JSON-ответе: `cloaking` (`boolean`) и `httpRedirectsToHttps` (`true` / `false` / `null`). `buildReport()` передаёт их из оркестратора в скоринг, но в собранный отчёт не включает — наружу они видны только как находки `cloaking-detected` и `no-http-redirect`.
 
 `Finding`:
 
@@ -342,7 +354,8 @@ report = {
 |---|---:|
 | Валидный TLS (`hasSSL && valid`) | 12 |
 | `daysLeft > 30` | 3 |
-| HSTS (только при валидном TLS) | 8 |
+| HSTS-заголовок (только при валидном TLS) | 5 |
+| Подтверждённый редирект HTTP→HTTPS (только при валидном TLS) | 3 |
 | CSP | 10 |
 | `X-Frame-Options` | 6 |
 | `X-Content-Type-Options` | 6 |
@@ -355,7 +368,7 @@ report = {
 | Cookie HttpOnly | 2 |
 | Cookie SameSite | 1 |
 | SPF с рабочим `all` (`-all`/`~all`) | 4 |
-| DMARC strict (`quarantine`/`reject`) | 3 |
+| DMARC strict (`quarantine`/`reject`; при `pct < 100` — 2 и `dmarc-partial`) | 3 |
 | CAA | 2 |
 | Нет открытых 22/3306 | 10 |
 | Порт 8080 закрыт | 2 |
@@ -363,7 +376,7 @@ report = {
 | `/.git/config` не открыт | 4 |
 | `/backup.zip` не открыт | 2 |
 | `/.DS_Store` не открыт | 1 |
-| `security.txt` не отсутствует (нет уверенного `404`) | 2 |
+| `security.txt` найден или не проверен (не `404` и не некорректный `200`) | 2 |
 | **Итого** | **100** |
 
 Поддержка TLS 1.0/1.1 — отдельный штраф **−10** сверх суммы. Потолки применяются после суммирования:
@@ -374,8 +387,8 @@ report = {
 | `files.critical`/`exposed` содержит `/.git/config` | 50 |
 | `files.critical`/`exposed` содержит `/backup.zip` | 50 |
 | `headers.corsWildcard` | 60 |
-| `headers.error` | 60 |
-| `ssl.error` | 60 |
+| `headers.error` или `headers.status >= 300` | 60 |
+| `ssl.error` (кроме `tlsConfirmed === true`) | 60 |
 | `!ssl.hasSSL && !ssl.error` | 30 |
 | `ssl.hasSSL && !ssl.valid` | 40 |
 | открыт 3306 | 70 |
@@ -383,27 +396,32 @@ report = {
 | `hasSSL && daysLeft <= 7` | 90 |
 | есть находка `medium`/`high` | 90 |
 
+Три балла за редирект начисляются, если редирект подтверждён (`true`) или порт 80 не проверялся (`null`); снимаются только при `false`. `cloaking-detected` — `high` с `weight: 0`, поэтому включает общий потолок 90 через правило «есть находка `medium`/`high`».
+
 Пороги: A ≥ **95**, B ≥ 75, C ≥ 60, D ≥ 40, E ≥ 20, F < 20.
 
 Потолок 90 для не-`low` находок и есть причина, по которой A = 95: любая серьёзная находка опускает результат до B.
 
 ### 10.3. Краевые случаи
 
-* **`headers.error`** — баллы за HSTS/CSP/XFO/XCTO/`Server`/доп. заголовки/cookie/CORS не начисляются; находка `headers-unavailable`; потолок 60.
+* **`headers.error` / `headers.status >= 300`** — баллы за HSTS/CSP/XFO/XCTO/`Server`/доп. заголовки/cookie/CORS не начисляются; находка `headers-unavailable` (ошибка) или `headers-not-checked` (редирект/челлендж WAF); потолок 60.
 * **`ssl.error`** — TLS-хендшейк не удался (таймаут, reset, сертификат не разобран). Находка `ssl-error` уровня `medium`, потолок 60; `no-ssl` не создаётся, потому что отсутствие TLS не доказано. На 80 порту TLS не проверяется, на 8080 ошибка TLS трактуется как HTTP, а не как ошибка.
 * **Нет TLS** — только при `hasSSL: false` **без** `error`: HSTS-баллы не начисляются (`h.hsts && hasSSL`); находка `no-hsts` не создаётся, потому что без HTTPS она была бы шумом. CSP/XFO/XCTO/`Server`/доп. заголовки/cookie считаются, но потолок 30 даёт E.
 * **`NO_WEB_PORT`** — ни один веб-порт не открыт: `files/securityTxt/fingerprint: null`, находка `tls-not-checked` с `weight: 0`, потолок 30 не применяется, баллы за непроверенные секции начисляются. Это отличается от «HTTPS не настроен».
 * **`tlsConfirmed`** — заголовки пришли по HTTPS, но сертификат не прочитан: `ssl-unverified` (`medium`), баллы TLS не начисляются, потолок 60 не применяется — сайт реально работает по HTTPS.
-* **TLS 1.0/1.1** — `supportsOldTls` отнимает 10 и включает потолок 85, поэтому A при старом TLS невозможен: максимум B.
+* **TLS 1.0/1.1** — `supportsOldTls === true` отнимает 10 и включает потолок 85, поэтому A при старом TLS невозможен: максимум B. `null` — «не проверено»: баллы не начисляются и не штрафуются, создаётся `old-tls-unchecked` (`low`, `weight: 0`).
 * **Просроченный сертификат** — `hasSSL: true`, `valid: false` → `bad-ssl`, потолок 40 (D).
 * **`daysLeft` отсутствует или не число** — 3 балла не начисляются, находка не создаётся.
 * **`Server` без номера версии** — `cloudflare`, `github.com`, `unknown`, `nginx`, `AmazonS3` версии не раскрывают: находки нет, 3 балла начисляются. Замечание `server-exposed` появляется, если в значении есть цифра в начале или после пробела/`/`: `nginx/1.18.0`, `Apache/2.4.49`, `Microsoft-IIS/10.0`, `nginx/2`. Регулярка — `/(?:^|[\s/])\d+(?:\.\d+)*/`; значение без разделителя (`AmazonS3`) версией не считается.
 * **Сертификат истекает в течение 30 дней** — находка `ssl-expiring` уровня `low`, 3 балла не начисляются. При `daysLeft <= 7` дополнительно включается потолок 90 (B); при 8–30 днях сайт с идеальной гигиеной остаётся A (97).
-* **Порт 22/3306** — отдельная находка на каждый, `high`, вес 10; 3306 включает потолок 70.
+* **Порт 22/3306** — одна находка с полным списком портов, `high`, вес 10; 3306 включает потолок 70. Если в `ports` попал `filtered`, 10 баллов «за отсутствие опасных портов» не начисляются и создаётся `ports-unverified` (`low`, `weight: 0`); оркестратор передаёт в отчёт только `open`, поэтому через API эта ветка сейчас не наблюдается.
 * **DNS-ошибки** — `ENODATA` считается отсутствием записи для всех секций; `ENOTFOUND` — отсутствием только для `_dmarc` (поддомен), а для apex SPF/CAA это рассинхрон резолвера и баллы не отнимаются; `TIMEOUT`/`ESERVFAIL`/`ABORTED` и `applicable:false` баллы не отнимают и находку не создают.
-* **Открытые файлы** — `200` с не-HTML содержимым на `/.env`/`/.git/config`/`/backup.zip` даёт потолок 40/50/50; `200 text/html` (SPA/catch-all) считается заглушкой и не экспозицией; `403`, `404`, `301` и сетевые ошибки экспозицией не считаются. За `403`, ошибку пробы, редирект и SPA-заглушку баллы не начисляются (отсутствие файла не доказано), подтверждённый `404` — начисляются. `files.critical` и `files.exposed` поддерживаются.
-* **`security.txt`** — 2 балла, если файл найден или проверка не дала уверенного ответа; `404` создаёт `security-txt-missing`, а `200` без `Contact`/`text/plain` — `security-txt-invalid`. `403`, сетевой сбой, редирект и прочие статусы нейтральны.
-* **Неполные данные** — `files`/`securityTxt: null` (например, нет веб-порта) не считаются экспозицией, баллы за них начисляются; `headers.error` при этом ограничивает итог 60. Необязательные поля заголовков со значением `undefined` означают «не проверялось» и баллы не отнимают.
+* **Открытые файлы** — экспозиция подтверждается только сигнатурой содержимого: `KEY=VALUE` для `/.env`, `[core]` для `/.git/config`, ZIP-магия для `/backup.zip`, магия формата для `/.DS_Store`. `200` без сигнатуры даёт `error: "NO_SIGNATURE"` и не считается ни открытием, ни закрытием: баллы за путь не начисляются, находки нет. `403`, ошибка пробы, редирект и `unknown`-статус — тоже «не проверено»; подтверждённый `404/410` — отсутствие и баллы. `files.critical` и `files.exposed` поддерживаются.
+* **`security.txt`** — 2 балла, если файл найден или проверка не дала уверенного ответа; `404` создаёт `security-txt-missing`, а `200` без `Contact`/`text/plain` — `security-txt-invalid`. `403`, сетевой сбой, редирект, `TRUNCATED` (тело обрезано на 32 КБ) и прочие статусы нейтральны: 2 балла начисляются, находки нет.
+* **Клоакинг** — `cloaking: true` даёт `cloaking-detected` (`high`, `weight: 0`) и общий потолок 90; баллы не снимает. Сравнение — по сигнатуре заголовков/cookie/CORS; если контрольный запрос не удался, флаг остаётся `false`.
+* **Редирект HTTP→HTTPS** — при `h.hsts && hasSSL`: 5 баллов за заголовок; 3 балла, если `httpRedirectsToHttps` — `true` или `null`; при `false` — находка `no-http-redirect` (`high`, вес 3).
+* **`frame-ancestors`** — засчитывается вместо `X-Frame-Options`: `h.xframe || h.cspFrameAncestors` даёт 6 баллов; `frame-ancestors` из `<meta>` не учитывается (браузер его игнорирует).
+* **Неполные данные** — `files`/`securityTxt: null` (например, нет веб-порта) не считаются экспозицией, баллы за них начисляются; `headers.error`/`headers.status >= 300` при этом ограничивают итог 60. Необязательные поля заголовков со значением `undefined` означают «не проверялось» и баллы не отнимают.
 * **CORS `*`** — находка `cors-wildcard` high и потолок 60.
 * **Cookie** — при отсутствии cookie баллы начисляются; `Secure` не штрафуется без HTTPS; `HttpOnly`/`SameSite` проверяются по `cookieSummary`.
 * **Fingerprint** — WAF/CMS создают информационные находки с `weight: 0`, на score не влияют.
@@ -411,17 +429,21 @@ report = {
 
 ### 10.4. Тесты
 
-`test/scoring.test.js` — **47 тестов**:
+`test/scoring.test.js` — **66 тестов**:
 
-* сумма положительных весов ровно 100 и `WEIGHTS`;
+* сумма положительных весов ровно 100, `WEIGHTS` и `FILE_CHECKS` заморожены;
 * идеальный отчёт → 100/A без находок;
-* отсутствие CSP/HSTS/XCTO, просроченный и отсутствующий TLS, `ssl.error`, `tlsConfirmed`, истекающий сертификат;
-* опасные порты 3306/8080, `Server` с версией и без;
-* потолки `/.env` (40), `/.git/config` (50), `/backup.zip` (50), CORS `*` (60);
-* DMARC `p=none`, DNS-таймаут (баллы не теряются) и `ENODATA` (находки);
+* отсутствие CSP/HSTS/XCTO, просроченный и отсутствующий TLS, `ssl.error`, `tlsConfirmed`, истекающий сертификат, `daysLeft: NaN`;
+* HSTS 5+3 и редирект HTTP→HTTPS (`true`/`false`/`null`);
+* опасные порты 3306/8080, `filtered`-порт без баллов, `Server` с версией и без;
+* потолки `/.env` (40), `/.git/config` (50), `/backup.zip` (50), CORS `*` (60); `headers.status >= 300` — «не проверено»;
+* DMARC `p=none`, `pct < 100`, DNS-таймаут (баллы не теряются) и `ENODATA` (находки);
 * несколько SPF/DMARC-записей, слабый SPF, CAA только с iodef;
 * cookie без Secure/HttpOnly/SameSite, SameSite=None без Secure;
-* `security.txt` (404, некорректный 200), `files:null`, проваленные HEAD-пробы, `dns.applicable:false`;
+* `supportsOldTls: null` → `old-tls-unchecked`;
+* `security.txt` (404, некорректный и оборванный 200), `files:null`, проваленные пробы, `200` без сигнатуры, `dns.applicable:false`;
+* `frame-ancestors` вместо `X-Frame-Options`;
+* клоакинг доходит до оценки через `buildReport`;
 * WAF/CMS с `weight: 0`;
 * `NO_WEB_PORT` → `tls-not-checked` без потолка 30;
 * weak-значения security-заголовков;
@@ -430,12 +452,13 @@ report = {
 ### 10.5. Известные отклонения
 
 * **A требует 95+.** Потолок 90 для находок `medium`/`high` означает: сайт без `X-Content-Type-Options` получает 90/B, а не A, хотя в отчёте рядом стоит красное «НЕТ». Это осознанная калибровка — буква A должна означать «придраться не к чему»; поэтому старый TLS ограничен 85, а любая находка тяжелее `low` — 90.
-* **`headers.error`** — баллы за заголовки/cookie/CORS не начисляются; потолок 60 остаётся верхней границей.
+* **`headers.error` / `headers.status >= 300`** — баллы за заголовки/cookie/CORS не начисляются; потолок 60 остаётся верхней границей.
 * **`ssl-expiring` — low.** При 8–30 днях она не включает потолок 90 и меняет только 3 балла (A = 97); при `daysLeft <= 7` включается потолок 90 (B).
 * **Мажорная версия ловится** (`nginx/2`): регулярка ищет цифру в начале или после пробела/`/`, поэтому `AmazonS3` и `github.com` остаются без находки.
 * **`ssl-error` не равен `no-ssl`.** Отчёт с `error` честно говорит «не удалось проверить TLS» и не выдаёт отсутствие сертификата за факт; цена — потолок 60 вместо 30.
 * **Fingerprint — информация.** WAF/CMS имеют `weight: 0` и не меняют score; это эвристика, а не доказательство наличия/отсутствия WAF.
-* **`supportsOldTls` — детект, не доказательство.** Ложное отрицание возможно на сборках с запретом TLS 1.0/1.1.
+* **`supportsOldTls` — детект, не доказательство.** Ложное отрицание возможно на сборках с запретом TLS 1.0/1.1; `null` означает «не успели проверить», а не «отключено».
+* **Клоакинг — эвристика.** Сравниваются только security-заголовки, cookie и CORS; одинаковый набор при разном теле или контенте не ловится. Ошибка контрольного запроса трактуется как отсутствие клоакинга.
 
 ---
 
@@ -448,7 +471,7 @@ report = {
 | hostname цели | `console.log` | то же |
 | Результаты скана | только HTTP-ответ | не сохраняются |
 | Сертификаты, заголовки | только ответ | не сохраняются |
-| Счётчик активных сканов | `activeScans` (память) | только на время скана |
+| Счётчик активных сканов | `activeScans`, `activeByKey`, `activeByEdge` (память) | только на время скана |
 | Токены согласия | не хранятся: проверяется подпись и TTL | 15 минут после выдачи |
 | Секрет `CONSENT_SECRET` | переменная окружения процесса | на всё время работы процесса |
 
@@ -458,22 +481,23 @@ report = {
 
 ## 12. Тестирование
 
-Покрыто (**215 тестов** в 12 файлах):
+Покрыто (**291 тест** в 13 файлах):
 
 * `test/net-guard.test.js` — 9 тестов: 20 адресов на блокировку (mapped, NAT64, `::/96`, `::7f00:1`), 4 на разрешение, 5 мусорных на fail-closed, инъекция резолвера, смешанный ответ, таймаут.
-* `test/scoring.test.js` — 47 тестов (см. §10.4), включая веса 100, `FILE_CHECKS`, потолки файлов/CORS, DNS-ошибки, cookie, `NO_WEB_PORT`, `security-txt-invalid` и OWASP.
-* `test/checks.test.js` — 12 тестов: `checkPort` на закрытом и открытом порту, дедлайн, отказ от нелитерального `connectIp`, `checkHeaders` с cookie/доп. заголовками/CORS/weak-значениями/IPv6-Host, `checkSSL` с `HANDSHAKE_FAILED`, самоподписанным сертификатом и отменённым сигналом.
-* `test/dns-security.test.js` — 24 теста: SPF, DMARC (`reject`/`quarantine`/`none`), CAA, IP/localhost, таймауты, DNS-ошибки, abort.
-* `test/header-analysis.test.js` — 31 тест: `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, ACAO `*`, WAF и CMS, отсутствие ReDoS на ~58 КБ `<meta>`-текста.
-* `test/web-probes.test.js` — 12 тестов: HEAD-файлы (200/403/404/301), `security.txt`, фингерпринт, Host/connectIp, таймаут, abort, частичное тело.
-* `test/scan-helpers.test.js` — 22 теста: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath` (включая NTFS ADS и обратные слэши), `isLiteralIp`.
-* `test/rate-limit.test.js` — 10 тестов: кулдаун, LRU, sweep, семафор, лишний `finish`, таймер.
+* `test/scoring.test.js` — 66 тестов (см. §10.4), включая веса 100, `FILE_CHECKS`, потолки файлов/CORS, HSTS 5+3, `filtered`-порт, `supportsOldTls: null`, DMARC `pct`, клоакинг через `buildReport`, `NO_WEB_PORT`, `security-txt-invalid` и OWASP.
+* `test/checks.test.js` — 19 тестов: `checkPort` с `open`/`refused`/`filtered`, дедлайн, отказ от нелитерального `connectIp`, `checkHeaders` с cookie/доп. заголовками/CORS/weak-значениями/IPv6-Host, несколько CSP-заголовков, CSP в `<meta>`, `frame-ancestors`, таймаут тела и same-origin редирект, `checkSSL` с точными кодами `HANDSHAKE_FAILED`/`TIMEOUT`/`ABORTED`, самоподписанным сертификатом и отменой.
+* `test/dns-security.test.js` — 29 тестов: SPF (включая `redirect=`), DMARC (`reject`/`quarantine`/`none`, `pct`), CAA, IP/localhost, таймауты, DNS-ошибки, abort.
+* `test/header-analysis.test.js` — 42 теста: `Set-Cookie`, сводка флагов, Referrer-Policy/Permissions-Policy/COOP, CSP с permissive-источниками, несколько одноимённых заголовков, CSP из `<meta>`, `frame-ancestors`, ACAO `*`, WAF и CMS, отсутствие ReDoS на ~58 КБ `<meta>`-текста.
+* `test/web-probes.test.js` — 20 тестов: GET-файлы по сигнатурам (200/403/404/301), `security.txt` (включая обрезку тела), фингерпринт, браузерный `User-Agent`, Host/connectIp, same-origin и запрет cross-origin редиректов, лимит в три хопа, таймаут, abort, частичное тело.
+* `test/scan-helpers.test.js` — 23 теста: `parseTarget`, `normalizeHostname`, `hostHeaderFor`, `rateKey`, бюджеты, `selectWebPorts`, `withCriticalFiles`, `buildReport`, `isHtmlRequestPath` (включая NTFS ADS и обратные слэши), `isLiteralIp`.
+* `test/rate-limit.test.js` — 17 тестов: кулдаун, LRU, sweep, семафор, `maxPerEdge` и его освобождение, лишний `finish`, таймер.
 * `test/report-model.test.js` — 25 тестов: `sanitizeText`, критичность путей, `filesNote`, `tlsNotice`, `caaState`, `secureContextState`, склонения, имя отчёта, `buildShareText`.
-* `test/frontend-contract.test.js` — 7 тестов: нормализация `owasp`/`dns`/`files`/`securityTxt`/`fingerprint` в `api/client.js`; мусорные `score`/`grade`/`ports`; сетевые ошибки; SVG-иконка подсказки; ENOTFOUND для SPF; наличие карточек и `finding__owasp` в `ui/render-result.js`; отсутствие `.innerHTML` и экспорты.
-* `test/server.test.js` — 4 теста: запуск с `TRUST_PROXY=0`; ключ лимита берётся из реального IP прокси, а не из подставленного `X-Forwarded-For`; при `trustProxy=0` заголовок игнорируется полностью; скан с поддельным токеном согласия отклоняется.
-* `test/server-http.test.js` — 12 тестов: `/healthz`, HTML с `BASE_URL` и security-заголовками, защита от шаблонов в статике, редирект, 400/415/413, 404 для неизвестного `/api/scan/*`, 429-кулдаун, CORS, JSON-404.
+* `test/frontend-contract.test.js` — 12 тестов: поведенческий контракт `scanTarget`, реальный `import()` модулей и экспорты, нормализация `owasp`/новых полей, мусорные `score`/`grade`/`ports`, сетевые ошибки, SVG-иконка подсказки, ENOTFOUND для SPF, решения CAA/TLS, отсутствие HTML-синков и инлайн-скриптов.
+* `test/render-dom.test.js` — 1 тест: исполняемый DOM-стенд рендерит отчёт с XSS-payload во всех полях и проверяет, что HTML-синки не вызывались, а payload остался текстом.
+* `test/server.test.js` — 11 тестов: запуск с `TRUST_PROXY=0` в процессе; ключ лимита берётся из реального IP прокси, а не из подставленного `X-Forwarded-For`; при `trustProxy=0` заголовок игнорируется; скан с поддельным токеном согласия отклоняется; валидация `NODE_ENV`/`PORT`/`TRUST_PROXY`; `redirectsToHttps`.
+* `test/server-http.test.js` — 17 тестов: `/healthz`, HTML с `BASE_URL` и security-заголовками, защита от шаблонов в статике, редирект, 400/415/413, 404 для неизвестного `/api/scan/*`, 429-кулдаун, CORS, JSON-404, точные директивы CSP и `upgrade-insecure-requests`, таймауты и потолки сокетов, лимит 64 сокета на IP.
 
-`npm test` запускает все 12 файлов, CI — тот же набор плюс рекурсивный разбор модулей фронтенда через `vm.SourceTextModule`.
+`npm test` запускает `scripts/run-tests.js`: он подключает все файлы в одном процессе (без `node --test` на каждый файл, который в песочницах падает с `spawn EPERM`). Классический прогон с изоляцией — `npm run test:isolated`. CI — тот же набор плюс рекурсивный разбор модулей фронтенда через `vm.SourceTextModule` и настоящий `import()` экспортов `api/client.js`.
 
 Не покрыто:
 
@@ -483,10 +507,10 @@ report = {
 | `checkHeaders` retry | требует сети/сокетов | локальный сервер или инъекция |
 | `checkOldTls`/`supportsOldTls` | требует TLS-стенда | `tls.createServer({minVersion:"TLSv1"})` |
 | 503/504 | нужны 25 параллельных сканов или зависший TLS | инъекция лимитера и таймаута |
-| Рендер/печать/копирование | нет DOM-тестов | jsdom/happy-dom + мок Clipboard API |
+| Печать и копирование | нет тестов `window.print()` и Clipboard API | мок `print`/`navigator.clipboard` |
 | `server-http` не проверяет `/assets/screenshots/og-cover.png` | статика без MIME-контракта | отдельный тест `Content-Type` |
 
-`createApp()` уже экспортируется, поэтому HTTP-слой можно перевести на supertest без запуска процесса.
+`createApp()`, `createHttpServer()` и `applySocketLimits()` экспортируются, поэтому HTTP-слой и лимиты сокетов тестируются в процессе без запуска сервера.
 
 ---
 
@@ -495,19 +519,21 @@ report = {
 | Долг | Влияние |
 |---|---|
 | Маршрут `/api/scan` остаётся внутри `createApp()` | логика скана и HTTP-ответа в одном файле; оркестрацию нельзя протестировать по частям |
-| `startServer()` вешает `process.on` и `listen()` | импорт `core/server.js` безопасен, но запуск всё ещё неявный для тестов |
+| `startServer()` вешает `process.on` и `listen()` | есть `installSignalHandlers: false` для тестов, но запуск всё ещё неявный |
+| `maxPerEdge = 2` за общим прокси | на Render все клиенты делят адрес edge: фактическая параллельность 2, третий получает `429` | считать лимит по реальному IP или поднять `maxPerEdge` для прокси-режима |
 | Лимит после валидации | поток невалидных запросов не ограничен |
 | Семафор считает только свой процесс | при нескольких репликах потолок 25 умножается на их число |
-| Лимит скана 60 с, а три веб-порта + пробы последовательно могут занять больше | цель с тремя «молчащими» веб-портами обрывается 504; один порт (34,5 с) укладывается |
-| Новые пробы добавляют до 4 с (HEAD/security.txt/fingerprint), DNS-записи — до 3 с, DNS-разрешение — до 5 с | на медленной цели 60 с может не хватить; таймауты 2–5 с ограничивают вклад |
-| HEAD-проба отсекает `200 text/html` как SPA-заглушку, но catch-all с другим Content-Type всё ещё может дать false positive | нужен контроль содержимого/сигнатуры, а не только MIME |
+| Лимит скана 60 с, а три веб-порта + пробы последовательно могут занять больше | цель с тремя «молчащими» веб-портами обрывается 504; один порт (~18 с) укладывается |
+| Новые пробы добавляют до 4 с (GET-файлы/security.txt/fingerprint), клоакинг и проверка редиректа — до 10 с, DNS-записи — до 3 с, DNS-разрешение — до 5 с | на медленной цели 60 с может не хватить; таймауты 2–5 с ограничивают вклад |
+| Сигнатуры файлов — эвристика (`KEY=VALUE`, `[core]`, ZIP, DS_Store) | файл с нестандартным содержимым даёт `NO_SIGNATURE` и не подтверждает ни открытие, ни закрытие |
+| `ports-unverified` недостижим через API | `buildReport()` получает только открытые порты, поэтому `filtered` в отчёт не попадает | передавать все состояния или убрать мёртвую ветку |
 | DNS/email проверяется по точному hostname | для `www` DMARC apex `_dmarc.example.com` не подставляется |
 | CORS проверяется только по корню | отдельные API-эндпоинты не обходятся |
 | WAF/CMS-фингерпринт — эвристика | кастомные сборки и сжатые ответы могут не определиться |
 | `checkOldTls` вызывается после `socket.end()`; `socket.setTimeout(0)` в колбэке `connect` снимает 5-секундный таймаут | race с таймаутом снят, но probe добавляет до 3 с к времени скана и зависит от OpenSSL |
 | TLS-проба на 8080 остаётся: ошибка там подавляется, но лишний ClientHello уходит | небольшой шум в логах цели; 80 уже исключён |
 | В ответе нет поля `ip` | при нескольких A-записях непонятно, какой узел проверен |
-| Редиректы не разворачиваются | заголовки могут быть с 301-заглушки |
+| Same-origin редиректы преследуются до 3 хопов; cross-origin и смена схемы/порта — нет | заголовки могут быть с 301-заглушки, а `http://` → `https://` не разворачивается |
 | Express 4 | не ловит rejected promise |
 | Токен согласия не привязан к сессии, IP или цели | один токен переиспользуется все 15 минут; отличить двух клиентов с одной страницы нельзя |
 | Нет истории/БД | stateless, нет share/«до/после»/API-ключей |
@@ -521,13 +547,14 @@ report = {
 | Угроза | Контроль | Остаток |
 |---|---|---|
 | SSRF к внутренней сети/metadata | резолв + проверка всех IP + подключение по IP | NAT64 с нестандартным префиксом |
-| SSRF через новые HEAD/GET-пробы | `probes/web-probes.js` всегда использует `connectIp`, Host/SNI — только hostname | — |
+| SSRF через файловые пробы | `probes/web-probes.js` всегда использует `connectIp`, Host/SNI — только hostname; same-origin редиректы не меняют сокет | — |
 | DNS rebinding | подключение по проверенному IP | — |
 | XSS через данные цели | `textContent`/DOM API, строгий CSP | — |
 | Утечка стека | error handler, JSON без деталей | `next(err)` при `headersSent` |
 | Подмена `X-Forwarded-For` | правый элемент заголовка, `"unknown"`, `/64` | неверный `TRUST_PROXY`: значение больше числа реальных хопов отдаёт клиентский IP из XFF |
-| Abuse сканера | CORS, лимит, HMAC-токен согласия, DISCLAIMER | распределённый источник; токен получает любой посетитель, verification нет |
-| DoS на сервис | лимит, `MAX_KEYS`, таймауты, семафор на 25 одновременных сканов | лимиты живут в памяти процесса: N реплик = N лимитов |
+| Исчерпание пула подменным `X-Forwarded-For` | `maxPerEdge = 2` с одного сокет-адреса | за общим прокси адрес edge один на всех |
+| Abuse сканера | CORS, лимит, `maxPerEdge`, HMAC-токен согласия, DISCLAIMER | распределённый источник; токен получает любой посетитель, verification нет |
+| DoS на сервис | лимит, `MAX_KEYS`, таймауты и потолки сокетов, 64 сокета на IP при прямом доступе, семафор на 25 одновременных сканов | лимиты живут в памяти процесса: N реплик = N лимитов; за прокси per-IP лимит сокетов выключен |
 | Захват зависимости | `npm ci --ignore-scripts`, lock, `npm audit` | Actions запинены по SHA |
 | Подделка согласия | HMAC-SHA256, TTL 15 мин, `timingSafeEqual` | токен не привязан к сессии/IP и живёт 15 минут |
 | ReDoS через заголовки/HTML цели | линейный `hasGeneratorMeta`, обрезка значений до 120 символов, тело ≤ 64 КБ | — |
@@ -541,7 +568,8 @@ report = {
 
 * **`hasGeneratorMeta()`** (`probes/header-analysis.js`) ищет `<meta name="generator" content="…">` без регулярки с вложенными квантификаторами: `META_TAG_RE` находит тег, атрибуты разбираются вручную, а подстрока ищется через `indexOf` с проверкой границ слова. Сложность линейна по длине HTML — это и есть закрытие ReDoS.
 * **`sanitizeHeaderText()`** убирает управляющие символы, bidi-переопределения и zero-width, схлопывает пробелы и обрезает значение до **120 символов**. В отчёт попадает чужой `Server`, поэтому длина важна не только для вёрстки.
-* **`checkFingerprint()`** читает не больше **64 КБ** HTML и уничтожает ответ после лимита; `security.txt` — не больше 8 КБ.
+* **`checkFingerprint()`** читает не больше **64 КБ** HTML и уничтожает ответ после лимита; корневой `GET /` читается до 64 КБ (для CSP в `<meta>`), `security.txt` — до **32 КБ**, файловые пробы — до **4 КБ**.
+* **`metaCspPolicies()`** разбирает `<meta http-equiv="Content-Security-Policy">` тем же линейным парсером, что и generator: без вложенных квантификаторов, по границам тега.
 * **`parseTarget()`/`normalizeHostname()`** ограничены `url.length <= 2048` и `hostname.length <= 253` до применения `domainRegex`; токен согласия — не длиннее 200 символов.
 * Тест `detectCms не деградирует на длинных meta-тегах` подаёт ~58 КБ «ядовитого» текста и требует меньше 500 мс.
 
@@ -549,12 +577,12 @@ report = {
 
 ## 16. Конфигурация и деплой
 
-`PUBLIC_ORIGIN` проверяется на старте (`new URL` + схема) в `core/config.js`. Остальные переменные тоже читает `config.js`, и только `CONSENT_SECRET` — исключение: он читается при загрузке `core/server.js`, потому что нужен функции подписи. Если `PUBLIC_ORIGIN` не задан — используется `RENDER_EXTERNAL_URL`, который Render передаёт веб-сервису автоматически. Это делает blueprint zero-config, но привязывает CORS к `*.onrender.com`: при кастомном домене `PUBLIC_ORIGIN` нужно задать явно.
+`PUBLIC_ORIGIN` проверяется на старте (`new URL` + схема) в `core/config.js`. Остальные переменные тоже читает `config.js`, и только `CONSENT_SECRET` — исключение: он читается при загрузке `core/server.js`, потому что нужен функции подписи. `NODE_ENV` валидируется в `readNodeEnv()`: допустимы только `development`, `production`, `test`; неизвестное значение (например, `staging`) — `fail()` и exit 1, а пустое/отсутствующее значение допускается. Если `PUBLIC_ORIGIN` не задан — используется `RENDER_EXTERNAL_URL`, который Render передаёт веб-сервису автоматически. Это делает blueprint zero-config, но привязывает CORS к `*.onrender.com`: при кастомном домене `PUBLIC_ORIGIN` нужно задать явно.
 
-`CONSENT_SECRET` обязателен при `NODE_ENV=production`: без него `core/server.js` печатает ошибку и завершается с кодом 1 (fail-closed), потому что подписывать токены нечем. В development подставляется `dev-secret-do-not-use-in-prod`. При смене секрета все ранее выданные токены (TTL 15 минут) перестают проверяться.
+`CONSENT_SECRET` обязателен при `NODE_ENV=production`: без него `core/server.js` печатает ошибку и завершается с кодом 1 (fail-closed), потому что подписывать токены нечем. В development подставляется `dev-secret-do-not-use-in-prod`. Если секрет не задан, а `NODE_ENV` задан и не равен `development`, сервер печатает предупреждение: токены подписываются публичным dev-секретом. При смене секрета все ранее выданные токены (TTL 15 минут) перестают проверяться.
 
 `render.yaml`: web-сервис, `NODE_ENV=production`, `TRUST_PROXY=1`, `CONSENT_SECRET` с `generateValue: true` (Render создаёт секрет при первом деплое), health-check `/healthz`, план `starter`, сборка `npm ci --ignore-scripts`. Graceful shutdown: `SIGTERM`/`SIGINT` → `server.close()` + `closeIdleConnections()`, ожидание до 40 с, затем `closeAllConnections()` и `exit(1)`. Render может ограничивать окно завершения — проверьте на своём плане.
 
 ---
 
-*Документ описывает состояние кода на 14.11.2026, тег `v2.2.0`. Ссылки указывают на функции и маркеры, а не на номера строк. При изменении логики §3.1, §5–§8, §10 и §15 документ нужно перечитать.*
+*Документ описывает состояние кода на 20.11.2026, тег `v2.3.0`. Ссылки указывают на функции и маркеры, а не на номера строк. При изменении логики §3.1, §5–§8, §10 и §15 документ нужно перечитать.*

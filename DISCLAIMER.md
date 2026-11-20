@@ -1,6 +1,6 @@
 # DISCLAIMER / ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ
 
-**Версия:** v2.2.0 · **Дата:** 14 ноября 2026
+**Версия:** v2.3.0 · **Дата:** 20 ноября 2026
 
 ---
 
@@ -30,11 +30,11 @@ CyberCheck performs **active, non-destructive checks**. It sends requests to the
 
 - TCP connection attempts to five ports (80, 443, 22, 3306, 8080), with one retry per port;
 - one or more TLS handshakes to read the leaf certificate, determine the negotiated TLS version, and probe whether TLS 1.0/1.1 is accepted;
-- one or more HTTP requests for response headers, with a retry if the first attempt fails;
+- one or more HTTP requests for response headers, with a retry if the first attempt fails, following same-origin redirects up to three hops;
 - DNS TXT/CAA lookups for SPF, DMARC and CAA records;
-- HEAD requests to `/.env`, `/.git/config`, `/.DS_Store` and `/backup.zip`, a GET to `/.well-known/security.txt`, and a limited HTML read (up to 64 KB) for WAF/CMS fingerprinting.
+- GET requests to `/.env`, `/.git/config`, `/.DS_Store` and `/backup.zip` (up to 4 KB each) to confirm exposure by content signature, a GET to `/.well-known/security.txt` (up to 32 KB), and a limited HTML read (up to 64 KB) for WAF/CMS fingerprinting and `<meta>` CSP. Regular probes use a browser User-Agent; one extra request with `CyberCheck/<version>` is sent to detect cloaking.
 
-It does **not** exploit vulnerabilities, authenticate, fuzz, brute-force, download full page bodies, or modify the target. A `200` response to `/.env`, `/.git/config`, `/.DS_Store` or `/backup.zip` means only that the server returned 200; SPA/redirect fallbacks can produce false positives. `403` is treated as WAF/blocked, not as proof of a vulnerability. Open-file probing is non-destructive but may be logged by the target, so it must be authorized.
+It does **not** exploit vulnerabilities, authenticate, fuzz, brute-force, download full page bodies, or modify the target. A `200` response to `/.env`, `/.git/config`, `/.DS_Store` or `/backup.zip` counts as exposure only when the body matches a content signature (`KEY=VALUE`, `[core]`, ZIP magic, `.DS_Store` magic); a `200` without a signature is reported as “not verified”, not as exposure. `403` is treated as WAF/blocked, not as proof of a vulnerability. Open-file probing is non-destructive but may be logged by the target, so it must be authorized.
 
 ### Reports and Risk Score
 
@@ -52,7 +52,7 @@ The authors assume **no liability** for any damage, legal consequences, or misus
 
 ### Data
 
-Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.2.0. The service issues a short-lived signed consent token (15 minutes, not stored server-side, no personal data) so that a scan request can be tied to the page it was sent from. Do not scan systems whose hostnames or addresses you are not allowed to process.
+Scan results are not stored by the service. The target hostname and the client IP address are written to the server log; there is no rotation or retention policy in v2.3.0. The service issues a short-lived signed consent token (15 minutes, not stored server-side, no personal data) so that a scan request can be tied to the page it was sent from. Do not scan systems whose hostnames or addresses you are not allowed to process.
 
 ### Legal notice
 
@@ -92,11 +92,11 @@ CyberCheck выполняет **активные, неразрушающие п�
 
 - попытки TCP-соединения на пять портов (80, 443, 22, 3306, 8080), по одному retry на порт;
 - одно или несколько TLS-рукопожатий: чтение leaf-сертификата, определение согласованной версии TLS и проверка поддержки TLS 1.0/1.1;
-- один или несколько HTTP-запросов за заголовками ответа, с retry при ошибке;
+- один или несколько HTTP-запросов за заголовками ответа, с retry при ошибке и переходом по same-origin редиректам до трёх хопов;
 - DNS-запросы TXT/CAA для SPF, DMARC и CAA;
-- HEAD-запросы к `/.env`, `/.git/config`, `/.DS_Store` и `/backup.zip`, GET к `/.well-known/security.txt` и чтение не более 64 КБ HTML для WAF/CMS-фингерпринта.
+- GET-запросы к `/.env`, `/.git/config`, `/.DS_Store` и `/backup.zip` (до 4 КБ на файл) для подтверждения экспозиции по сигнатуре содержимого, GET к `/.well-known/security.txt` (до 32 КБ) и чтение не более 64 КБ HTML для WAF/CMS-фингерпринта и CSP в `<meta>`. Обычные пробы идут с браузерным User-Agent; один дополнительный запрос с `CyberCheck/<version>` отправляется для обнаружения клоакинга.
 
-Инструмент **не** эксплуатирует уязвимости, не аутентифицируется, не фаззит, не перебирает пароли, не скачивает страницы целиком и не изменяет цель. Ответ `200` на `/.env`, `/.git/config`, `/.DS_Store` или `/backup.zip` означает только то, что сервер вернул 200; SPA/редирект-заглушки могут дать ложное срабатывание. `403` трактуется как WAF/запрет, а не как доказательство уязвимости. Проверка открытых файлов неразрушающая, но может попасть в логи цели — на неё нужно разрешение.
+Инструмент **не** эксплуатирует уязвимости, не аутентифицируется, не фаззит, не перебирает пароли, не скачивает страницы целиком и не изменяет цель. Ответ `200` на `/.env`, `/.git/config`, `/.DS_Store` или `/backup.zip` считается экспозицией только при совпадении тела с сигнатурой содержимого (`KEY=VALUE`, `[core]`, ZIP-магия, магия `.DS_Store`); `200` без сигнатуры помечается как «не проверено», а не как открытый файл. `403` трактуется как WAF/запрет, а не как доказательство уязвимости. Проверка открытых файлов неразрушающая, но может попасть в логи цели — на неё нужно разрешение.
 
 ### Отчёты и Risk Score
 
@@ -114,7 +114,7 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ### Данные
 
-Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.2.0 нет. Сервис выдаёт короткоживущий подписанный токен согласия (15 минут, на сервере не хранится, персональных данных не содержит), чтобы запрос скана был связан со страницей, с которой он отправлен. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
+Результаты сканирований сервисом не сохраняются. Hostname цели и IP-адрес клиента записываются в серверный лог; ротации и срока хранения в v2.3.0 нет. Сервис выдаёт короткоживущий подписанный токен согласия (15 минут, на сервере не хранится, персональных данных не содержит), чтобы запрос скана был связан со страницей, с которой он отправлен. Не сканируйте системы, hostname и адреса которых вы не вправе обрабатывать.
 
 ### Правовая информация
 
@@ -128,4 +128,4 @@ Risk Score (0–100, A–F) — **эвристическая** оценка по
 
 ---
 
-**Проект:** CyberCheck · **Версия:** 2.2.0 · **Год:** 2026
+**Проект:** CyberCheck · **Версия:** 2.3.0 · **Год:** 2026
